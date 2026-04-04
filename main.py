@@ -38,11 +38,13 @@ from datetime import datetime
 
 try:
     # Installed package (pip install prisma-review-agent)
+    from prisma_review_agent import __version__
     from prisma_review_agent.models import ReviewProtocol, RoBTool
     from prisma_review_agent.pipeline import PRISMAReviewPipeline
     from prisma_review_agent.export import to_markdown, to_bibtex, to_json
 except ImportError:
     # Running directly from source: python main.py
+    from prisma_review_agent import __version__  # type: ignore[no-redef]
     from models import ReviewProtocol, RoBTool  # type: ignore[no-redef]
     from pipeline import PRISMAReviewPipeline  # type: ignore[no-redef]
     from export import to_markdown, to_bibtex, to_json  # type: ignore[no-redef]
@@ -242,6 +244,7 @@ async def run_review(args: argparse.Namespace):
 
 def main():
     parser = argparse.ArgumentParser(
+        prog="prisma-review",
         description="PRISMA 2020 Systematic Review Agent (Pydantic AI)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
@@ -254,6 +257,8 @@ Examples:
   python main.py --title "CRISPR gene therapy" --interactive
         """,
     )
+
+    parser.add_argument("--version", "-V", action="version", version=f"%(prog)s {__version__}")
 
     # Protocol
     parser.add_argument("--title", "-t", type=str, default="",
