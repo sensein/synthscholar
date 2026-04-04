@@ -24,34 +24,46 @@ prisma-agent/
 - **Async pipeline**: The orchestrator uses `asyncio` for concurrent LLM calls (bias + GRADE + limitations run in parallel).
 - **Standalone**: No web framework dependency. Runs as a CLI tool. Can be imported as a library.
 
-## Quick Start
+## Installation
 
-### Prerequisites
+### From PyPI (recommended)
 
 ```bash
-pip install pydantic-ai httpx pydantic
+pip install prisma-review-agent
 ```
+
+### From source
+
+```bash
+git clone https://github.com/tekrajchhetri/prisma-review-agent.git
+cd prisma-review-agent
+pip install -e .
+```
+
+## Quick Start
 
 ### Set API Key
 
 ```bash
 export OPENROUTER_API_KEY="sk-or-v1-..."
 
-# Optional: for higher PubMed rate limits
+# Optional: higher PubMed rate limits (10 req/s vs 3 req/s)
 export NCBI_API_KEY="your-ncbi-key"
 ```
 
-### Run a Review
+### CLI — installed package
+
+After `pip install prisma-review-agent` the `prisma-review` command is available globally:
 
 ```bash
 # Simple review
-python main.py \
+prisma-review \
   --title "CRISPR gene therapy efficacy" \
   --inclusion "Clinical trials, human subjects, English" \
   --exclusion "Animal-only studies, reviews, commentaries"
 
 # Full PICO specification
-python main.py \
+prisma-review \
   --title "GLP-1 agonists for type 2 diabetes: a systematic review" \
   --objective "Evaluate efficacy of GLP-1 RAs vs placebo for glycemic control" \
   --population "Adults with type 2 diabetes mellitus" \
@@ -68,16 +80,27 @@ python main.py \
   --export md json bib
 
 # Interactive mode
-python main.py --interactive
+prisma-review --interactive
 ```
 
-### Use as a Library
+### CLI — from source (without installing)
+
+```bash
+python main.py --title "..." --interactive
+```
+
+### Python API
 
 ```python
 import asyncio
-from models import ReviewProtocol
-from pipeline import PRISMAReviewPipeline
-from export import to_markdown, to_json
+from pathlib import Path
+from prisma_review_agent import (
+    PRISMAReviewPipeline,
+    ReviewProtocol,
+    RoBTool,
+    to_markdown,
+    to_json,
+)
 
 protocol = ReviewProtocol(
     title="Gut microbiome and depression",
@@ -89,7 +112,7 @@ protocol = ReviewProtocol(
     inclusion_criteria="Human studies, English, 2018-2024",
     exclusion_criteria="Animal studies, reviews, case reports",
     max_hops=1,
-    rob_tool="Newcastle-Ottawa Scale",
+    rob_tool=RoBTool.NEWCASTLE_OTTAWA,
 )
 
 async def run():
@@ -103,14 +126,14 @@ async def run():
     result = await pipeline.run()
 
     # Export
-    md = to_markdown(result)
-    Path("review.md").write_text(md)
+    Path("review.md").write_text(to_markdown(result))
+    Path("review.json").write_text(to_json(result))
 
     # Access structured data
     print(f"Included: {result.flow.included_synthesis} studies")
     for article in result.included_articles:
         rob = article.risk_of_bias.overall.value if article.risk_of_bias else "?"
-        print(f"  [{article.pmid}] {article.short_author} ({article.year}) — RoB: {rob}")
+        print(f"  [{article.pmid}] {article.authors} ({article.year}) — RoB: {rob}")
 
     for span in result.evidence_spans[:5]:
         print(f"  Evidence [{span.paper_pmid}]: {span.text[:100]}...")
@@ -167,6 +190,40 @@ result = await rob_agent.run(
 )
 rob: RiskOfBiasResult = result.output
 print(rob.overall)  # RoBJudgment.LOW
+```
+
+### Selecting a Model
+
+Pass any [OpenRouter model ID](https://openrouter.ai/models) via `--model` on the CLI or the `model_name` argument in Python.
+
+**CLI**
+```bash
+# Claude Sonnet 4 (default)
+prisma-review --title "..." --model anthropic/claude-sonnet-4
+
+# Gemini 2.5 Pro
+prisma-review --title "..." --model google/gemini-2.5-pro
+
+# GPT-4o
+prisma-review --title "..." --model openai/gpt-4o
+
+# DeepSeek (cost-effective)
+prisma-review --title "..." --model deepseek/deepseek-chat
+```
+
+**Python API**
+```python
+pipeline = PRISMAReviewPipeline(
+    api_key="sk-or-v1-...",
+    model_name="google/gemini-2.5-pro",   # ← change here
+    protocol=protocol,
+)
+```
+
+**Interactive mode** — prompts you to type a model name at startup:
+```bash
+prisma-review --interactive
+# Enter model ID when prompted, or press Enter for the default
 ```
 
 ### Supported Models (via OpenRouter)
@@ -234,7 +291,7 @@ Disable with `--no-cache` or `enable_cache=False`.
 ## CLI Reference
 
 ```
-python main.py [OPTIONS]
+prisma-review [OPTIONS]
 
 Protocol:
   --title, -t          Review title / research question
@@ -312,4 +369,4 @@ async def run_my_agent(data: str, deps: AgentDeps) -> MyOutput:
 
 ## License
 
-Part of the AEP Knowledge Synthesis project.
+Apache 2.0 — see [LICENSE](LICENSE).

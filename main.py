@@ -36,9 +36,16 @@ import argparse
 from pathlib import Path
 from datetime import datetime
 
-from models import ReviewProtocol, RoBTool
-from pipeline import PRISMAReviewPipeline
-from export import to_markdown, to_bibtex, to_json
+try:
+    # Installed package (pip install prisma-review-agent)
+    from prisma_review_agent.models import ReviewProtocol, RoBTool
+    from prisma_review_agent.pipeline import PRISMAReviewPipeline
+    from prisma_review_agent.export import to_markdown, to_bibtex, to_json
+except ImportError:
+    # Running directly from source: python main.py
+    from models import ReviewProtocol, RoBTool  # type: ignore[no-redef]
+    from pipeline import PRISMAReviewPipeline  # type: ignore[no-redef]
+    from export import to_markdown, to_bibtex, to_json  # type: ignore[no-redef]
 
 ROB_TOOL_CHOICES = [t.value for t in RoBTool]
 
@@ -239,9 +246,12 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Examples:
-  python main.py --title "CRISPR gene therapy" --inclusion "Clinical trials" --exclusion "Reviews"
-  python main.py --interactive
-  python main.py --title "ML drug discovery" --model google/gemini-2.5-pro --export md json bib
+  prisma-review --title "CRISPR gene therapy" --inclusion "Clinical trials" --exclusion "Reviews"
+  prisma-review --interactive
+  prisma-review --title "ML drug discovery" --model google/gemini-2.5-pro --export md json bib
+
+  # Or from source:
+  python main.py --title "CRISPR gene therapy" --interactive
         """,
     )
 
