@@ -1,0 +1,73 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "prisma-review-agent"
+version = "0.2.0"
+description = "PRISMA 2020 systematic literature review agent powered by Pydantic AI"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+authors = [
+    { name = "Tek Raj Chhetri" },
+]
+keywords = [
+    "systematic-review",
+    "prisma",
+    "literature-review",
+    "pydantic-ai",
+    "pubmed",
+    "evidence-synthesis",
+    "risk-of-bias",
+    "grade",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Healthcare Industry",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
+]
+dependencies = [
+    "pydantic>=2.0",
+    "pydantic-ai>=1.0",
+    "httpx>=0.25",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+    "mypy",
+]
+
+[project.scripts]
+prisma-review = "prisma_review_agent.main:main"
+
+[project.urls]
+Repository = "https://github.com/tekrajchhetri/prisma-review-agent"
+
+[tool.hatch.build.targets.wheel]
+packages = ["prisma_review_agent"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

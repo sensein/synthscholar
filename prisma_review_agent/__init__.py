@@ -22,7 +22,7 @@ from prisma_review_agent.models import (
 from prisma_review_agent.pipeline import PRISMAReviewPipeline
 from prisma_review_agent.export import to_markdown, to_json, to_bibtex
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "Article",
