@@ -22,7 +22,7 @@ flowchart LR
 
  subgraph PSYN["Parallel Synthesis"]
     direction TB
-        SYN["Synthesis Agent\n25 articles · 20 evidence spans\nNarrative with PMID citations"]
+        SYN["Synthesis Agent\nfirst 25 articles (collection order)\ntop 20 evidence spans by relevance"]
         BIAS["Bias Summary Agent\nCross-study quality assessment"]
         GRADE["GRADE Agent\nCertainty of evidence · per outcome"]
         LIM["Limitations Agent\nScope · selection bias · heterogeneity"]

@@ -203,7 +203,7 @@ Each span carries:
 - `relevance_score` — a float from 0 to 1 indicating direct relevance to the question
 - `is_quantitative` — `True` if the span contains numerical results, p-values, or effect sizes
 
-After extraction, the pipeline deduplicates spans using word-overlap: any two spans with a Jaccard overlap of 0.70 or greater are considered near-duplicates, and the lower-scoring one is removed. The deduplicated spans are sorted by relevance score and capped at 30. These evidence spans will feed both the synthesis agent and the evidence appendix of the output report.
+After extraction, the pipeline deduplicates spans using word-overlap: any two spans with a Jaccard overlap of 0.70 or greater are considered near-duplicates, and the lower-scoring one is removed. The deduplicated spans are sorted by relevance score and capped at **30** as the evidence pool. Of these 30, only the **top 20** are passed to the Synthesis Agent prompt; the full pool of 30 is stored in `PRISMAReviewResult.evidence_spans` and appears in the evidence appendix of the output report.
 
 ---
 
@@ -237,7 +237,7 @@ The dynamic context injected from the protocol is minimal but critical: the `rob
 
 Once all article-level analysis is complete, the pipeline uses `asyncio.gather()` to run four independent agents simultaneously. These agents do not depend on each other's outputs, so there is no reason to run them sequentially.
 
-**Agent 5: synthesis_agent** receives the top 25 included articles, the top 20 evidence spans, and a textual summary of the PRISMA flow counts. It produces a Markdown narrative synthesis with thematic organisation — grouping findings by theme rather than by study — citing each claim in the format `(Author et al., Year; PMID: XXXXX)`. Where studies contradict each other, the agent is instructed to note the contradiction explicitly rather than glossing over it. This narrative becomes the core of the Results section in the output report.
+**Agent 5: synthesis_agent** receives the **first 25 included articles in collection order** (articles are not ranked by relevance before this slice — they appear in the order they passed full-text screening), the **top 20 evidence spans by relevance score** (from a pool of up to 30 after deduplication), and a textual summary of the PRISMA flow counts. It produces a Markdown narrative synthesis with thematic organisation — grouping findings by theme rather than by study — citing each claim in the format `(Author et al., Year; PMID: XXXXX)`. Where studies contradict each other, the agent is instructed to note the contradiction explicitly rather than glossing over it. This narrative becomes the core of the Results section in the output report.
 
 **Agent 7: bias_summary_agent** receives the list of included studies with their risk-of-bias assessments and produces a plain-text overall quality assessment. It comments on the proportion of studies at high versus low risk, identifies the most common methodological weaknesses across the included literature, discusses concerns about publication bias and heterogeneity, and states the overall confidence in the body of evidence.
 
@@ -308,7 +308,7 @@ All nine agents share the same structural pattern. Each is a pydantic-ai `Agent`
 | 2. screening_agent (FT) | Full-text eligibility | 10 articles | ScreeningBatchResult | STRICT |
 | 3. rob_agent | Risk of bias per study | Per article | RiskOfBiasResult | Tool from protocol |
 | 4. data_extraction_agent | Structured data per study | Per article | StudyDataExtraction | Optional |
-| 5. synthesis_agent | Narrative synthesis | 25 articles + 20 spans | str (Markdown) | Thematic, cited |
+| 5. synthesis_agent | Narrative synthesis | first 25 articles (collection order) + top 20 spans | str (Markdown) | Thematic, cited |
 | 6. grade_agent | GRADE certainty per outcome | Per outcome | GRADEAssessment | 5-domain framework |
 | 7. bias_summary_agent | Overall quality summary | All included articles | str | Cross-study view |
 | 8. limitations_agent | Review limitations | Flow text + articles | str | PRISMA caveat |

@@ -179,7 +179,7 @@ ax.text(SYN_X + SYN_W / 2, SYN_Y + SYN_H + 0.22,
 agents = [
     ("Synthesis Agent",
      "#6B5A10", "#FFFCE8", "#B8A830",
-     "25 articles · 20 evidence spans\nNarrative with PMID citations"),
+     "first 25 articles (collection order)\ntop 20 evidence spans · PMID citations"),
     ("Bias Summary Agent",
      "#92400E", "#FFFBEB", "#D97706",
      "Cross-study quality assessment"),
