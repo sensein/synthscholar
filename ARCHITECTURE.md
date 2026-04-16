@@ -400,7 +400,7 @@ This means a complete pipeline failure requires every single step and every sing
 | Cache | SQLite (built-in) | Zero external dependencies; persists across runs; SHA256-keyed |
 | Async | asyncio | `asyncio.gather()` for Step 14 parallel synthesis |
 | Python version | 3.11+ | Required for pydantic-ai type features |
-| Build system | Hatchling | Modern Python packaging; PyPI distribution |
+| Build system | UV | Modern Python packaging and local development workflow |
 | CLI | argparse | Standard library; no extra dependencies |
 
 ---
