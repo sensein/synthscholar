@@ -5,7 +5,12 @@ __pycache__/
 
 # C extensions
 *.so
+#specify
 
+.specify/
+.claude/
+CLAUDE.md
+specs/
 # Distribution / packaging
 .Python
 build/
