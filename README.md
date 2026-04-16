@@ -37,7 +37,8 @@ pip install prisma-review-agent
 ```bash
 git clone https://github.com/tekrajchhetri/prisma-review-agent.git
 cd prisma-review-agent
-pip install -e .
+python -m pip install uv
+uv install
 ```
 
 ## Quick Start
