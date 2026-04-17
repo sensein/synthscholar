@@ -369,7 +369,11 @@ class PRISMAReviewPipeline:
         for i, art in enumerate(ft_included):
             up(f"  [{i+1}/{len(ft_included)}] Charting {art.title[:50]}...")
             try:
-                rubric = await run_data_charting(art, self.deps)
+                rubric = await run_data_charting(
+                    art,
+                    self.deps,
+                    charting_questions=proto.charting_questions or None,
+                )
                 data_charting_rubrics.append(rubric)
             except Exception as e:
                 up(f"  Data charting failed for {art.pmid}: {e}")
@@ -383,7 +387,12 @@ class PRISMAReviewPipeline:
                 # Find the corresponding article
                 art = next((a for a in ft_included if str(a.pmid).endswith(rubric.source_id.split('-')[1])), None)
                 if art:
-                    appraisal = await run_critical_appraisal(art, rubric, self.deps)
+                    appraisal = await run_critical_appraisal(
+                        art,
+                        rubric,
+                        self.deps,
+                        appraisal_domains=proto.appraisal_domains or None,
+                    )
                     critical_appraisals.append(appraisal)
             except Exception as e:
                 up(f"  Critical appraisal failed for {rubric.source_id}: {e}")

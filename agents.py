@@ -443,6 +443,11 @@ Section D: Healthy controls (if applicable)
 Section E: Data collection methods
 Section F: Features, models, and performance
 Section G: Synthesis and reviewer notes (summarize key findings)
+
+If the prompt includes additional protocol-specific questions, answer each one
+in the custom_fields dict using the question text verbatim as the key and a
+concise extracted answer as the value. Use "Not Reported" when the article does
+not address the question.
 """,
     retries=2,
     name="data_charter",
@@ -803,9 +808,26 @@ async def run_evidence_extraction(
     return _deduplicate_spans(all_spans)
 
 
-async def run_data_charting(article: Article, deps: AgentDeps) -> DataChartingRubric:
-    """Extract data charting rubric from a single article."""
+async def run_data_charting(
+    article: Article,
+    deps: AgentDeps,
+    charting_questions: list[str] | None = None,
+) -> DataChartingRubric:
+    """Extract data charting rubric from a single article.
+
+    If *charting_questions* are provided they are answered into
+    ``DataChartingRubric.custom_fields`` (question text → extracted answer).
+    """
     model = build_model(deps.api_key, deps.model_name)
+
+    custom_block = ""
+    if charting_questions:
+        q_lines = "\n".join(f"  {i+1}. {q}" for i, q in enumerate(charting_questions))
+        custom_block = (
+            f"\n\nAdditional protocol-specific questions to answer in custom_fields "
+            f"(use the question text verbatim as the key):\n{q_lines}"
+        )
+
     result = await data_charting_agent.run(
         f"Article PMID: {article.pmid}\n"
         f"Title: {article.title}\n"
@@ -814,7 +836,8 @@ async def run_data_charting(article: Article, deps: AgentDeps) -> DataChartingRu
         f"Journal: {article.journal}\n"
         f"DOI: {article.doi}\n"
         f"Abstract: {article.abstract[:2500]}\n"
-        f"Full text: {(article.full_text or 'Not available')[:4000]}",
+        f"Full text: {(article.full_text or 'Not available')[:4000]}"
+        + custom_block,
         deps=deps,
         model=model,
     )
@@ -837,9 +860,34 @@ async def run_narrative_row(charting: DataChartingRubric, appraisal: CriticalApp
     return row
 
 
-async def run_critical_appraisal(article: Article, charting: DataChartingRubric, deps: AgentDeps) -> CriticalAppraisalRubric:
-    """Perform critical appraisal of a study."""
+_DEFAULT_APPRAISAL_DOMAINS = [
+    "Participant and Sample Quality",
+    "Data Collection Quality",
+    "Feature and Model Quality",
+    "Bias and Transparency",
+]
+
+
+async def run_critical_appraisal(
+    article: Article,
+    charting: DataChartingRubric,
+    deps: AgentDeps,
+    appraisal_domains: list[str] | None = None,
+) -> CriticalAppraisalRubric:
+    """Perform critical appraisal of a study.
+
+    *appraisal_domains* overrides the default four domain labels when provided.
+    Up to four names are accepted; missing positions keep their defaults.
+    """
     model = build_model(deps.api_key, deps.model_name)
+
+    domain_labels = list(_DEFAULT_APPRAISAL_DOMAINS)
+    if appraisal_domains:
+        for i, name in enumerate(appraisal_domains[:4]):
+            domain_labels[i] = name
+
+    domains_block = "\n".join(f"  Domain {i+1}: {name}" for i, name in enumerate(domain_labels))
+
     result = await critical_appraisal_agent.run(
         f"Article: {article.title} ({article.year})\n"
         f"Study Design: {charting.study_design}\n"
@@ -847,12 +895,24 @@ async def run_critical_appraisal(article: Article, charting: DataChartingRubric,
         f"Data Collection: {charting.data_types} via {charting.tasks_performed}\n"
         f"Features/Models: {charting.feature_types} → {charting.model_category}\n"
         f"Performance: {charting.key_performance_results}\n"
-        f"Limitations noted: {charting.reviewer_notes}",
+        f"Limitations noted: {charting.reviewer_notes}\n"
+        f"\nAppraisal domains to use:\n{domains_block}",
         deps=deps,
         model=model,
     )
     appraisal = result.output
     appraisal.source_id = charting.source_id
+    # Rename domain labels to match the protocol-specified names
+    for domain_field, label in zip(
+        [
+            appraisal.domain_1_participant_quality,
+            appraisal.domain_2_data_collection_quality,
+            appraisal.domain_3_feature_model_quality,
+            appraisal.domain_4_bias_transparency,
+        ],
+        domain_labels,
+    ):
+        domain_field.domain_name = label
     return appraisal
 
 

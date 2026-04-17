@@ -277,6 +277,26 @@ class ReviewProtocol(BaseModel):
     citation_style: str = "APA 7"  # APA 7 | Vancouver | Harvard | IEEE | Chicago
     languages: list[str] = Field(default_factory=lambda: ["English"])
     protocol_overrides: str = ""  # custom charting fields / cohort taxonomies
+    # Custom per-article charting questions (answered into DataChartingRubric.custom_fields).
+    # Leave empty to rely solely on the built-in sections A–G.
+    charting_questions: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Domain-specific questions answered per included article. "
+            "Each question becomes a key in DataChartingRubric.custom_fields. "
+            "Example: ['What sequencing method was used?', 'Which diversity index was reported?']"
+        ),
+    )
+    # Custom appraisal domain names (replaces the four default domain labels when provided).
+    appraisal_domains: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Override the four default appraisal domain names. "
+            "Provide exactly 1–4 names; unspecified positions keep their defaults. "
+            "Default domains: ['Participant and Sample Quality', 'Data Collection Quality', "
+            "'Feature and Model Quality', 'Bias and Transparency']"
+        ),
+    )
 
     @property
     def pico_text(self) -> str:
@@ -421,6 +441,9 @@ class DataChartingRubric(BaseModel):
     features_associated_disorder: str = ""
     future_directions_recommended: str = ""
     reviewer_notes: str = ""
+
+    # Answers to protocol.charting_questions (question text → extracted answer)
+    custom_fields: dict[str, str] = Field(default_factory=dict)
 
 
 class PRISMANarrativeRow(BaseModel):

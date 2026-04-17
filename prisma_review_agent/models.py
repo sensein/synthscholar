@@ -278,6 +278,26 @@ class ReviewProtocol(BaseModel):
     force_refresh: bool = False
     cache_threshold: float = Field(default=0.95, ge=0.0, le=1.0)
     cache_ttl_days: int = Field(default=30, ge=0)
+    # Custom per-article charting questions (answered into DataChartingRubric.custom_fields).
+    # Leave empty to rely solely on the built-in sections A–G.
+    charting_questions: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Domain-specific questions answered per included article. "
+            "Each question becomes a key in DataChartingRubric.custom_fields. "
+            "Example: ['What sequencing method was used?', 'Which diversity index was reported?']"
+        ),
+    )
+    # Custom appraisal domain names (replaces the four default domain labels when provided).
+    appraisal_domains: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Override the four default appraisal domain names. "
+            "Provide exactly 1–4 names; unspecified positions keep their defaults. "
+            "Default domains: ['Participant and Sample Quality', 'Data Collection Quality', "
+            "'Feature and Model Quality', 'Bias and Transparency']"
+        ),
+    )
 
     @property
     def pico_text(self) -> str:

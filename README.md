@@ -125,6 +125,24 @@ protocol = ReviewProtocol(
     exclusion_criteria="Animal studies, reviews, case reports",
     max_hops=10,
     rob_tool=RoBTool.NEWCASTLE_OTTAWA,
+
+    # Domain-specific charting questions — answered per included article and stored
+    # in DataChartingRubric.custom_fields (question text → extracted answer).
+    # Leave out entirely to use only the built-in sections A–G.
+    charting_questions=[
+        "What sequencing method was used (16S rRNA, shotgun metagenomics, or other)?",
+        "Which taxonomic level was the primary analysis performed at?",
+        "What alpha-diversity indices were reported (Shannon, Simpson, Chao1, …)?",
+        "Was the gut-brain axis or HPA axis explicitly discussed?",
+        "Were dietary intake data collected and reported?",
+    ],
+
+    # Override the four default appraisal domain names for this review type.
+    # Unspecified positions (here: 3 and 4) keep their defaults.
+    appraisal_domains=[
+        "Participant Recruitment and Microbiome Sampling Quality",
+        "Sequencing and Bioinformatic Pipeline Quality",
+    ],
 )
 
 async def run():
