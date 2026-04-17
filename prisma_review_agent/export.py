@@ -14,7 +14,10 @@ from .models import PRISMAReviewResult
 from .ontology.rdf_export import to_turtle, to_jsonld  # noqa: F401 — re-exported
 from .ontology.rdf_store import SLRStore  # noqa: F401 — re-exported
 
-__all__ = ["to_markdown", "to_bibtex", "to_json", "to_turtle", "to_jsonld", "to_oxigraph_store"]
+__all__ = [
+    "to_markdown", "to_bibtex", "to_json", "to_turtle", "to_jsonld",
+    "to_oxigraph_store", "to_rubric_markdown", "to_rubric_json",
+]
 
 
 def to_oxigraph_store(result: PRISMAReviewResult) -> SLRStore:
@@ -193,6 +196,15 @@ def to_markdown(result: PRISMAReviewResult) -> str:
             f"### Exclusion Criteria\n\n"
             + "\n".join(f"- {c}" for c in pr.methods.exclusion_criteria) + "\n",
             f"### Quality Assessment\n\n{pr.methods.quality_assessment}\n",
+        ])
+        if pr.methods.data_extraction:
+            lines.append("### Data Extraction\n")
+            for report in pr.methods.data_extraction:
+                lines.append(f"**{report.source_id}**: {', '.join(report.sections.keys())}")
+            lines.append(
+                "\n*(See `to_rubric_markdown()` for full structured per-section content.)*\n"
+            )
+        lines.extend([
             "\n---\n",
             "## Results\n",
         ])
@@ -288,3 +300,55 @@ def to_jsonld(result: PRISMAReviewResult) -> str:
     """Serialize review to JSON-LD format (SLR Ontology)."""
     from .ontology.rdf_export import to_jsonld as _to_jsonld
     return _to_jsonld(result)
+
+
+def to_rubric_markdown(result: PRISMAReviewResult) -> str:
+    """Export all DataChartingRubric section_outputs as structured Markdown.
+
+    One H2 per study, one H3 per section, with formatted_answer and summary.
+    Falls back to a minimal document when no section_outputs are present.
+    """
+    rubrics_with_outputs = [r for r in result.data_charting_rubrics if r.section_outputs]
+    if not rubrics_with_outputs:
+        return "# Data Extraction Rubrics\n\n*No structured section outputs available.*\n"
+
+    lines = ["# Data Extraction Rubrics\n"]
+    for rubric in rubrics_with_outputs:
+        lines.append(f"## {rubric.source_id} — {rubric.title or 'Unknown'}\n")
+        for section_title, section_out in rubric.section_outputs.items():
+            lines.append(f"### {section_title}\n")
+            lines.append(f"**Format**: {section_out.format_used}\n")
+            lines.append(section_out.formatted_answer)
+            lines.append("")
+            if section_out.section_summary:
+                lines.append(f"**Summary**: {section_out.section_summary}\n")
+        lines.append("---\n")
+    return "\n".join(lines)
+
+
+def to_rubric_json(result: PRISMAReviewResult) -> str:
+    """Export all DataChartingRubric section_outputs as structured JSON.
+
+    Returns a JSON array, one object per study. Falls back to '[]' when
+    no section_outputs are present.
+    """
+    rubrics_with_outputs = [r for r in result.data_charting_rubrics if r.section_outputs]
+    if not rubrics_with_outputs:
+        return "[]"
+
+    records = [
+        {
+            "source_id": rubric.source_id,
+            "title": rubric.title or "",
+            "sections": {
+                title: {
+                    "format_used": out.format_used,
+                    "formatted_answer": out.formatted_answer,
+                    "section_summary": out.section_summary,
+                }
+                for title, out in rubric.section_outputs.items()
+            },
+        }
+        for rubric in rubrics_with_outputs
+    ]
+    return json.dumps(records, indent=2, ensure_ascii=False)

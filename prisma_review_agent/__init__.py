@@ -42,9 +42,14 @@ from prisma_review_agent.models import (
     OutputFormat,
     BiasAssessment,
     QuantitativeAnalysis,
+    SECTION_FORMAT,
+    BUILTIN_SECTIONS,
+    RubricSectionOutput,
+    RubricSectionConfig,
+    StudyDataExtractionReport,
 )
 from prisma_review_agent.pipeline import PRISMAReviewPipeline
-from prisma_review_agent.export import to_markdown, to_json, to_bibtex, to_turtle, to_jsonld
+from prisma_review_agent.export import to_markdown, to_json, to_bibtex, to_turtle, to_jsonld, to_rubric_markdown, to_rubric_json
 
 __version__ = "0.2.0"
 
@@ -92,4 +97,11 @@ __all__ = [
     "OutputFormat",
     "BiasAssessment",
     "QuantitativeAnalysis",
+    "SECTION_FORMAT",
+    "BUILTIN_SECTIONS",
+    "RubricSectionOutput",
+    "RubricSectionConfig",
+    "StudyDataExtractionReport",
+    "to_rubric_markdown",
+    "to_rubric_json",
 ]

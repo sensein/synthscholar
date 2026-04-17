@@ -44,6 +44,8 @@ from .models import (
     Theme,
     PrismaFlow,
     Implications,
+    RubricSectionOutput,
+    SECTION_FORMAT,
 )
 
 
@@ -856,12 +858,61 @@ _DEFAULT_APPRAISAL_DOMAINS = [
 ]
 
 
+_SECTION_KEY_FIELDS: dict[str, list[str]] = {
+    "A": ["title", "authors", "year", "journal_conference", "doi", "database_retrieved", "disorder_cohort", "primary_focus"],
+    "B": ["primary_goal", "study_design", "duration_frequency", "subject_model", "task_type", "study_setting", "country_region"],
+    "C": ["disorder_diagnosis", "diagnosis_assessment", "n_disordered", "age_mean_sd", "age_range", "gender_distribution", "comorbidities_included_excluded", "medications_therapies", "severity_levels"],
+    "D": ["healthy_controls_included", "healthy_status_confirmed", "n_controls", "age_mean_sd_controls", "age_range_controls", "gender_distribution_controls", "age_matched", "gender_matched", "neurodevelopmentally_typical"],
+    "E": ["data_types", "tasks_performed", "equipment_tools", "new_dataset_contributed", "dataset_openly_available", "dataset_available_request", "sensitive_data_anonymized"],
+    "F": ["feature_types", "specific_features", "feature_extraction_tools", "feature_importance_reported", "importance_method", "top_features_identified", "feature_change_direction", "model_category", "specific_algorithms", "validation_methodology", "performance_metrics", "key_performance_results"],
+    "G": ["summary_key_findings", "features_associated_disorder", "future_directions_recommended", "reviewer_notes"],
+}
+
+_FORMAT_PATTERNS: dict[str, str] = {
+    "table": r"^\|",           # starts with | (Markdown table)
+    "bullet_list": r"^- ",     # starts with "- "
+    "numeric": r"^[\d\.]",     # starts with digit or decimal
+    "yes_no": r"^(Yes|No)\b",  # starts with Yes or No
+}
+
+
+def _extract_section_text(rubric: DataChartingRubric, section_key: str, display_title: str) -> str:
+    """Extract the raw text for a section from the rubric fields."""
+    import re
+    fields = _SECTION_KEY_FIELDS.get(section_key.upper(), [])
+    if fields:
+        parts = [
+            str(getattr(rubric, f, "") or "")
+            for f in fields
+            if str(getattr(rubric, f, "") or "").strip()
+        ]
+        return "\n".join(parts) if parts else ""
+    # Custom question — look in custom_fields
+    return rubric.custom_fields.get(display_title, "")
+
+
+def _validate_format(text: str, fmt: str) -> bool:
+    """Return True if text appears to match the expected format."""
+    import re
+    pattern = _FORMAT_PATTERNS.get(fmt)
+    if pattern is None:
+        return True  # descriptive: always valid
+    return bool(re.search(pattern, text, re.MULTILINE))
+
+
 async def run_data_charting(
     article: Article,
     deps: AgentDeps,
     charting_questions: list[str] | None = None,
+    resolved_section_config: list[tuple[str, str, str]] | None = None,
 ) -> DataChartingRubric:
-    """Extract data charting rubric from a single article."""
+    """Extract data charting rubric from a single article.
+
+    When resolved_section_config is provided, also populates rubric.section_outputs
+    with per-section RubricSectionOutput entries using the configured format types.
+    """
+    import logging as _logging
+    import re as _re
     model = build_model(deps.api_key, deps.model_name)
 
     custom_block = ""
@@ -870,6 +921,26 @@ async def run_data_charting(
         custom_block = (
             f"\n\nAdditional protocol-specific questions to answer in custom_fields "
             f"(use the question text verbatim as the key):\n{q_lines}"
+        )
+
+    format_block = ""
+    if resolved_section_config:
+        fmt_lines = "\n".join(
+            f"  {i+1}. {title} → format: {fmt}"
+            for i, (_, title, fmt) in enumerate(resolved_section_config)
+        )
+        format_block = (
+            "\n\nPer-section extraction format requirements:\n"
+            + fmt_lines
+            + "\n\nFormat types:\n"
+            "  - descriptive: free-form narrative prose\n"
+            "  - yes_no: exactly 'Yes' or 'No' optionally followed by one-sentence justification\n"
+            "  - table: Markdown table with header row (e.g. '| Col | Val |')\n"
+            "  - bullet_list: bulleted list, each item on own line starting with '- '\n"
+            "  - numeric: numeric value only (e.g. '42' or '0.87 ± 0.03')\n"
+            "For table, bullet_list, and numeric sections also produce a 1–3 sentence "
+            "prose summary of that section's content.\n"
+            "If the requested format cannot be produced, use descriptive prose."
         )
 
     result = await data_charting_agent.run(
@@ -881,12 +952,54 @@ async def run_data_charting(
         f"DOI: {article.doi}\n"
         f"Abstract: {article.abstract[:2500]}\n"
         f"Full text: {(article.full_text or 'Not available')[:4000]}"
-        + custom_block,
+        + custom_block
+        + format_block,
         deps=deps,
         model=model,
     )
     rubric = result.output
     rubric.source_id = f"M-{article.pmid[-3:]}" if article.pmid.startswith("biorxiv_") else f"R-{article.pmid[-3:]}"
+
+    # Populate section_outputs when config is provided
+    if resolved_section_config:
+        _log = _logging.getLogger(__name__)
+        for section_key, display_title, requested_fmt in resolved_section_config:
+            raw_text = _extract_section_text(rubric, section_key, display_title)
+            if not raw_text.strip():
+                raw_text = "Not available"
+
+            # Validate format; fall back to descriptive if mismatch
+            if requested_fmt != "descriptive" and not _validate_format(raw_text, requested_fmt):
+                _log.warning(
+                    "section '%s' requested '%s' but content did not match expected format; "
+                    "falling back to 'descriptive'",
+                    display_title, requested_fmt,
+                )
+                actual_fmt: SECTION_FORMAT = "descriptive"
+            else:
+                actual_fmt = requested_fmt  # type: ignore[assignment]
+
+            # Build section_summary for structured formats
+            summary: str | None = None
+            if actual_fmt in {"table", "bullet_list", "numeric"}:
+                # Use a compact prose description derived from raw_text
+                lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
+                summary = " ".join(lines[:3])[:300] or "See formatted answer above."
+
+            try:
+                rubric.section_outputs[display_title] = RubricSectionOutput(
+                    format_used=actual_fmt,
+                    formatted_answer=raw_text,
+                    section_summary=summary,
+                )
+            except Exception as exc:
+                _log.warning("Failed to build RubricSectionOutput for '%s': %s", display_title, exc)
+                rubric.section_outputs[display_title] = RubricSectionOutput(
+                    format_used="descriptive",
+                    formatted_answer=raw_text or "Not available",
+                    section_summary=None,
+                )
+
     return rubric
 
 

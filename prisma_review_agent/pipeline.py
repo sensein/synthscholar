@@ -46,6 +46,8 @@ from .models import (
     OptionalSection,
     BiasAssessment,
     Theme,
+    BUILTIN_SECTIONS,
+    StudyDataExtractionReport,
 )
 from .clients import Cache, PubMedClient, BioRxivClient
 from .evidence import extract_evidence
@@ -565,10 +567,14 @@ class PRISMAReviewPipeline:
         critical_appraisals = []
         narrative_rows = []
 
+        _resolved_cfg = _resolve_section_config(self.protocol)
+
         for article in ft_included:
             try:
                 up(f"Charting article {article.pmid}…")
-                rubric = await run_data_charting(article, self.deps, charting_questions)
+                rubric = await run_data_charting(
+                    article, self.deps, charting_questions, resolved_section_config=_resolved_cfg
+                )
                 data_charting_rubrics.append(rubric)
 
                 appraisal = await run_critical_appraisal(article, rubric, self.deps, appraisal_domains)
@@ -646,7 +652,8 @@ class PRISMAReviewPipeline:
             try:
                 up("Assembling structured PrismaReview report...")
                 final_result.prisma_review = await assemble_prisma_review(
-                    final_result, self.deps, output_synthesis_style
+                    final_result, self.deps, output_synthesis_style,
+                    resolved_config=_resolved_cfg,
                 )
                 pr = final_result.prisma_review
                 # Backfill plain-text fields for backward compatibility
@@ -737,12 +744,74 @@ _CHARTING_SECTIONS: list[tuple[str, list[str]]] = [
 ]
 
 
+def _resolve_section_config(protocol: ReviewProtocol) -> list[tuple[str, str, str]]:
+    """Return [(section_key, display_title, format_type)] ordered by display order.
+
+    Precedence: rubric_section_config > section_output_formats > built-in defaults.
+    Custom charting_questions not covered by config are appended at the end.
+    """
+    import warnings
+
+    _valid_fmts = {"descriptive", "yes_no", "table", "bullet_list", "numeric"}
+
+    # Start with built-in sections at default order
+    entries: list[dict] = [
+        {"key": k, "title": t, "format": "descriptive", "order": i}
+        for i, (k, t) in enumerate(BUILTIN_SECTIONS)
+    ]
+
+    # Apply section_output_formats overrides (format only, title/order unchanged)
+    for fmt_title, fmt_type in protocol.section_output_formats.items():
+        matched = False
+        for entry in entries:
+            if entry["title"].lower() == fmt_title.lower() or entry["key"] == fmt_title:
+                entry["format"] = fmt_type
+                matched = True
+                break
+        if not matched:
+            warnings.warn(
+                f"section_output_formats key '{fmt_title}' does not match any built-in section; ignoring",
+                UserWarning,
+                stacklevel=2,
+            )
+
+    # Apply rubric_section_config overrides (title, order, and format)
+    builtin_keys = {e["key"] for e in entries}
+    for cfg in protocol.rubric_section_config:
+        if cfg.section_key in builtin_keys:
+            for entry in entries:
+                if entry["key"] == cfg.section_key:
+                    entry["title"] = cfg.section_name
+                    entry["order"] = cfg.order
+                    entry["format"] = cfg.output_format
+                    break
+        else:
+            entries.append({
+                "key": cfg.section_key,
+                "title": cfg.section_name,
+                "format": cfg.output_format,
+                "order": cfg.order,
+            })
+
+    # Append custom charting_questions not already covered
+    covered_titles = {e["title"].lower() for e in entries}
+    covered_keys = {e["key"] for e in entries}
+    for i, question in enumerate(protocol.charting_questions):
+        q_key = question[:20]
+        if question.lower() not in covered_titles and q_key not in covered_keys:
+            entries.append({"key": q_key, "title": question, "format": "descriptive", "order": 100 + i})
+
+    entries.sort(key=lambda e: e["order"])
+    return [(e["key"], e["title"], e["format"]) for e in entries]
+
+
 def _assemble_methods(
     protocol: ReviewProtocol,
     search_queries: list[str],
     flow_counts: PRISMAFlowCounts,
     charting_rubrics: list,
     bias_assessment: str,
+    resolved_config: list[tuple[str, str, str]] | None = None,
 ) -> Methods:
     """Build Methods deterministically from existing pipeline data — no LLM call."""
     prisma_flow = PrismaFlow(
@@ -777,12 +846,27 @@ def _assemble_methods(
         for section_name, fields in _CHARTING_SECTIONS
     ]
 
+    # Build data_extraction from rubric section_outputs (US5)
+    data_extraction: list[StudyDataExtractionReport] = []
+    if resolved_config:
+        for rubric in charting_rubrics:
+            sections_ordered = {
+                title: rubric.section_outputs[title]
+                for _, title, _ in resolved_config
+                if title in rubric.section_outputs
+            }
+            if sections_ordered:
+                data_extraction.append(
+                    StudyDataExtractionReport(source_id=rubric.source_id, sections=sections_ordered)
+                )
+
     return Methods(
         search_strategy=search_strategy,
         study_selection=prisma_flow,
         inclusion_criteria=inclusion_list or [protocol.inclusion_criteria],
         exclusion_criteria=exclusion_list or [protocol.exclusion_criteria],
         data_extraction_schema=extraction_schemas,
+        data_extraction=data_extraction,
         quality_assessment=bias_assessment or "Quality assessment completed.",
     )
 
@@ -823,6 +907,7 @@ async def assemble_prisma_review(
     result: "PRISMAReviewResult",
     deps: "AgentDeps",
     output_style: str = "paragraph",
+    resolved_config: list[tuple[str, str, str]] | None = None,
 ) -> PrismaReview:
     """Orchestrate 5 agents and 2 deterministic helpers to build a PrismaReview."""
     protocol = result.protocol
@@ -834,6 +919,7 @@ async def assemble_prisma_review(
         flow_counts=result.flow,
         charting_rubrics=result.data_charting_rubrics,
         bias_assessment=result.bias_assessment,
+        resolved_config=resolved_config,
     )
     extracted_studies = _assemble_extracted_studies(result.data_charting_rubrics)
 

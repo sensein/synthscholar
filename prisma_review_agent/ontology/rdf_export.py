@@ -324,6 +324,8 @@ def _build_graph(result: "PRISMAReviewResult") -> Graph:
             pmid_to_uri[article.pmid] = a_uri
         _add_charting(g, a_uri, article)
         _add_rob(g, a_uri, article, rob_tool_name=result.protocol.rob_tool.value)
+        if article.critical_appraisal is not None:
+            _add_appraisal_from_dict(g, a_uri, article.critical_appraisal.model_dump())
 
     # ── EvidenceSpans → oa:Annotation ──
     _add_evidence_spans(g, rev_uri, result, pmid_to_uri)

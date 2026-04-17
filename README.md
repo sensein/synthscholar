@@ -343,6 +343,73 @@ for qa in (review.results.question_answer_summary or []):
 
 **Backward compatibility:** All existing flat fields (`result.synthesis_text`, `result.structured_abstract`, `result.introduction_text`, `result.conclusions_text`) are automatically backfilled from the structured report and continue to work unchanged.
 
+### Per-Rubric Section Output Formats
+
+Configure how each data charting section (A–G + custom) renders its answer. Five format types are supported: `descriptive` (default), `yes_no`, `table`, `bullet_list`, `numeric`. For `table`, `bullet_list`, and `numeric` sections a prose summary is also generated automatically.
+
+**Simple API — `section_output_formats` dict:**
+
+```python
+from prisma_review_agent.models import ReviewProtocol
+
+protocol = ReviewProtocol(
+    title="Digital biomarkers for Parkinson's disease",
+    objective="Identify ML-based biomarkers from wearable sensor data",
+    inclusion_criteria="Wearable sensor studies, PD patients, ML classifier",
+    exclusion_criteria="Non-PD populations, no ML methods",
+    section_output_formats={
+        "Study Design":                  "table",
+        "Participants: Disordered Group": "yes_no",
+        "Features and Models":           "bullet_list",
+        "Data Collection":               "table",
+    },
+)
+result = await pipeline.run(auto_confirm=True)
+
+# Access structured section outputs per study
+for rubric in result.data_charting_rubrics:
+    for section_title, out in rubric.section_outputs.items():
+        print(f"[{rubric.source_id}] {section_title} ({out.format_used})")
+        print(out.formatted_answer)
+        if out.section_summary:
+            print(f"  Summary: {out.section_summary}")
+```
+
+**Full config API — custom titles, ordering, and formats:**
+
+```python
+from prisma_review_agent.models import ReviewProtocol, RubricSectionConfig
+
+protocol = ReviewProtocol(
+    title="Emotion recognition from physiological signals",
+    objective="...",
+    inclusion_criteria="...",
+    exclusion_criteria="...",
+    rubric_section_config=[
+        RubricSectionConfig(section_key="F", section_name="ML Models & Performance", order=1, output_format="table"),
+        RubricSectionConfig(section_key="B", section_name="Study Design",            order=2, output_format="table"),
+        RubricSectionConfig(section_key="C", section_name="Patient Cohort",          order=3, output_format="yes_no"),
+        RubricSectionConfig(section_key="G", section_name="Key Findings",            order=4, output_format="bullet_list"),
+    ],
+)
+```
+
+**Export per-rubric outputs:**
+
+```python
+from prisma_review_agent.export import to_rubric_markdown, to_rubric_json
+
+# Markdown: one heading per study, one sub-heading per section
+Path("rubric_extraction.md").write_text(to_rubric_markdown(result))
+
+# JSON: list of {source_id, title, sections: {title: {format_used, formatted_answer, section_summary}}}
+Path("rubric_extraction.json").write_text(to_rubric_json(result))
+```
+
+The combined per-study outputs are also available on `result.prisma_review.methods.data_extraction` (one `StudyDataExtractionReport` per included study, sections in configured order).
+
+**Validation:** Invalid format values raise `ValueError` at `ReviewProtocol` construction time. Unknown section names in `section_output_formats` log a `UserWarning` and are ignored. If the LLM cannot produce the requested format for a section it falls back to `descriptive` and logs a warning — `formatted_answer` is never empty.
+
 **`confirm_callback` return value semantics:**
 
 | Return value | Meaning | Pipeline action |
@@ -354,18 +421,24 @@ for qa in (review.results.question_answer_summary or []):
 
 ### FastAPI Integration
 
-Bridge the synchronous `confirm_callback` with an async HTTP round-trip using `asyncio.Event`:
+The pipeline's `confirm_callback` and `progress_callback` hooks make it straightforward to build a live UI on top of FastAPI. The pattern uses `asyncio.Event` to bridge the synchronous callback with an async HTTP round-trip, and Server-Sent Events (SSE) for real-time progress streaming.
+
+#### Pattern 1 — Plan confirmation with polling
 
 ```python
 import asyncio
-from fastapi import FastAPI
+import uuid
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel as PydanticBase
-from prisma_review_agent.models import ReviewPlan, ReviewProtocol, PlanRejectedError
+from prisma_review_agent.models import (
+    ReviewPlan, ReviewProtocol, PlanRejectedError, MaxIterationsReachedError,
+    RubricSectionConfig,
+)
 from prisma_review_agent.pipeline import PRISMAReviewPipeline
 
 app = FastAPI()
 
-# In-memory session store (use Redis/DB in production)
+# In-memory session store — use Redis or a DB in production
 _sessions: dict[str, dict] = {}
 
 
@@ -373,30 +446,36 @@ class ReviewRequest(PydanticBase):
     title: str
     inclusion: str = ""
     exclusion: str = ""
+    section_output_formats: dict[str, str] = {}     # optional per-section formats
+    rubric_section_config: list[dict] = []          # optional full config
 
 
 class ConfirmRequest(PydanticBase):
     session_id: str
-    response: str  # "yes", "no", or feedback text
+    response: str   # "yes" | "no" | feedback text
 
 
 @app.post("/review/start")
 async def start_review(req: ReviewRequest):
-    session_id = str(id(req))  # use uuid4() in production
-    event: asyncio.Event = asyncio.Event()
-    _sessions[session_id] = {"event": event, "response": None, "plan": None}
+    session_id = str(uuid.uuid4())
+    confirm_event: asyncio.Event = asyncio.Event()
+    session: dict = {
+        "confirm_event": confirm_event,
+        "confirm_response": None,
+        "plan": None,
+        "progress": [],
+        "status": "starting",
+        "result": None,
+    }
+    _sessions[session_id] = session
 
-    def capture_plan(plan: ReviewPlan) -> bool | str:
-        _sessions[session_id]["plan"] = plan.model_dump()
-        event.clear()
-        # Block the pipeline until the /review/confirm endpoint fires the event
-        asyncio.get_event_loop().run_until_complete(event.wait())
-        return _sessions[session_id]["response"]
-
+    rubric_cfg = [RubricSectionConfig(**c) for c in req.rubric_section_config]
     protocol = ReviewProtocol(
         title=req.title,
         inclusion_criteria=req.inclusion,
         exclusion_criteria=req.exclusion,
+        section_output_formats=req.section_output_formats,
+        rubric_section_config=rubric_cfg,
     )
     pipeline = PRISMAReviewPipeline(
         api_key="sk-or-v1-...",
@@ -404,52 +483,196 @@ async def start_review(req: ReviewRequest):
         protocol=protocol,
     )
 
-    # Run the pipeline in the background so the HTTP response returns immediately
-    asyncio.create_task(_run_pipeline(pipeline, session_id, event))
-    # Wait briefly for the plan to be generated before returning
-    await asyncio.sleep(0)
-    return {"session_id": session_id, "status": "awaiting_plan"}
+    def confirm_callback(plan: ReviewPlan) -> bool | str:
+        """Called by the pipeline when a plan is ready — blocks until UI responds."""
+        session["plan"] = plan.model_dump()
+        session["status"] = "awaiting_confirmation"
+        confirm_event.clear()
+        # Run the event wait in the event loop — pipeline resumes when /confirm fires
+        asyncio.get_event_loop().run_until_complete(confirm_event.wait())
+        return session["confirm_response"]
+
+    def progress_callback(message: str) -> None:
+        session["progress"].append(message)
+        session["status"] = "running"
+
+    asyncio.create_task(_run_pipeline(pipeline, session, confirm_callback, progress_callback))
+    return {"session_id": session_id, "status": "starting"}
 
 
-async def _run_pipeline(pipeline, session_id: str, event: asyncio.Event):
-    session = _sessions[session_id]
+async def _run_pipeline(pipeline, session, confirm_cb, progress_cb):
     try:
-        result = await pipeline.run(confirm_callback=session["callback"])
+        result = await pipeline.run(
+            confirm_callback=confirm_cb,
+            progress_callback=progress_cb,
+        )
         session["result"] = result.model_dump(mode="json")
         session["status"] = "complete"
     except PlanRejectedError:
         session["status"] = "rejected"
+    except MaxIterationsReachedError as e:
+        session["status"] = f"max_iterations: {e}"
     except Exception as e:
         session["status"] = f"error: {e}"
 
 
 @app.get("/review/{session_id}/plan")
 async def get_plan(session_id: str):
-    """Poll this endpoint until plan is ready, then display it to the user."""
+    """Poll until plan is ready (status = 'awaiting_confirmation'), then show it in the UI."""
     session = _sessions.get(session_id)
-    if not session or not session.get("plan"):
-        return {"status": "generating"}
-    return {"status": "awaiting_confirmation", "plan": session["plan"]}
+    if not session:
+        raise HTTPException(404, "Session not found")
+    if session["status"] == "awaiting_confirmation" and session["plan"]:
+        return {"status": "awaiting_confirmation", "plan": session["plan"]}
+    return {"status": session["status"]}
 
 
 @app.post("/review/confirm")
 async def confirm_plan(req: ConfirmRequest):
-    """User's browser POSTs here with their decision."""
+    """POST the user's decision here — pipeline unblocks and continues."""
     session = _sessions.get(req.session_id)
     if not session:
-        return {"error": "session not found"}
+        raise HTTPException(404, "Session not found")
     response = req.response.strip()
     if response.lower() in ("yes", "y", ""):
-        session["response"] = True
+        session["confirm_response"] = True
     elif response.lower() in ("no", "abort"):
-        session["response"] = False
+        session["confirm_response"] = False
     else:
-        session["response"] = response  # feedback text
-    session["event"].set()  # unblock the pipeline
+        session["confirm_response"] = response  # feedback → plan re-generation
+    session["confirm_event"].set()
     return {"status": "acknowledged"}
+
+
+@app.get("/review/{session_id}/status")
+async def get_status(session_id: str):
+    session = _sessions.get(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    return {
+        "status": session["status"],
+        "progress": session["progress"],
+        "result": session["result"],
+    }
 ```
 
-> **Note**: The example above uses a simple in-memory store. For production, store session state in Redis or a database and use `asyncio.Queue` or a proper future/event mechanism to bridge the HTTP round-trip with the pipeline callback.
+#### Pattern 2 — Real-time progress with Server-Sent Events (SSE)
+
+For a live progress feed (like a terminal-style log in the UI), replace polling with SSE:
+
+```python
+import asyncio
+from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
+
+app = FastAPI()
+
+@app.get("/review/{session_id}/stream")
+async def stream_progress(session_id: str):
+    """Stream pipeline progress events as SSE to the browser."""
+    session = _sessions.get(session_id)
+    if not session:
+        return StreamingResponse(iter([]), media_type="text/event-stream")
+
+    last_idx = 0
+
+    async def event_generator():
+        nonlocal last_idx
+        while True:
+            messages = session["progress"]
+            if len(messages) > last_idx:
+                for msg in messages[last_idx:]:
+                    yield f"data: {msg}\n\n"
+                last_idx = len(messages)
+            if session["status"] in ("complete", "rejected", "error") or \
+               session["status"].startswith("error") or \
+               session["status"].startswith("max_iterations"):
+                yield f"data: [DONE] {session['status']}\n\n"
+                break
+            if session["status"] == "awaiting_confirmation":
+                yield f"event: plan_ready\ndata: awaiting_confirmation\n\n"
+            await asyncio.sleep(0.5)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+```
+
+> **Note**: The in-memory `_sessions` dict works for single-process development. In production, use Redis pub/sub (for SSE fan-out) and store session state in a persistent store. The `asyncio.get_event_loop().run_until_complete(event.wait())` call in `confirm_callback` works in a single-threaded asyncio loop; if the pipeline runs in a thread pool, use `loop.call_soon_threadsafe(event.set)` instead.
+
+#### Suggested UI for the Plan Confirmation Phase
+
+Inspired by research review tools (see design reference in the project), the plan confirmation screen should feel like a structured "contract" the user approves before the pipeline does any expensive work. Suggested layout (following the KSynth-style design):
+
+```mermaid
+flowchart TB
+    subgraph Screen["Plan Confirmation — Protocol Tab"]
+        direction TB
+        Nav["Protocol ← selected  ·  Progress  ·  Synthesis  ·  PRISMA Flow  ·  Export"]
+
+        subgraph Plan["Generated Search Plan — Iteration 1"]
+            direction TB
+            RQ["Research Question\nCRISPR gene therapy efficacy in clinical trials"]
+
+            subgraph QBox["Queries — editable before approval"]
+                direction LR
+                PQ["PubMed × 3\n1. CRISPR gene therapy clinical trials\n2. CRISPR-Cas9 human trials outcomes\n3. gene editing therapy safety RCT"]
+                BQ["bioRxiv × 2\n1. CRISPR Cas9 gene editing safety\n2. CRISPR therapy clinical outcomes preprint"]
+            end
+
+            MeSH["MeSH pills · CRISPR-Cas Systems · Gene Therapy · Clinical Trials as RCTs"]
+            KC["Key concepts · efficacy · safety · clinical trial · gene editing"]
+            RT["Rationale: Focused on clinical evidence matching inclusion criteria..."]
+            FB["Feedback optional: Add pediatric studies, extend date range..."]
+        end
+
+        subgraph Actions["Actions"]
+            direction LR
+            B1["✗ Reject"] --- B2["↻ Regenerate"] --- B3["✓ Approve →"]
+        end
+    end
+
+    Nav --> Plan --> Actions
+    RQ --> QBox --> MeSH --> KC --> RT --> FB
+```
+
+**Key UX decisions:**
+- **Plan appears inline** in the "Progress" tab (not a modal) — so the user can scroll up to review the protocol they entered before approving
+- **Queries are editable** before approval — send edited queries back as feedback text via `confirm_callback`
+- **MeSH terms and key concepts** render as pill badges (matching the "Charting Questions" style from the screenshot)
+- **Feedback textarea** is pre-populated with `""` and only sent if non-empty; empty submit = `"yes"`
+- **Reject** posts `response: "no"` and redirects to the project list
+- **Regenerate** posts the feedback text; the plan card replaces itself with the new iteration
+- **Approve** posts `response: "yes"` and transitions the Progress tab to the live SSE log view
+
+**Progress tab after approval (SSE stream view):**
+
+```mermaid
+flowchart TB
+    subgraph Screen["Progress Tab — Live SSE View"]
+        direction TB
+        Hdr["Running · 0 included so far                              Cancel"]
+
+        subgraph Log["Pipeline Log"]
+            direction TB
+            S1["✓  Plan approved — Iteration 1"]
+            S2["✓  Searching PubMed — 3 queries sent"]
+            S3["✓  47 records retrieved"]
+            S4["✓  Deduplication — 6 duplicates removed"]
+            S5["⟳  Screening title/abstract — 41 records  in progress"]
+
+            subgraph Cards["Per-article decisions  streamed live"]
+                direction LR
+                C1["PMID 33283989\n✓ Include\nCRISPR-Cas9 for SCD trial"]
+                C2["PMID 38661449\n✓ Include\nExagamglogene Autotemcel"]
+                C3["PMID 29301234\n✗ Exclude\nAnimal model only"]
+            end
+        end
+    end
+
+    Hdr --> Log
+    S1 --> S2 --> S3 --> S4 --> S5 --> Cards
+```
+
+This mirrors the "Running · 0 included" sidebar state in the KSynth screenshot and the evidence card grid in the Evidence tab.
 
 ## Enhanced Output Formats
 

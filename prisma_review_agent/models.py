@@ -11,7 +11,19 @@ from datetime import date, datetime
 from typing import Literal, Optional
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+
+# Built-in data charting section key → display title mapping (ordered A–G)
+BUILTIN_SECTIONS: list[tuple[str, str]] = [
+    ("A", "Publication Information"),
+    ("B", "Study Design"),
+    ("C", "Participants: Disordered Group"),
+    ("D", "Participants: Healthy Controls"),
+    ("E", "Data Collection"),
+    ("F", "Features and Models"),
+    ("G", "Synthesis Fields"),
+]
 
 
 # ────────────────────────── Enums ──────────────────────────────────────
@@ -335,6 +347,37 @@ class ReviewProtocol(BaseModel):
     word_count_target: int = 8000
     citation_style: str = "APA 7"  # APA 7 | Vancouver | Harvard | IEEE | Chicago
 
+    # Per-section output format control (US5)
+    section_output_formats: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Per-section output format. Keys are section display names (e.g. 'Study Design'). "
+            "Values: 'descriptive' | 'yes_no' | 'table' | 'bullet_list' | 'numeric'. "
+            "Unknown keys are ignored with a warning. Invalid values raise ValueError."
+        ),
+    )
+    rubric_section_config: list[RubricSectionConfig] = Field(
+        default_factory=list,
+        description=(
+            "Full per-section config overriding title, display order, and format type. "
+            "Takes precedence over section_output_formats for covered sections."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_section_format_values(self) -> "ReviewProtocol":
+        _valid = {"descriptive", "yes_no", "table", "bullet_list", "numeric"}
+        invalid: list[str] = []
+        for v in self.section_output_formats.values():
+            if v not in _valid:
+                invalid.append(f"section_output_formats value '{v}'")
+        for cfg in self.rubric_section_config:
+            if cfg.output_format not in _valid:
+                invalid.append(f"rubric_section_config output_format '{cfg.output_format}'")
+        if invalid:
+            raise ValueError(f"Invalid output format values: {', '.join(invalid)}")
+        return self
+
     @property
     def pico_text(self) -> str:
         return (
@@ -492,6 +535,9 @@ class DataChartingRubric(BaseModel):
     # Answers to protocol.charting_questions (question text → extracted answer)
     custom_fields: dict[str, str] = Field(default_factory=dict)
 
+    # Per-section structured outputs, populated by the data charting agent (US5)
+    section_outputs: dict[str, RubricSectionOutput] = Field(default_factory=dict)
+
 
 class PRISMANarrativeRow(BaseModel):
     """PRISMA-Style Narrative Row — condensed summary from charting data."""
@@ -647,6 +693,7 @@ class Methods(BaseModel):
     inclusion_criteria: list[str]
     exclusion_criteria: list[str]
     data_extraction_schema: list[DataExtractionSchema]
+    data_extraction: list[StudyDataExtractionReport] = Field(default_factory=list)
     quality_assessment: str
 
 
@@ -762,6 +809,40 @@ class ThematicSynthesisResult(BaseModel):
     paragraph_summary: Optional[list[ParagraphBlock]] = None
     question_answer_summary: Optional[list[QAItem]] = None
     bias_assessment: BiasAssessment
+
+
+# ────────────────── Per-Rubric Section Format Models ───────────────────────────
+
+SECTION_FORMAT = Literal["descriptive", "yes_no", "table", "bullet_list", "numeric"]
+
+
+class RubricSectionOutput(BaseModel):
+    """Per-section extraction result stored on DataChartingRubric.section_outputs."""
+    format_used: SECTION_FORMAT
+    formatted_answer: str
+    section_summary: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _require_summary_for_structured_formats(self) -> "RubricSectionOutput":
+        if self.format_used in {"table", "bullet_list", "numeric"} and not self.section_summary:
+            raise ValueError(
+                f"section_summary is required when format_used is '{self.format_used}'"
+            )
+        return self
+
+
+class RubricSectionConfig(BaseModel):
+    """Caller-supplied configuration for a single rubric section."""
+    section_key: str
+    section_name: str
+    order: int
+    output_format: SECTION_FORMAT = "descriptive"
+
+
+class StudyDataExtractionReport(BaseModel):
+    """Per-study container in PrismaReview.methods.data_extraction."""
+    source_id: str
+    sections: dict[str, RubricSectionOutput] = Field(default_factory=dict)
 
 
 class PrismaReview(BaseModel):
