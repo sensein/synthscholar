@@ -21,24 +21,31 @@
 
 The system is a **fully async Python pipeline** that automates PRISMA 2020 systematic literature reviews. It chains HTTP-based data acquisition (PubMed, bioRxiv) with LLM-powered analysis (screening, synthesis, risk of bias, etc.) using [pydantic-ai](https://docs.pydantic.dev/latest/integrations/pydantic_ai/) agents that return strongly-typed, validated outputs.
 
+A **PostgreSQL cache layer** short-circuits the pipeline for repeated or highly-similar review requests (≥ 95% criteria similarity). A **source grounding validator** ensures every extracted evidence span is traceable back to actual article text.
+
 ```mermaid
 graph TD
     A[CLI: main.py] --> P
     B[Library: pipeline.py] --> P
-    P[PRISMAReviewPipeline\n15-step async orchestrator]
+    P[PRISMAReviewPipeline\nStep 0: cache check\nSteps 1-14: full pipeline\nStep 15: cache store]
     P --> C[HTTP Clients\nclients.py]
-    P --> D[pydantic-ai Agents\nagents.py · 9 typed agents]
+    P --> D[pydantic-ai Agents\nagents.py · 12 typed agents]
+    P --> PG[PostgreSQL Layer\ncache/ subpackage]
     C --> M[Pydantic v2 Models\nmodels.py]
     D --> M
-    M --> E[Export\nexport.py]
+    M --> V[Source Grounding\nvalidation.py]
+    V --> E[Export\nexport.py]
     E --> F1[Markdown]
     E --> F2[JSON]
     E --> F3[BibTeX]
 
     C --- C1[PubMedClient]
     C --- C2[BioRxivClient]
-    C --- C3[Cache · SQLite]
+    C --- C3[SQLite Cache · 72h TTL]
     D --- D1[OpenRouter API]
+    PG --- PG1[CacheStore · review_cache]
+    PG --- PG2[ArticleStore · article_store]
+    PG --- PG3[CacheAgent · pydantic-ai skill]
 ```
 
 ---
@@ -49,20 +56,39 @@ graph TD
 prisma-review-agent/
 ├── main.py               # CLI entry point (argparse)
 ├── pipeline.py           # Core async orchestrator (PRISMAReviewPipeline)
-├── agents.py             # 9 pydantic-ai agents + runner functions
+├── agents.py             # 12 pydantic-ai agents + runner functions
 ├── models.py             # All Pydantic v2 data models
 ├── clients.py            # HTTP clients: PubMedClient, BioRxivClient, Cache
-├── evidence.py           # Evidence extraction entry point (wraps agent)
-├── export.py             # to_markdown(), to_json(), to_bibtex()
+├── evidence.py           # Evidence extraction + source grounding validation
+├── validation.py         # Source grounding validator (rapidfuzz)
+├── export.py             # to_markdown(), to_json(), to_bibtex(), to_enhanced_markdown()
 ├── __init__.py           # Root package (dev use)
-├── prisma_review_agent/  # Installable package (mirrors root)
+├── prisma_review_agent/  # Installable package
 │   ├── __init__.py       # Public API re-exports
-│   └── *.py              # (same modules as above)
+│   ├── ontology/         # SLR Ontology integration — LinkML schema + RDF export
+│   │   ├── __init__.py       # Re-exports to_turtle, to_jsonld
+│   │   ├── slr_ontology.yaml # LinkML schema (v0.2.0, 1844 lines)
+│   │   ├── slr_ontology.schema.json  # Generated JSON Schema
+│   │   ├── slr_ontology.owl.ttl      # Generated OWL/Turtle
+│   │   ├── namespaces.py     # rdflib.Namespace constants + URI-minting helpers
+│   │   ├── rdf_export.py     # _build_graph(), to_turtle(), to_jsonld()
+│   │   └── rdf_store.py      # SLRStore — pyoxigraph-backed SPARQL store
+│   ├── cache/            # PostgreSQL cache sub-package
+│   │   ├── __init__.py   # Package exports
+│   │   ├── models.py     # CacheEntry, CacheLookupResult, SimilarityConfig, StoredArticle
+│   │   ├── similarity.py # compute_fingerprint(), compute_similarity()
+│   │   ├── store.py      # CacheStore — async PostgreSQL CRUD
+│   │   ├── article_store.py  # ArticleStore — article persistence + full-text search
+│   │   ├── skill.py      # pydantic-ai CacheAgent with @agent.tool tools
+│   │   ├── admin.py      # list_entries(), inspect_entry(), clear_all()
+│   │   └── migrations/
+│   │       └── 001_initial.sql  # review_cache + article_store DDL
+│   └── *.py              # (same modules as root)
 ├── pyproject.toml        # Build config, deps, entry point
 └── developer.md          # This file
 ```
 
-The `prisma_review_agent/` package is the installable form; the root-level `.py` files are for direct development use. Both contain the same code.
+The `prisma_review_agent/` package is the installable form; root-level `.py` files are for direct development. Both contain the same code.
 
 ---
 
@@ -70,13 +96,23 @@ The `prisma_review_agent/` package is the installable form; the root-level `.py`
 
 | Module | Responsibility | Key Types |
 |---|---|---|
-| `models.py` | All Pydantic v2 data models — no logic | `Article`, `ReviewProtocol`, `PRISMAFlowCounts`, `PRISMAReviewResult`, etc. |
+| `models.py` | All Pydantic v2 data models — no logic | `Article`, `ReviewProtocol`, `PRISMAFlowCounts`, `PRISMAReviewResult`, `EvidenceSpan` |
 | `clients.py` | HTTP data acquisition + SQLite cache | `PubMedClient`, `BioRxivClient`, `Cache` |
-| `agents.py` | LLM agent definitions + async runners | `AgentDeps`, 9 `Agent` instances, `run_*` functions |
-| `pipeline.py` | Async orchestrator — calls clients & agents in order | `PRISMAReviewPipeline.run()` |
-| `evidence.py` | Thin wrapper — delegates to `run_evidence_extraction` | `extract_evidence()` |
-| `export.py` | Output formatters | `to_markdown()`, `to_json()`, `to_bibtex()` |
+| `agents.py` | LLM agent definitions + async runners | `AgentDeps`, 12 `Agent` instances, `run_*` functions |
+| `pipeline.py` | Async orchestrator — calls clients, agents, cache | `PRISMAReviewPipeline.run()` |
+| `evidence.py` | Evidence extraction + source grounding gate | `extract_evidence()` |
+| `validation.py` | Source grounding validator — rapidfuzz matching | `filter_grounded()`, `validate_grounding()`, `ValidationReport` |
+| `export.py` | Output formatters with cache provenance | `to_markdown()`, `to_json()`, `to_bibtex()`, `to_turtle()`, `to_jsonld()`, `to_oxigraph_store()` |
 | `main.py` | CLI argument parsing + `ReviewProtocol` construction | `main()`, `run_review()` |
+| `ontology/namespaces.py` | RDF namespace constants + URI-minting helpers | `SLR`, `PROV`, `DCTERMS`, `FABIO`, `BIBO`, `OA`; `article_uri()`, `review_uri()`, `bind_namespaces()` |
+| `ontology/rdf_export.py` | rdflib graph construction + Turtle / JSON-LD serialization | `_build_graph()`, `to_turtle()`, `to_jsonld()`, `_add_charting()`, `_add_rob()`, `_add_evidence_spans()` |
+| `ontology/rdf_store.py` | pyoxigraph-backed SPARQL store | `SLRStore.load()`, `.query()`, `.save()`, `.load_from_file()` |
+| `cache/models.py` | Cache-specific Pydantic models + exceptions | `CacheEntry`, `CacheLookupResult`, `SimilarityConfig`, `StoredArticle` |
+| `cache/similarity.py` | SHA-256 fingerprinting + weighted fuzzy scoring | `compute_fingerprint()`, `compute_similarity()` |
+| `cache/store.py` | PostgreSQL async CRUD for review results | `CacheStore` |
+| `cache/article_store.py` | PostgreSQL article persistence + tsvector search | `ArticleStore` |
+| `cache/skill.py` | pydantic-ai CacheAgent with typed tool decorators | `cache_agent`, `cache_lookup()`, `cache_store()` |
+| `cache/admin.py` | Developer utilities — inspect/list/clear cache | `list_entries()`, `inspect_entry()`, `clear_all()` |
 
 ---
 
@@ -135,6 +171,8 @@ classDiagram
         +str paper_title
         +str doi
         +float relevance_score
+        +float grounding_score
+        +bool grounded
     }
 
     class PRISMAFlowCounts {
@@ -162,6 +200,9 @@ classDiagram
         +str bias_assessment
         +str limitations
         +str timestamp
+        +bool cache_hit
+        +float cache_similarity_score
+        +dict cache_matched_criteria
     }
 
     class RiskOfBiasResult {
@@ -216,11 +257,13 @@ classDiagram
 
 ## Pipeline Flow — Step by Step
 
-`PRISMAReviewPipeline.run()` in [pipeline.py](pipeline.py) executes 15 ordered steps. Steps 1–13 are sequential; step 14 runs three tasks in parallel via `asyncio.gather()`.
+`PRISMAReviewPipeline.run()` in [pipeline.py](pipeline.py) executes up to 16 steps. Step 0 is the PostgreSQL cache gate (short-circuits the pipeline on a hit). Steps 1–13 are sequential; step 14 runs three tasks in parallel via `asyncio.gather()`; step 15 persists the result to cache.
 
 ```mermaid
 flowchart TD
-    INPUT([ReviewProtocol\nPICO · criteria · databases · max_hops])
+    INPUT([ReviewProtocol\nPICO · criteria · databases · max_hops\npg_dsn · force_refresh · cache_threshold])
+
+    S0["Step 0 — PostgreSQL Cache Check\nif pg_dsn set and not force_refresh:\n  fingerprint = SHA-256(canonical criteria)\n  exact lookup → CacheEntry?\n  fuzzy scan → similarity >= threshold?\n  → CACHE HIT: return cached PRISMAReviewResult\n  → CACHE MISS: continue to Step 1"]
 
     S1["Step 1 — Search Strategy · LLM\nrun_search_strategy(deps)\n→ SearchStrategy\npubmed_queries[] · biorxiv_queries[]"]
 
@@ -233,11 +276,11 @@ flowchart TD
 
     S7["Step 7 — Title/Abstract Screening · LLM\nrun_screening(batch, deps, 'title_abstract')\nbatch size = 15 · INCLUSIVE bias\nfailure → auto-include batch\n→ ScreeningBatchResult"]
 
-    S8["Step 8 — Full-text Retrieval\nfetch_full_text(pmc_ids)\narticle.full_text populated\nup to 12 000 chars"]
+    S8["Step 8 — Full-text Retrieval\n8a: pre-populate full_text from ArticleStore (avoids API calls)\nfetch_full_text(pmc_ids) for remaining\narticle.full_text populated up to 12 000 chars\n8b: upsert all ta_included articles to ArticleStore"]
 
     S9["Step 9 — Full-text Eligibility · LLM\nrun_screening(batch, deps, 'full_text')\nbatch size = 10 · STRICT\nno full_text → auto-include\nexcluded_reasons tallied"]
 
-    S10["Step 10 — Evidence Extraction · LLM\nextract_evidence(ft_included, deps)\nbatch size = 5 · 2–5 spans/article\ndedup by word overlap ≥ 0.7\nsorted by relevance_score desc · max 30"]
+    S10["Step 10 — Evidence Extraction + Source Grounding\nextract_evidence(ft_included, deps)\n  LLM → raw spans (batch 5)\n  filter_grounded(spans, articles, threshold=65)\n  → only grounded spans kept\n  span.grounding_score + span.grounded stamped\nmax 30 verified spans"]
 
     S11["Step 11 — Data Extraction · LLM  optional\nrun_data_extraction(article, data_items, deps)\narticle.extracted_data = StudyDataExtraction\nonly runs if data_items passed to run()"]
 
@@ -252,9 +295,13 @@ flowchart TD
 
     S15["Step 15 — Assemble PRISMAReviewResult\nprotocol · flow · included_articles\nscreening_log · evidence_spans\nsynthesis · bias · limitations · grade"]
 
-    EXPORT["Export caller-side\nto_markdown() · to_json() · to_bibtex()"]
+    S16["Step 16 — PostgreSQL Cache Store\nif pg_dsn set:\n  cache_store(criteria, model, result)\n  → upsert review_cache with TTL\n  → close CacheStore + ArticleStore"]
 
-    INPUT --> S1
+    EXPORT["Export caller-side\nto_markdown() · to_json() · to_bibtex()\ncache_hit banner shown if result.cache_hit"]
+
+    INPUT --> S0
+    S0 -->|CACHE HIT| EXPORT
+    S0 -->|CACHE MISS| S1
     S1 --> S2
     S1 --> S3
     S1 --> S4
@@ -276,7 +323,8 @@ flowchart TD
     S14A --> S15
     S14B --> S15
     S14C --> S15
-    S15 --> EXPORT
+    S15 --> S16
+    S16 --> EXPORT
 ```
 
 ### Batch Sizes
@@ -332,11 +380,14 @@ flowchart LR
 | 2 | `screening_agent` | `run_screening(articles, deps, stage)` | `ScreeningBatchResult` |
 | 3 | `rob_agent` | `run_risk_of_bias(article, deps)` | `RiskOfBiasResult` |
 | 4 | `data_extraction_agent` | `run_data_extraction(article, items, deps)` | `StudyDataExtraction` |
-| 5 | `synthesis_agent` | `run_synthesis(articles, evidence, flow, deps)` | `str` |
-| 6 | `grade_agent` | `run_grade(outcome, articles, deps)` | `GRADEAssessment` |
-| 7 | `bias_summary_agent` | `run_bias_summary(articles, deps)` | `str` |
-| 8 | `limitations_agent` | `run_limitations(flow, articles, deps)` | `str` |
-| 9 | `evidence_extraction_agent` | `run_evidence_extraction(articles, deps)` | `BatchEvidenceExtraction` |
+| 5 | `data_charting_agent` | `run_data_charting(article, deps)` | `DataChartingRubric` |
+| 6 | `critical_appraisal_agent` | `run_critical_appraisal(article, rubric, deps)` | `CriticalAppraisalRubric` |
+| 7 | `narrative_row_agent` | `run_narrative_row(rubric, appraisal, deps)` | `PRISMANarrativeRow` |
+| 8 | `synthesis_agent` | `run_synthesis(articles, evidence, flow, deps)` | `str` |
+| 9 | `grade_agent` | `run_grade(outcome, articles, deps)` | `GRADEAssessment` |
+| 10 | `bias_summary_agent` | `run_bias_summary(articles, deps)` | `str` |
+| 11 | `limitations_agent` | `run_limitations(flow, articles, deps)` | `str` |
+| 12 | `evidence_extraction_agent` | `run_evidence_extraction(articles, deps)` | `BatchEvidenceExtraction` |
 
 ---
 
@@ -401,7 +452,7 @@ flowchart TD
 
 ## Data Storage & State Management
 
-The system has three distinct storage layers. There is no database server, no ORM, and no persistent application state beyond the cache file.
+The system has four distinct storage layers. Layers 2 and 4 are optional; the pipeline degrades gracefully if either is unavailable.
 
 ```mermaid
 graph TD
@@ -410,11 +461,11 @@ graph TD
         IM2["deduped: list[Article]"]
         IM3["ta_included / ft_included: list[Article]"]
         IM4["all_screening: list[ScreeningLogEntry]"]
-        IM5["evidence: list[EvidenceSpan]"]
+        IM5["evidence: list[EvidenceSpan]  source-grounded only"]
         IM6["PRISMAReviewResult"]
     end
 
-    subgraph L2["Layer 2 · SQLite Cache  prisma_agent_cache.db  persists 72h"]
+    subgraph L2["Layer 2 · SQLite Cache  prisma_agent_cache.db  TTL 72h"]
         DB1["ns=search   → pmid lists"]
         DB2["ns=article  → Article dicts"]
         DB3["ns=related  → related pmid lists"]
@@ -423,15 +474,25 @@ graph TD
     end
 
     subgraph L3["Layer 3 · Exported Files  prisma_results/"]
-        EX1["{slug}.md\nPRISMA 2020 report"]
-        EX2["{slug}.json\nfull result dump"]
-        EX3["{slug}.bib\nBibTeX references"]
+        EX1["{slug}.md · {slug}_enhanced.md\nPRISMA 2020 report"]
+        EX2["{slug}.json  full result dump"]
+        EX3["{slug}.bib  BibTeX references"]
+        EX4["{slug}_charting.csv · _narrative.csv · _appraisal.csv"]
+    end
+
+    subgraph L4["Layer 4 · PostgreSQL  optional  PRISMA_PG_DSN"]
+        PG1["review_cache table\ncriteria_fingerprint · model_name\ncriteria_json · result_json\ncreated_at · expires_at"]
+        PG2["article_store table\npmid UNIQUE · title · abstract\nfull_text · tsvector search_vector\nGIN index for full-text search"]
     end
 
     EXT["External APIs\nNCBI E-utilities · bioRxiv REST"]
 
     EXT -->|HTTP response| L2
     L2 -->|deserialized Article objects| L1
+    L4 -->|pre-populate full_text| L1
+    L1 -->|upsert articles| L4
+    L1 -->|store completed result| L4
+    L4 -->|cache hit: short-circuit| L3
     L1 -->|PRISMAReviewResult returned| L3
 ```
 
@@ -508,8 +569,9 @@ flowchart TD
     B2 --> B3["flatten to EvidenceSpan[]\n  text=quote · paper_pmid · paper_title\n  section · relevance_score · claim · doi"]
     B3 --> B4["sort by relevance_score descending"]
     B4 --> B5["_deduplicate_spans(spans, threshold=0.7)\n  for each span:\n    words = set(text.lower().split())\n    for existing in kept:\n      overlap = |words ∩ ex_words| / min(|words|,|ex_words|)\n      if overlap > 0.7 → is_dup = True\n    if not is_dup: kept.append(span)"]
-    B5 --> B6["extract_evidence() caps at max_spans=30"]
-    B6 --> OUT["evidence: list[EvidenceSpan]\nstored in PRISMAReviewResult.evidence_spans[]"]
+    B5 --> B6["filter_grounded(spans, articles, threshold=65)\n  for each span:\n    Gate 1: span.paper_pmid in article pool?\n    Gate 2: article has abstract or full_text?\n    Gate 3: len(tokens) >= 4?\n    Gate 4: max(partial_ratio, token_set_ratio) >= 65?\n  → rejected spans dropped, logged in ValidationReport\n  → grounded spans: span.grounded=True, span.grounding_score set"]
+    B6 --> B7["extract_evidence() caps at max_spans=30"]
+    B7 --> OUT["evidence: list[EvidenceSpan]  all grounded\nstored in PRISMAReviewResult.evidence_spans[]"]
 ```
 
 ---
@@ -790,6 +852,26 @@ Evidence spans are deduplicated using Jaccard-like word overlap at threshold 0.7
 
 System prompts contain methodological instructions but no field-specific content. All domain content (PICO, criteria, outcomes) comes from `ReviewProtocol` fields injected at call time via `@agent.system_prompt` context functions, making the pipeline domain-agnostic.
 
+### 11. Source grounding — verify before trusting LLM quotes
+
+The evidence extraction agent is instructed not to fabricate, but instruction alone is not enforcement. `validation.py` runs every extracted span through a four-gate check: PMID exists in article pool, article has retrievable text, span is long enough to verify (≥ 4 tokens), and `max(partial_ratio, token_set_ratio) ≥ 65`. Spans failing any gate are silently dropped and counted in a `ValidationReport`. This provides a computational backstop against hallucination in citations.
+
+### 12. PostgreSQL cache with SHA-256 fingerprinting + weighted fuzzy similarity
+
+Identical criteria are fingerprinted with SHA-256 (normalised, lowercase, sorted lists) and looked up in O(1) via a unique index. Near-identical criteria (≥ 95% default) are caught by a full scan with weighted `token_set_ratio` across 11 criteria fields (title 25%, inclusion/exclusion 40% combined, etc.). The weighted scan runs in Python — no PostgreSQL extension needed. Advisory locks (`pg_try_advisory_xact_lock`) prevent duplicate pipeline runs under concurrency. Cache is entirely optional: if `pg_dsn` is empty or the connection fails, the pipeline runs normally.
+
+### 13. LinkML schema as the canonical RDF vocabulary
+
+`prisma_review_agent/ontology/slr_ontology.yaml` is a [LinkML](https://linkml.io/) schema (v0.2.0) that defines the complete class hierarchy for systematic reviews. It generates `slr_ontology.schema.json` (JSON Schema) and `slr_ontology.owl.ttl` (OWL/Turtle) as derived artifacts via `gen-json-schema` and `gen-owl`. The Python export code (`rdf_export.py`) does not import linkml at runtime — it uses `rdflib` directly with the URI constants specified in the schema, keeping the runtime dependency minimal. Regenerate derived artifacts with `linkml-lint slr_ontology.yaml && gen-json-schema slr_ontology.yaml > slr_ontology.schema.json && gen-owl slr_ontology.yaml > slr_ontology.owl.ttl`.
+
+### 14. Pyoxigraph store via Turtle round-trip
+
+`rdf_store.py` populates a `pyoxigraph.Store` by serializing the rdflib graph to Turtle bytes and loading them into pyoxigraph, rather than translating the graph object directly. This is intentional: rdflib and pyoxigraph have incompatible internal representations, and Turtle is a lossless, widely-supported interchange format. The round-trip adds ~10 ms for typical reviews (< 100 sources) — negligible compared to pipeline runtime. For large reviews, call `store.save(path)` once and `store.load_from_file(path)` on subsequent sessions to avoid re-serialization.
+
+### 15. ArticleStore as a growing source library
+
+Every article fetched during any review run is upserted into `article_store`. On subsequent runs, `get_by_pmids()` pre-populates `full_text` before the PubMed API is called, reducing NCBI load and latency. The `tsvector` GIN index enables fast keyword search over the accumulated article library for future source retrieval without hitting external APIs.
+
 ---
 
 ## Adding a New Agent
@@ -840,6 +922,7 @@ System prompts contain methodological instructions but no field-specific content
 |---|---|---|
 | `OPENROUTER_API_KEY` | Yes | Passed via `--api-key` CLI arg or directly to `PRISMAReviewPipeline` |
 | `NCBI_API_KEY` | No | Enables 10 req/s vs 3 req/s at NCBI |
+| `PRISMA_PG_DSN` | No | PostgreSQL DSN for review result cache + article store. Overridden by `--pg-dsn`. |
 
 ### Pipeline Constructor Parameters
 
@@ -855,6 +938,37 @@ PRISMAReviewPipeline(
     biorxiv_days: int,          # Default: 180 — bioRxiv lookback window in days
 )
 ```
+
+### ReviewProtocol — PostgreSQL Cache Fields
+
+```python
+ReviewProtocol(
+    ...
+    pg_dsn: str,                # PostgreSQL DSN — activates cache when non-empty
+    force_refresh: bool,        # Default: False — bypass cache, overwrite on completion
+    cache_threshold: float,     # Default: 0.95 — min similarity score for a cache hit
+    cache_ttl_days: int,        # Default: 30 — days until entry expires; 0 = never
+)
+```
+
+### Cache CLI Flags
+
+```
+--pg-dsn DSN            PostgreSQL DSN (also reads PRISMA_PG_DSN env var)
+--force-refresh         Bypass cache lookup; overwrite entry on completion
+--cache-threshold FLOAT Similarity threshold 0.0–1.0 (default 0.95)
+--cache-ttl-days DAYS   Cache TTL in days; 0 = never expire (default 30)
+```
+
+### Running the Migration
+
+Before first use, run:
+
+```bash
+psql "$PRISMA_PG_DSN" -f prisma_review_agent/cache/migrations/001_initial.sql
+```
+
+This creates `review_cache` and `article_store` tables with all required indexes.
 
 ### RoB Tool Selection
 

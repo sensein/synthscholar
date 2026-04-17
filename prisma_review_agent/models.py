@@ -142,6 +142,8 @@ class EvidenceSpan(BaseModel):
     relevance_score: float = 0.0
     claim: str = ""
     doi: str = ""
+    grounding_score: float = 0.0   # 0.0–1.0; set by validation.filter_grounded
+    grounded: bool = False          # True only after passing source grounding check
 
 
 class ExtractedEvidenceItem(BaseModel):
@@ -263,13 +265,19 @@ class ReviewProtocol(BaseModel):
     databases: list[str] = Field(default_factory=lambda: ["PubMed", "bioRxiv"])
     date_range_start: str = ""
     date_range_end: str = ""
-    max_hops: int = 1
+    max_hops: int = 10
     registration_number: str = ""
     protocol_url: str = ""
     funding_sources: str = ""
     competing_interests: str = ""
     amendments: str = ""
     rob_tool: RoBTool = RoBTool.ROB_2
+    review_id: str = ""  # URI for slr:SystematicReview; minted from UUID if empty
+    # Cache / PostgreSQL settings
+    pg_dsn: str = ""
+    force_refresh: bool = False
+    cache_threshold: float = Field(default=0.95, ge=0.0, le=1.0)
+    cache_ttl_days: int = Field(default=30, ge=0)
 
     @property
     def pico_text(self) -> str:
@@ -327,6 +335,10 @@ class PRISMAReviewResult(BaseModel):
     limitations: str = ""
     grade_assessments: dict[str, GRADEAssessment] = Field(default_factory=dict)
     timestamp: str = ""
+    # Cache provenance
+    cache_hit: bool = False
+    cache_similarity_score: float = 0.0
+    cache_matched_criteria: dict = Field(default_factory=dict)
 
 
 # ── Forward reference resolution ──
