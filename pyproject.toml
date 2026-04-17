@@ -39,6 +39,11 @@ dependencies = [
     "pydantic>=2.0",
     "pydantic-ai>=1.0",
     "httpx>=0.25",
+    "rapidfuzz>=3.0",
+    "psycopg[async]>=3.1",
+    "psycopg-pool>=3.1",
+    "rdflib>=6.0",
+    "pyoxigraph>=0.3",
 ]
 
 [project.optional-dependencies]
