@@ -63,6 +63,12 @@ export OPENROUTER_API_KEY="sk-or-v1-..."
 export NCBI_API_KEY="your-ncbi-key"
 ```
 
+Alternatively, pass the key inline with `--api-key` (takes precedence over the env var):
+
+```bash
+prisma-review --title "CRISPR gene therapy" --api-key "sk-or-v1-..."
+```
+
 ### CLI — installed package
 
 After `pip install prisma-review-agent` the `prisma-review` command is available globally:
@@ -100,6 +106,52 @@ prisma-review --interactive
 ```bash
 python main.py --title "..." --interactive
 ```
+
+### Plan Confirmation (CLI)
+
+By default, the pipeline pauses after generating the search strategy, shows the plan, and waits for your input before fetching any articles.
+
+```bash
+# Default — prompts for confirmation when running in a terminal
+prisma-review \
+  --title "CRISPR gene therapy efficacy" \
+  --inclusion "Clinical trials, human subjects" \
+  --exclusion "Animal-only studies"
+
+# Auto mode — no prompt (for scripts, CI, batch jobs)
+prisma-review \
+  --title "CRISPR gene therapy efficacy" \
+  --auto \
+  --export ttl jsonld
+
+# Limit re-generation attempts to 2
+prisma-review \
+  --title "CRISPR gene therapy efficacy" \
+  --max-plan-iterations 2
+```
+
+**Confirmation prompt:**
+
+```
+══════════════════════════════════════════════════
+  Generated Search Plan (Iteration 1)
+══════════════════════════════════════════════════
+Research question: CRISPR gene therapy efficacy in clinical trials
+
+PubMed queries (3):
+  1. CRISPR gene therapy clinical trials efficacy
+  2. CRISPR-Cas9 human trials outcomes
+  3. gene editing therapy safety efficacy RCT
+
+MeSH terms: CRISPR-Cas Systems, Gene Therapy, Clinical Trials as Topic
+Rationale: Focused on clinical evidence to match inclusion criteria...
+══════════════════════════════════════════════════
+Confirm plan? [yes / no / <feedback>]:
+```
+
+- Press **Enter** or type **yes** → proceed to article retrieval
+- Type **no** → halt with rejection message and exit 1
+- Type feedback (e.g., `"add pediatric studies"`) → plan is re-generated with your input
 
 ### Python API
 
@@ -170,6 +222,234 @@ async def run():
 
 asyncio.run(run())
 ```
+
+### Python API — Plan Confirmation
+
+Use the `confirm_callback` parameter to intercept the generated plan from any Python environment (scripts, Jupyter, web APIs) without any terminal dependency.
+
+```python
+import asyncio
+from prisma_review_agent.models import ReviewPlan, PlanRejectedError, MaxIterationsReachedError
+from prisma_review_agent.pipeline import PRISMAReviewPipeline
+from prisma_review_agent.models import ReviewProtocol
+
+protocol = ReviewProtocol(
+    title="CRISPR gene therapy efficacy",
+    inclusion_criteria="Clinical trials, human subjects",
+    exclusion_criteria="Animal-only studies",
+)
+
+def confirm(plan: ReviewPlan) -> bool | str:
+    """Inspect the plan and return True, False, or feedback text."""
+    print(f"Iteration {plan.iteration}: {len(plan.pubmed_queries)} PubMed queries")
+    for q in plan.pubmed_queries:
+        print(f"  - {q}")
+    answer = input("Approve? [yes/no/feedback]: ").strip()
+    if answer.lower() in ("yes", "y", ""):
+        return True
+    if answer.lower() in ("no", "abort"):
+        return False
+    return answer  # feedback string → triggers re-generation
+
+async def main():
+    pipeline = PRISMAReviewPipeline(
+        api_key="sk-or-v1-...",
+        model_name="anthropic/claude-sonnet-4",
+        protocol=protocol,
+    )
+    try:
+        result = await pipeline.run(
+            confirm_callback=confirm,
+            max_plan_iterations=3,
+        )
+        print(f"Review complete: {result.flow.included_synthesis} studies included")
+    except PlanRejectedError as e:
+        print(f"Stopped: {e}")
+    except MaxIterationsReachedError as e:
+        print(f"Too many iterations: {e}")
+
+asyncio.run(main())
+```
+
+**Auto mode** — skip confirmation entirely:
+
+```python
+# No confirmation prompts; runs end-to-end
+result = await pipeline.run(auto_confirm=True)
+```
+
+### Structured Report Output (`result.prisma_review`)
+
+Every successful run with at least one included study produces a `PrismaReview` object on `result.prisma_review`. It is a complete, publication-ready PRISMA 2020 document with all major sections as typed Pydantic models.
+
+```python
+import asyncio
+from prisma_review_agent.models import ReviewProtocol
+from prisma_review_agent.pipeline import PRISMAReviewPipeline
+
+async def run():
+    protocol = ReviewProtocol(
+        title="Machine learning for ADHD diagnosis",
+        objective="Evaluate ML classifiers for ADHD detection from EEG signals",
+        inclusion_criteria="EEG studies, human subjects, ML classifier reported",
+        exclusion_criteria="Animal studies, reviews without primary data",
+    )
+    pipeline = PRISMAReviewPipeline(
+        api_key="sk-or-v1-...",
+        protocol=protocol,
+        enable_cache=False,
+    )
+    result = await pipeline.run(auto_confirm=True)
+
+    review = result.prisma_review
+    if review:
+        # Access structured sections
+        print(review.abstract.background)
+        print(review.abstract.conclusion)
+        print(f"{len(review.results.themes)} themes identified")
+        for theme in review.results.themes:
+            print(f"  - {theme.theme_name}: {', '.join(theme.key_findings[:2])}")
+        print(review.conclusion.recommendations)
+
+asyncio.run(run())
+```
+
+**Per-study structured data:**
+
+```python
+review = result.prisma_review
+if review and review.results.extracted_studies:
+    for study in review.results.extracted_studies:
+        print(f"[{study.metadata.source_id}] {study.metadata.title[:60]}")
+        print(f"  Design: {study.design.study_design}")
+        print(f"  Country: {study.design.country_or_region}")
+        print(f"  Year: {study.metadata.year}")
+```
+
+**Configurable rendering format:**
+
+Pass `output_synthesis_style` to control how results are rendered. Default is `"paragraph"`; also supports `"question_answer"`, `"bullet_list"`, `"table"`.
+
+```python
+result = await pipeline.run(
+    auto_confirm=True,
+    output_synthesis_style="question_answer",
+)
+review = result.prisma_review
+for qa in (review.results.question_answer_summary or []):
+    print(f"Q: {qa.question}")
+    print(f"A: {qa.answer}\n")
+```
+
+**Backward compatibility:** All existing flat fields (`result.synthesis_text`, `result.structured_abstract`, `result.introduction_text`, `result.conclusions_text`) are automatically backfilled from the structured report and continue to work unchanged.
+
+**`confirm_callback` return value semantics:**
+
+| Return value | Meaning | Pipeline action |
+|---|---|---|
+| `True` | Plan approved | Continue to article retrieval |
+| `False` | Plan rejected | Raise `PlanRejectedError` |
+| `""` (empty string) | Treated as approval | Continue to article retrieval |
+| `"<feedback text>"` | Re-generate with feedback | Call agent again with feedback; increment iteration |
+
+### FastAPI Integration
+
+Bridge the synchronous `confirm_callback` with an async HTTP round-trip using `asyncio.Event`:
+
+```python
+import asyncio
+from fastapi import FastAPI
+from pydantic import BaseModel as PydanticBase
+from prisma_review_agent.models import ReviewPlan, ReviewProtocol, PlanRejectedError
+from prisma_review_agent.pipeline import PRISMAReviewPipeline
+
+app = FastAPI()
+
+# In-memory session store (use Redis/DB in production)
+_sessions: dict[str, dict] = {}
+
+
+class ReviewRequest(PydanticBase):
+    title: str
+    inclusion: str = ""
+    exclusion: str = ""
+
+
+class ConfirmRequest(PydanticBase):
+    session_id: str
+    response: str  # "yes", "no", or feedback text
+
+
+@app.post("/review/start")
+async def start_review(req: ReviewRequest):
+    session_id = str(id(req))  # use uuid4() in production
+    event: asyncio.Event = asyncio.Event()
+    _sessions[session_id] = {"event": event, "response": None, "plan": None}
+
+    def capture_plan(plan: ReviewPlan) -> bool | str:
+        _sessions[session_id]["plan"] = plan.model_dump()
+        event.clear()
+        # Block the pipeline until the /review/confirm endpoint fires the event
+        asyncio.get_event_loop().run_until_complete(event.wait())
+        return _sessions[session_id]["response"]
+
+    protocol = ReviewProtocol(
+        title=req.title,
+        inclusion_criteria=req.inclusion,
+        exclusion_criteria=req.exclusion,
+    )
+    pipeline = PRISMAReviewPipeline(
+        api_key="sk-or-v1-...",
+        model_name="anthropic/claude-sonnet-4",
+        protocol=protocol,
+    )
+
+    # Run the pipeline in the background so the HTTP response returns immediately
+    asyncio.create_task(_run_pipeline(pipeline, session_id, event))
+    # Wait briefly for the plan to be generated before returning
+    await asyncio.sleep(0)
+    return {"session_id": session_id, "status": "awaiting_plan"}
+
+
+async def _run_pipeline(pipeline, session_id: str, event: asyncio.Event):
+    session = _sessions[session_id]
+    try:
+        result = await pipeline.run(confirm_callback=session["callback"])
+        session["result"] = result.model_dump(mode="json")
+        session["status"] = "complete"
+    except PlanRejectedError:
+        session["status"] = "rejected"
+    except Exception as e:
+        session["status"] = f"error: {e}"
+
+
+@app.get("/review/{session_id}/plan")
+async def get_plan(session_id: str):
+    """Poll this endpoint until plan is ready, then display it to the user."""
+    session = _sessions.get(session_id)
+    if not session or not session.get("plan"):
+        return {"status": "generating"}
+    return {"status": "awaiting_confirmation", "plan": session["plan"]}
+
+
+@app.post("/review/confirm")
+async def confirm_plan(req: ConfirmRequest):
+    """User's browser POSTs here with their decision."""
+    session = _sessions.get(req.session_id)
+    if not session:
+        return {"error": "session not found"}
+    response = req.response.strip()
+    if response.lower() in ("yes", "y", ""):
+        session["response"] = True
+    elif response.lower() in ("no", "abort"):
+        session["response"] = False
+    else:
+        session["response"] = response  # feedback text
+    session["event"].set()  # unblock the pipeline
+    return {"status": "acknowledged"}
+```
+
+> **Note**: The example above uses a simple in-memory store. For production, store session state in Redis or a database and use `asyncio.Queue` or a proper future/event mechanism to bridge the HTTP round-trip with the pipeline callback.
 
 ## Enhanced Output Formats
 
@@ -519,6 +799,8 @@ Search:
 Pipeline:
   --no-cache           Disable SQLite cache
   --extract-data       Enable per-study data extraction
+  --auto               Skip plan confirmation; run end-to-end without prompts
+  --max-plan-iterations  Max plan re-generation attempts before aborting (default: 3)
 
 Cache (PostgreSQL):
   --pg-dsn             PostgreSQL DSN (or set PRISMA_PG_DSN env var)
