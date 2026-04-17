@@ -1,0 +1,1844 @@
+id: https://w3id.org/slr-ontology/
+name: slr-ontology
+version: 0.2.0
+title: Systematic Literature Review Ontology
+description: >-
+  A LinkML schema for representing systematic literature reviews with full provenance.
+  Covers PRISMA 2020 reporting, data charting (Sections A-G), four-domain critical
+  appraisal, risk of bias assessment, and AI/LLM interaction provenance (prompts,
+  model invocations, tool calls, user inputs, review events). Reuses PROV-O, Dublin Core,
+  FaBiO, BIBO, schema.org, and SKOS.
+
+prefixes:
+  linkml: https://w3id.org/linkml/
+  slr: https://w3id.org/slr-ontology/
+  prov: http://www.w3.org/ns/prov#
+  dcterms: http://purl.org/dc/terms/
+  dctype: http://purl.org/dc/dcmitype/
+  fabio: http://purl.org/spar/fabio/
+  bibo: http://purl.org/ontology/bibo/
+  skos: http://www.w3.org/2004/02/skos/core#
+  schema: http://schema.org/
+  foaf: http://xmlns.com/foaf/0.1/
+  xsd: http://www.w3.org/2001/XMLSchema#
+  orcid: https://orcid.org/
+  doi: https://doi.org/
+  oa: http://www.w3.org/ns/oa#
+
+imports:
+  - linkml:types
+
+default_prefix: slr
+default_range: string
+
+# ---------------------------------------------------------------------------
+# Top-level slots (PROV-O reuse)
+# ---------------------------------------------------------------------------
+slots:
+  was_generated_by:
+    description: The activity that generated this entity.
+    slot_uri: prov:wasGeneratedBy
+    range: Activity
+    inlined: true
+
+  was_attributed_to:
+    description: The agent to whom this entity is attributed.
+    slot_uri: prov:wasAttributedTo
+    range: Agent
+
+  generated_at_time:
+    description: The time at which the entity was generated.
+    slot_uri: prov:generatedAtTime
+    range: datetime
+
+  was_derived_from:
+    description: The entity from which this entity was derived.
+    slot_uri: prov:wasDerivedFrom
+    range: uriorcurie
+
+  was_revision_of:
+    description: The prior entity that this entity is a revision of.
+    slot_uri: prov:wasRevisionOf
+    range: uriorcurie
+
+  acted_on_behalf_of:
+    description: The agent on whose behalf this agent acted.
+    slot_uri: prov:actedOnBehalfOf
+    range: Agent
+
+# ---------------------------------------------------------------------------
+# Enumerations
+# ---------------------------------------------------------------------------
+enums:
+
+  ReportingStandardEnum:
+    description: Reporting standards or guidelines used in the systematic review.
+    permissible_values:
+      PRISMA_2020:
+        description: Preferred Reporting Items for Systematic Reviews and Meta-Analyses 2020 update.
+      PRISMA_P:
+        description: PRISMA for Protocols.
+      MOOSE:
+        description: Meta-analysis Of Observational Studies in Epidemiology.
+      STROBE:
+        description: STrengthening the Reporting of OBservational studies in Epidemiology.
+      CONSORT:
+        description: Consolidated Standards of Reporting Trials.
+      QUORUM:
+        description: Quality Of Reporting Of Meta-analyses (predecessor to PRISMA).
+      other:
+        description: Another reporting standard not listed here.
+
+  ReviewerRoleEnum:
+    description: Role played by a reviewer in the systematic review process.
+    permissible_values:
+      lead_reviewer:
+        description: Primary reviewer responsible for overall coordination.
+      co_reviewer:
+        description: Supporting reviewer performing parallel screening or extraction.
+      methodologist:
+        description: Specialist in systematic review methodology.
+      subject_expert:
+        description: Domain or clinical subject matter expert.
+      statistician:
+        description: Expert in statistical analysis and meta-analysis.
+      patient_partner:
+        description: Patient or public involvement partner.
+      other:
+        description: Another role not listed here.
+
+  ScreeningStageEnum:
+    description: Stage of screening in the review workflow.
+    permissible_values:
+      title_abstract:
+        description: Title and abstract screening stage.
+      full_text:
+        description: Full-text screening stage.
+      data_extraction:
+        description: Data extraction or charting stage.
+      appraisal:
+        description: Quality or critical appraisal stage.
+
+  DatabaseEnum:
+    description: Bibliographic database or information source searched.
+    permissible_values:
+      PubMed:
+        description: PubMed/MEDLINE biomedical literature database.
+      EMBASE:
+        description: EMBASE pharmacological and biomedical database.
+      Cochrane_CENTRAL:
+        description: Cochrane Central Register of Controlled Trials.
+      PsycINFO:
+        description: APA PsycINFO psychology and behavioral sciences database.
+      CINAHL:
+        description: Cumulative Index to Nursing and Allied Health Literature.
+      Scopus:
+        description: Elsevier Scopus multidisciplinary abstract and citation database.
+      Web_of_Science:
+        description: Clarivate Web of Science citation index.
+      bioRxiv:
+        description: Cold Spring Harbor bioRxiv preprint server.
+      medRxiv:
+        description: Cold Spring Harbor medRxiv health sciences preprint server.
+      IEEE_Xplore:
+        description: IEEE Xplore digital library for engineering and technology.
+      ACM_Digital_Library:
+        description: ACM Digital Library for computing literature.
+      arXiv:
+        description: arXiv multidisciplinary preprint server.
+      grey_literature:
+        description: Grey literature sources (reports, theses, conference proceedings).
+      other:
+        description: Another database or information source not listed here.
+
+  StudyDesignEnum:
+    description: Methodological design of a primary study.
+    permissible_values:
+      RCT:
+        description: Randomised controlled trial.
+      cluster_RCT:
+        description: Cluster randomised controlled trial.
+      quasi_experimental:
+        description: Quasi-experimental or natural experiment design.
+      cohort_prospective:
+        description: Prospective cohort study.
+      cohort_retrospective:
+        description: Retrospective cohort study.
+      case_control:
+        description: Case-control study.
+      cross_sectional:
+        description: Cross-sectional survey or study.
+      case_series:
+        description: Case series without a control group.
+      case_report:
+        description: Single case report.
+      diagnostic_accuracy:
+        description: Diagnostic test accuracy study.
+      qualitative:
+        description: Qualitative research study.
+      mixed_methods:
+        description: Mixed methods study combining quantitative and qualitative approaches.
+      systematic_review:
+        description: Systematic review (secondary study design).
+      meta_analysis:
+        description: Meta-analysis (secondary study design).
+      scoping_review:
+        description: Scoping review (secondary study design).
+      other:
+        description: Another study design not listed here.
+
+  SubjectModelEnum:
+    description: Type of subject or model used in the study.
+    permissible_values:
+      human:
+        description: Human subjects study.
+      animal:
+        description: Animal model study.
+      in_vitro:
+        description: In vitro laboratory study.
+      computational:
+        description: Computational or simulation model.
+      mixed:
+        description: Mixed subjects or models.
+      other:
+        description: Another subject type not listed here.
+
+  TaskTypeEnum:
+    description: Machine learning or AI task type addressed by the study.
+    permissible_values:
+      classification:
+        description: Binary or multi-class classification task.
+      regression:
+        description: Continuous outcome regression task.
+      detection:
+        description: Object or event detection task.
+      segmentation:
+        description: Image or signal segmentation task.
+      generation:
+        description: Generative modelling or text/image generation task.
+      retrieval:
+        description: Information retrieval task.
+      ranking:
+        description: Ranking or ordering task.
+      clustering:
+        description: Unsupervised clustering task.
+      recommendation:
+        description: Recommendation system task.
+      other:
+        description: Another task type not listed here.
+
+  StudySettingEnum:
+    description: Clinical or research setting of the study.
+    permissible_values:
+      academic_medical_center:
+        description: Academic medical centre or teaching hospital.
+      community_hospital:
+        description: Community or district general hospital.
+      primary_care:
+        description: Primary care or general practice setting.
+      outpatient:
+        description: Outpatient or ambulatory care setting.
+      remote_telehealth:
+        description: Remote or telehealth setting.
+      laboratory:
+        description: Laboratory research setting.
+      simulation:
+        description: Simulation or virtual environment setting.
+      other:
+        description: Another study setting not listed here.
+
+  InclusionPolicyEnum:
+    description: Policy governing inclusion of study types in the review.
+    permissible_values:
+      preregistered_only:
+        description: Only pre-registered studies are eligible.
+      peer_reviewed_only:
+        description: Only peer-reviewed publications are eligible.
+      include_preprints:
+        description: Preprint publications are eligible.
+      include_grey_literature:
+        description: Grey literature sources are eligible.
+      other:
+        description: Another inclusion policy not listed here.
+
+  YesNoNREnum:
+    description: Simple yes/no/not-reported/not-applicable response scale.
+    permissible_values:
+      "yes":
+        description: Affirmative response.
+      "no":
+        description: Negative response.
+      not_reported:
+        description: Information was not reported in the source.
+      not_applicable:
+        description: The item is not applicable to this study.
+
+  SeverityEnum:
+    description: Severity level of an issue or flag.
+    permissible_values:
+      critical:
+        description: Critical severity requiring immediate attention.
+      major:
+        description: Major severity with significant impact.
+      minor:
+        description: Minor severity with limited impact.
+      informational:
+        description: Informational note only.
+
+  DataTypeEnum:
+    description: Type of data used in the study.
+    permissible_values:
+      tabular:
+        description: Structured tabular or spreadsheet data.
+      imaging:
+        description: Medical or scientific imaging data.
+      audio:
+        description: Audio or speech data.
+      video:
+        description: Video data.
+      text:
+        description: Unstructured text or natural language data.
+      genomic:
+        description: Genomic, transcriptomic, or proteomic data.
+      sensor:
+        description: Sensor or wearable device data.
+      mixed:
+        description: Multiple data types combined.
+      other:
+        description: Another data type not listed here.
+
+  FeatureTypeEnum:
+    description: Type of features or variables used in the analysis.
+    permissible_values:
+      clinical:
+        description: Clinical variables (e.g., vital signs, laboratory values).
+      demographic:
+        description: Demographic variables (e.g., age, sex, ethnicity).
+      imaging:
+        description: Imaging-derived features.
+      genomic:
+        description: Genomic or molecular features.
+      behavioral:
+        description: Behavioral or lifestyle features.
+      environmental:
+        description: Environmental or exposure features.
+      combined:
+        description: Combination of multiple feature types.
+      other:
+        description: Another feature type not listed here.
+
+  DirectionOfEffectEnum:
+    description: Direction of the primary effect or outcome.
+    permissible_values:
+      favors_intervention:
+        description: Effect favors the intervention or experimental group.
+      favors_control:
+        description: Effect favors the control or comparator group.
+      no_difference:
+        description: No statistically significant or clinically meaningful difference.
+      mixed:
+        description: Mixed or inconsistent direction of effect across outcomes.
+      not_reported:
+        description: Direction of effect was not reported.
+
+  MethodCategoryEnum:
+    description: Category of machine learning or analytical method used.
+    permissible_values:
+      supervised_learning:
+        description: Supervised machine learning methods.
+      unsupervised_learning:
+        description: Unsupervised machine learning methods.
+      semi_supervised:
+        description: Semi-supervised learning methods.
+      self_supervised:
+        description: Self-supervised or contrastive learning methods.
+      reinforcement_learning:
+        description: Reinforcement learning methods.
+      rule_based:
+        description: Rule-based or expert system methods.
+      statistical:
+        description: Classical statistical methods.
+      deep_learning:
+        description: Deep learning neural network methods.
+      transformer:
+        description: Transformer-based or attention-based neural networks.
+      ensemble:
+        description: Ensemble methods combining multiple models.
+      hybrid:
+        description: Hybrid methods combining multiple categories.
+      other:
+        description: Another method category not listed here.
+
+  ValidationMethodologyEnum:
+    description: Methodology used for model validation.
+    permissible_values:
+      held_out_test_set:
+        description: Single held-out test set validation.
+      k_fold_cross_validation:
+        description: k-fold cross-validation.
+      leave_one_out:
+        description: Leave-one-out cross-validation.
+      temporal_split:
+        description: Temporal train/test split.
+      external_validation:
+        description: External validation on an independent dataset.
+      bootstrapping:
+        description: Bootstrap resampling validation.
+      prospective:
+        description: Prospective validation in a real-world setting.
+      other:
+        description: Another validation methodology not listed here.
+
+  PerformanceMetricEnum:
+    description: Performance metric used to evaluate the model or intervention.
+    permissible_values:
+      AUROC:
+        description: Area Under the Receiver Operating Characteristic curve.
+      AUPRC:
+        description: Area Under the Precision-Recall Curve.
+      accuracy:
+        description: Overall classification accuracy.
+      sensitivity:
+        description: Sensitivity (recall, true positive rate).
+      specificity:
+        description: Specificity (true negative rate).
+      PPV:
+        description: Positive Predictive Value (precision).
+      NPV:
+        description: Negative Predictive Value.
+      F1:
+        description: F1 score (harmonic mean of precision and recall).
+      RMSE:
+        description: Root Mean Squared Error.
+      MAE:
+        description: Mean Absolute Error.
+      R_squared:
+        description: Coefficient of determination (R²).
+      calibration:
+        description: Calibration metric (e.g., Brier score, calibration plot slope).
+      NRI:
+        description: Net Reclassification Improvement.
+      IDI:
+        description: Integrated Discrimination Improvement.
+      other:
+        description: Another performance metric not listed here.
+
+  FlagTypeEnum:
+    description: Type of concern or flag raised about a study.
+    permissible_values:
+      data_quality:
+        description: Concern about data quality or integrity.
+      methodological:
+        description: Methodological concern or limitation.
+      ethical:
+        description: Ethical concern or approval issue.
+      reproducibility:
+        description: Reproducibility or replication concern.
+      conflict_of_interest:
+        description: Potential conflict of interest.
+      retraction_risk:
+        description: Concern about potential retraction or post-publication issues.
+      other:
+        description: Another type of concern not listed here.
+
+  ExclusionReasonEnum:
+    description: Reason for excluding a source from the review.
+    permissible_values:
+      wrong_population:
+        description: Study population does not meet eligibility criteria.
+      wrong_intervention:
+        description: Intervention does not meet eligibility criteria.
+      wrong_comparator:
+        description: Comparator does not meet eligibility criteria.
+      wrong_outcome:
+        description: Outcome does not meet eligibility criteria.
+      wrong_study_design:
+        description: Study design does not meet eligibility criteria.
+      wrong_language:
+        description: Publication not in an eligible language.
+      wrong_date:
+        description: Publication date outside eligible range.
+      duplicate:
+        description: Duplicate record of an already-included or excluded study.
+      no_full_text:
+        description: Full text could not be obtained.
+      conference_abstract_only:
+        description: Only a conference abstract available without full publication.
+      other:
+        description: Another exclusion reason not listed here.
+
+  ConcernLevelEnum:
+    description: Level of concern or certainty rating.
+    permissible_values:
+      low:
+        description: Low concern or high certainty.
+      some:
+        description: Some concern or moderate certainty.
+      high:
+        description: High concern or low certainty.
+      unclear:
+        description: Unclear or insufficient information to judge.
+
+  ItemRatingEnum:
+    description: Rating for an individual appraisal item.
+    permissible_values:
+      "yes":
+        description: Item criterion is met.
+      partial:
+        description: Item criterion is partially met.
+      "no":
+        description: Item criterion is not met.
+      not_reported:
+        description: Insufficient information to judge.
+      not_applicable:
+        description: Item is not applicable to this study.
+
+  RoBToolEnum:
+    description: Tool used for risk of bias assessment.
+    permissible_values:
+      RoB_2:
+        description: Cochrane Risk of Bias 2.0 tool for randomised trials.
+      ROBINS_I:
+        description: Risk Of Bias In Non-randomised Studies of Interventions.
+      ROBINS_E:
+        description: Risk Of Bias In Non-randomised Studies of Exposures.
+      QUADAS_2:
+        description: Quality Assessment of Diagnostic Accuracy Studies 2.
+      CASP:
+        description: Critical Appraisal Skills Programme checklist.
+      NOS:
+        description: Newcastle-Ottawa Scale for observational studies.
+      JBI:
+        description: Joanna Briggs Institute critical appraisal tools.
+      Murad:
+        description: Murad tool for case series and case reports.
+      SYRCLE:
+        description: SYRCLE risk of bias tool for animal studies.
+      MINORS:
+        description: Methodological Index for Non-Randomized Studies.
+      ROBIS:
+        description: Risk Of Bias In Systematic reviews tool.
+      other:
+        description: Another risk of bias tool not listed here.
+
+  ProtocolRegistryEnum:
+    description: Registry where the review protocol was prospectively registered.
+    permissible_values:
+      PROSPERO:
+        description: PROSPERO International prospective register of systematic reviews.
+      OSF:
+        description: Open Science Framework pre-registration.
+      INPLASY:
+        description: International Platform of Registered Systematic Review and Meta-analysis Protocols.
+      Cochrane:
+        description: Cochrane protocol registration.
+      other:
+        description: Another protocol registry not listed here.
+      none:
+        description: Protocol was not registered.
+
+  EligibilityFrameworkEnum:
+    description: Framework used to define eligibility criteria.
+    permissible_values:
+      PICO:
+        description: Population, Intervention, Comparator, Outcome.
+      PICOS:
+        description: Population, Intervention, Comparator, Outcome, Study design.
+      PICOT:
+        description: Population, Intervention, Comparator, Outcome, Time.
+      SPIDER:
+        description: Sample, Phenomenon of Interest, Design, Evaluation, Research type (qualitative).
+      ECLIPSE:
+        description: Expectation, Client group, Location, Impact, Professionals, SErvice (health policy).
+      PCC:
+        description: Population, Concept, Context (scoping reviews).
+      other:
+        description: Another eligibility framework not listed here.
+
+  InformationSourceKindEnum:
+    description: Kind of information source searched or consulted.
+    permissible_values:
+      bibliographic_database:
+        description: Formal bibliographic database.
+      preprint_server:
+        description: Preprint server.
+      trial_registry:
+        description: Clinical trial or study registry.
+      grey_literature:
+        description: Grey literature sources.
+      citation_search:
+        description: Forward or backward citation searching.
+      expert_contact:
+        description: Contact with field experts or authors.
+      other:
+        description: Another information source kind not listed here.
+
+  PrimaryFocusEnum:
+    description: Primary clinical or methodological focus of the review.
+    permissible_values:
+      diagnostic:
+        description: Diagnostic accuracy or test evaluation.
+      prognostic:
+        description: Prognosis and prediction of outcomes.
+      treatment_efficacy:
+        description: Efficacy of treatment or intervention.
+      treatment_safety:
+        description: Safety or adverse effects of treatment.
+      prevalence:
+        description: Disease or condition prevalence.
+      incidence:
+        description: Disease or condition incidence.
+      cost_effectiveness:
+        description: Health economic or cost-effectiveness analysis.
+      implementation:
+        description: Implementation, adoption, or scale-up of interventions.
+      methodology:
+        description: Methodological focus (e.g., review of methods).
+      other:
+        description: Another primary focus not listed here.
+
+  NarrativeFrameworkEnum:
+    description: Framework used for narrative synthesis or evidence summary.
+    permissible_values:
+      GRADE:
+        description: Grading of Recommendations Assessment Development and Evaluation.
+      CERQual:
+        description: Confidence in the Evidence from Reviews of Qualitative research.
+      SWiM:
+        description: Synthesis Without Meta-analysis reporting guideline.
+      other:
+        description: Another narrative synthesis framework not listed here.
+      none:
+        description: No formal narrative framework used.
+
+  EffectMeasureEnum:
+    description: Statistical effect measure reported.
+    permissible_values:
+      OR:
+        description: Odds Ratio.
+      RR:
+        description: Relative Risk or Risk Ratio.
+      HR:
+        description: Hazard Ratio.
+      RD:
+        description: Risk Difference or Absolute Risk Reduction.
+      SMD:
+        description: Standardised Mean Difference.
+      WMD:
+        description: Weighted Mean Difference.
+      MD:
+        description: Mean Difference.
+      NNT:
+        description: Number Needed to Treat.
+      NNH:
+        description: Number Needed to Harm.
+      AUC:
+        description: Area Under the Curve.
+      Sens_Spec:
+        description: Sensitivity and Specificity pair.
+      other:
+        description: Another effect measure not listed here.
+
+  MetaAnalysisModelEnum:
+    description: Statistical model used for meta-analysis.
+    permissible_values:
+      fixed_effect:
+        description: Fixed-effect (common-effect) meta-analysis model.
+      random_effects_DL:
+        description: Random-effects model with DerSimonian-Laird estimator.
+      random_effects_REML:
+        description: Random-effects model with REML estimator.
+      Bayesian:
+        description: Bayesian meta-analysis model.
+      network:
+        description: Network meta-analysis (mixed treatment comparisons).
+      IPD:
+        description: Individual Patient Data meta-analysis.
+      other:
+        description: Another meta-analysis model not listed here.
+      none:
+        description: No meta-analysis performed.
+
+  CertaintyOfEvidenceToolEnum:
+    description: Tool used to assess certainty or quality of evidence.
+    permissible_values:
+      GRADE:
+        description: GRADE approach to certainty of evidence.
+      CERQual:
+        description: CERQual approach for qualitative evidence.
+      GRADE_CERQual:
+        description: Both GRADE and CERQual used for mixed-methods synthesis.
+      other:
+        description: Another certainty of evidence tool not listed here.
+      none:
+        description: No formal certainty of evidence assessment performed.
+
+  PromptRoleEnum:
+    description: Role of a message in an LLM conversation.
+    permissible_values:
+      system:
+        description: System-level prompt providing instructions or context.
+      user:
+        description: User turn in the conversation.
+      assistant:
+        description: Assistant (model) response turn.
+      tool_result:
+        description: Result returned from a tool call.
+      other:
+        description: Another message role not listed here.
+
+  StopReasonEnum:
+    description: Reason the model stopped generating tokens.
+    permissible_values:
+      end_turn:
+        description: Model reached a natural end of its response.
+      max_tokens:
+        description: Token limit reached.
+      stop_sequence:
+        description: A stop sequence was encountered.
+      tool_use:
+        description: Model invoked a tool.
+      refusal:
+        description: Model refused to complete the request.
+      error:
+        description: An error caused generation to stop.
+      other:
+        description: Another stop reason not listed here.
+
+  ToolCategoryEnum:
+    description: Functional category of a tool invoked during the review.
+    permissible_values:
+      search:
+        description: Database or web search tool.
+      retrieval:
+        description: Document or content retrieval tool.
+      parsing:
+        description: Text parsing or extraction tool.
+      computation:
+        description: Statistical or computational tool.
+      validation:
+        description: Data validation or quality checking tool.
+      writing:
+        description: Content generation or writing assistance tool.
+      other:
+        description: Another tool category not listed here.
+
+  UserInputTypeEnum:
+    description: Type of input provided by a human user during the review workflow.
+    permissible_values:
+      elicitation_response:
+        description: Response to a structured elicitation question.
+      free_text_instruction:
+        description: Free-text instruction or directive.
+      clarification:
+        description: Clarification of an ambiguous question or result.
+      approval:
+        description: Approval of a proposed action or result.
+      rejection:
+        description: Rejection of a proposed action or result.
+      correction:
+        description: Correction to an extracted or generated value.
+      preference_setting:
+        description: Setting a preference or configuration option.
+      file_upload:
+        description: Upload of a file or document.
+      other:
+        description: Another type of user input not listed here.
+
+  ReviewDecisionEnum:
+    description: Decision made by a reviewer during a review event.
+    permissible_values:
+      approved_unchanged:
+        description: Content approved without changes.
+      approved_with_revision:
+        description: Content approved subject to revisions.
+      rejected:
+        description: Content rejected and requires rework.
+      deferred:
+        description: Decision deferred for later review.
+      flagged_for_discussion:
+        description: Content flagged for team discussion.
+
+  ArtifactKindEnum:
+    description: Kind of stored artifact.
+    permissible_values:
+      prompt_text:
+        description: Raw prompt text sent to a language model.
+      model_response:
+        description: Raw response text from a language model.
+      tool_result:
+        description: Output returned from a tool invocation.
+      source_pdf:
+        description: Source publication PDF file.
+      source_text_extract:
+        description: Text extracted from a source publication.
+      protocol_document:
+        description: Review protocol document.
+      skill_file:
+        description: Skill or agent configuration file.
+      template:
+        description: Prompt or document template.
+      configuration:
+        description: System or model configuration file.
+      other:
+        description: Another artifact kind not listed here.
+
+  PreWorkflowSessionTypeEnum:
+    description: Type of pre-workflow calibration or configuration session.
+    permissible_values:
+      protocol_definition:
+        description: Session to define and finalise the review protocol.
+      search_strategy:
+        description: Session to develop and test the search strategy.
+      eligibility_calibration:
+        description: Session to calibrate eligibility criteria application.
+      charting_calibration:
+        description: Session to calibrate data charting procedures.
+      appraisal_calibration:
+        description: Session to calibrate quality appraisal procedures.
+      other:
+        description: Another pre-workflow session type not listed here.
+
+# ---------------------------------------------------------------------------
+# Classes
+# ---------------------------------------------------------------------------
+classes:
+
+  # 1. ProvenanceMixin
+  ProvenanceMixin:
+    description: Mixin providing PROV-O provenance slots to any class.
+    mixin: true
+    slots:
+      - was_generated_by
+      - was_attributed_to
+      - generated_at_time
+      - was_derived_from
+
+  # 2. Agent
+  Agent:
+    description: A person, organisation, or software responsible for an activity or entity.
+    class_uri: prov:Agent
+    attributes:
+      agent_id:
+        description: Unique identifier for the agent.
+        identifier: true
+        range: uriorcurie
+      name:
+        description: Human-readable name of the agent.
+        slot_uri: schema:name
+
+  # 3. Person
+  Person:
+    description: A human agent participating in the systematic review.
+    is_a: Agent
+    class_uri: prov:Person
+    attributes:
+      orcid:
+        description: ORCID persistent digital identifier for the researcher.
+        slot_uri: schema:identifier
+      email:
+        description: Email address of the person.
+        slot_uri: schema:email
+      affiliation:
+        description: Institutional affiliation of the person.
+        slot_uri: schema:affiliation
+      role:
+        description: Role of the person in the systematic review.
+        range: ReviewerRoleEnum
+
+  # 4. Organization
+  Organization:
+    description: An institutional or corporate agent.
+    is_a: Agent
+    class_uri: prov:Organization
+    attributes:
+      ror_id:
+        description: Research Organization Registry (ROR) identifier.
+        range: uriorcurie
+      country:
+        description: Country where the organisation is located.
+
+  # 5. SoftwareAgent
+  SoftwareAgent:
+    description: A software system or AI model acting as an agent.
+    is_a: Agent
+    class_uri: prov:SoftwareAgent
+    slots:
+      - acted_on_behalf_of
+    attributes:
+      model_name:
+        description: Name of the AI model or software.
+      model_version:
+        description: Version string of the AI model or software.
+      software_url:
+        description: URL of the software or model documentation.
+        range: uri
+
+  # 6. Activity
+  Activity:
+    description: An action or process that occurred over a period of time.
+    class_uri: prov:Activity
+    attributes:
+      activity_id:
+        description: Unique identifier for the activity.
+        identifier: true
+        range: uriorcurie
+      start_time:
+        description: Time at which the activity started.
+        range: datetime
+      end_time:
+        description: Time at which the activity ended.
+        range: datetime
+      description:
+        description: Human-readable description of the activity.
+        slot_uri: dcterms:description
+
+  # 7. SearchActivity
+  SearchActivity:
+    description: A database search activity performed to identify candidate studies.
+    is_a: Activity
+    attributes:
+      databases_searched:
+        description: Databases searched during this activity.
+        multivalued: true
+        range: DatabaseEnum
+      queries:
+        description: Search queries or strings used.
+        multivalued: true
+      date_of_search:
+        description: Date on which the search was performed.
+        range: date
+      records_retrieved:
+        description: Total number of records retrieved.
+        range: integer
+
+  # 8. ScreeningActivity
+  ScreeningActivity:
+    description: A screening activity applied to a set of candidate records.
+    is_a: Activity
+    attributes:
+      stage:
+        description: Stage of screening performed.
+        range: ScreeningStageEnum
+      screener:
+        description: Person who performed the screening.
+        range: Person
+        inlined: true
+      records_screened:
+        description: Number of records screened in this activity.
+        range: integer
+      records_excluded:
+        description: Number of records excluded in this activity.
+        range: integer
+
+  # 9. ChartingActivity
+  ChartingActivity:
+    description: A data charting or extraction activity for included sources.
+    is_a: Activity
+    attributes:
+      model_invocations:
+        description: LLM model invocations performed during charting.
+        multivalued: true
+        inlined_as_list: true
+        range: ModelInvocation
+      tool_invocations:
+        description: Tool invocations performed during charting.
+        multivalued: true
+        inlined_as_list: true
+        range: ToolInvocation
+      user_inputs:
+        description: User inputs captured during charting.
+        multivalued: true
+        inlined_as_list: true
+        range: UserInput
+      review_events:
+        description: Human review events during charting.
+        multivalued: true
+        inlined_as_list: true
+        range: ReviewEvent
+
+  # 10. AppraisalActivity
+  AppraisalActivity:
+    description: A quality appraisal activity for included sources.
+    is_a: Activity
+    attributes:
+      model_invocations:
+        description: LLM model invocations performed during appraisal.
+        multivalued: true
+        inlined_as_list: true
+        range: ModelInvocation
+      tool_invocations:
+        description: Tool invocations performed during appraisal.
+        multivalued: true
+        inlined_as_list: true
+        range: ToolInvocation
+      user_inputs:
+        description: User inputs captured during appraisal.
+        multivalued: true
+        inlined_as_list: true
+        range: UserInput
+      review_events:
+        description: Human review events during appraisal.
+        multivalued: true
+        inlined_as_list: true
+        range: ReviewEvent
+
+  # 11. Source
+  Source:
+    description: A bibliographic source identified during the review process.
+    class_uri: fabio:Expression
+    attributes:
+      source_id:
+        description: Unique identifier for the source.
+        identifier: true
+        range: uriorcurie
+      title:
+        description: Title of the source publication.
+        slot_uri: dcterms:title
+      authors:
+        description: Authors of the source publication.
+        multivalued: true
+        slot_uri: dcterms:creator
+      year:
+        description: Year of publication.
+        range: integer
+        slot_uri: fabio:hasPublicationYear
+      journal:
+        description: Journal or venue where the source was published.
+        slot_uri: fabio:isPublishedIn
+      pmid:
+        description: PubMed identifier.
+        slot_uri: bibo:pmid
+      doi:
+        description: Digital Object Identifier.
+        slot_uri: bibo:doi
+      url:
+        description: URL of the source publication.
+        range: uri
+        slot_uri: schema:url
+      abstract:
+        description: Abstract of the source publication.
+        slot_uri: dcterms:abstract
+      keywords:
+        description: Keywords associated with the source.
+        multivalued: true
+      database_source:
+        description: Database from which this source was retrieved.
+        range: DatabaseEnum
+      citation:
+        description: Full bibliographic citation string.
+        slot_uri: dcterms:bibliographicCitation
+
+  # 12. IncludedSource
+  IncludedSource:
+    description: A source that meets eligibility criteria and is included in the review.
+    is_a: Source
+    slots:
+      - was_derived_from
+    attributes:
+      charting_record:
+        description: Current data charting record for this source.
+        range: ChartingRecord
+        inlined: true
+      charting_record_history:
+        description: Historical versions of charting records for this source.
+        multivalued: true
+        inlined_as_list: true
+        range: ChartingRecord
+      critical_appraisal:
+        description: Current critical appraisal for this source.
+        range: CriticalAppraisal
+        inlined: true
+      appraisal_history:
+        description: Historical versions of critical appraisals for this source.
+        multivalued: true
+        inlined_as_list: true
+        range: CriticalAppraisal
+      risk_of_bias:
+        description: Risk of bias assessment for this source.
+        range: RiskOfBiasAssessment
+        inlined: true
+
+  # 13. ExcludedSource
+  ExcludedSource:
+    description: A source screened and excluded from the review.
+    is_a: Source
+    attributes:
+      exclusion_reason:
+        description: Reason for excluding the source.
+        range: ExclusionReasonEnum
+      exclusion_stage:
+        description: Screening stage at which the source was excluded.
+        range: ScreeningStageEnum
+      exclusion_notes:
+        description: Additional notes on the exclusion decision.
+
+  # 14a. PublicationInfo
+  PublicationInfo:
+    description: Section A — publication and bibliographic metadata.
+    attributes:
+      country_region:
+        description: Country or region where the study was conducted.
+      language:
+        description: Language of the publication.
+      publication_type:
+        description: Type of publication (e.g., journal article, conference paper).
+      funding_sources:
+        description: Funding sources for the study.
+        multivalued: true
+      conflicts_of_interest:
+        description: Declared conflicts of interest.
+      protocol_registration:
+        description: Registry where the study protocol was registered.
+        range: ProtocolRegistryEnum
+      protocol_id:
+        description: Registration identifier in the protocol registry.
+
+  # 14b. StudyDesignSection
+  StudyDesignSection:
+    description: Section B — study design and methodology.
+    attributes:
+      study_design:
+        description: Primary study design.
+        range: StudyDesignEnum
+      subject_model:
+        description: Type of subject or experimental model.
+        range: SubjectModelEnum
+      study_setting:
+        description: Setting in which the study was conducted.
+        range: StudySettingEnum
+      follow_up_duration:
+        description: Duration of follow-up (text description).
+      blinding:
+        description: Whether blinding was used.
+        range: YesNoNREnum
+      randomization:
+        description: Whether randomization was used.
+        range: YesNoNREnum
+
+  # 14c. PrimarySample
+  PrimarySample:
+    description: Section C — primary study population and sample.
+    attributes:
+      population_studied:
+        description: Description of the population studied.
+      sample_size:
+        description: Total sample size (numeric).
+        range: integer
+      sample_size_text:
+        description: Sample size as reported in text.
+      eligibility_criteria:
+        description: Inclusion and exclusion criteria for the study sample.
+      age_range:
+        description: Age range of participants.
+      sex_distribution:
+        description: Sex or gender distribution of participants.
+      demographics_notes:
+        description: Additional demographic notes.
+
+  # 14d. ComparisonGroup
+  ComparisonGroup:
+    description: Section D — comparison or control group details.
+    attributes:
+      comparator_description:
+        description: Description of the comparator or control group.
+      comparator_sample_size:
+        description: Sample size of the comparator group.
+        range: integer
+      comparator_notes:
+        description: Additional notes on the comparator group.
+
+  # 14e. DataCollection
+  DataCollection:
+    description: Section E — data collection and features.
+    attributes:
+      data_types:
+        description: Types of data collected or used.
+        multivalued: true
+        range: DataTypeEnum
+      feature_types:
+        description: Types of features or variables used.
+        multivalued: true
+        range: FeatureTypeEnum
+      ground_truth_method:
+        description: Method used to establish ground truth or reference standard.
+      data_quality_notes:
+        description: Notes on data quality or preprocessing.
+      missing_data_handling:
+        description: Approach to handling missing data.
+
+  # 14f. MethodsAndResults
+  MethodsAndResults:
+    description: Section F — methods, model performance and results.
+    attributes:
+      method_category:
+        description: Category of the primary analytical method.
+        range: MethodCategoryEnum
+      algorithm_names:
+        description: Names of algorithms or models used.
+        multivalued: true
+      validation_methodology:
+        description: Validation methodology applied.
+        range: ValidationMethodologyEnum
+      primary_metric:
+        description: Primary performance metric.
+        range: PerformanceMetricEnum
+      primary_metric_value:
+        description: Numeric value of the primary performance metric.
+        range: float
+      confidence_interval:
+        description: Confidence interval for the primary metric (text).
+      p_value:
+        description: P-value associated with the primary result.
+        range: float
+      direction_of_effect:
+        description: Direction of the primary effect.
+        range: DirectionOfEffectEnum
+      key_results:
+        description: Key results as text statements.
+        multivalued: true
+      outcome:
+        description: Outcomes measured or reported.
+        multivalued: true
+      effect_measure:
+        description: Effect measures reported.
+        multivalued: true
+        range: EffectMeasureEnum
+      flags:
+        description: Methodological or quality flags.
+        multivalued: true
+        range: FlagTypeEnum
+
+  # 14g. SynthesisFields
+  SynthesisFields:
+    description: Section G — synthesis, meta-analysis and evidence certainty fields.
+    attributes:
+      summary_of_findings:
+        description: Narrative summary of findings for this source.
+      narrative_framework:
+        description: Framework used for narrative synthesis.
+        range: NarrativeFrameworkEnum
+      certainty_of_evidence:
+        description: Tool used to assess certainty of evidence.
+        range: CertaintyOfEvidenceToolEnum
+      certainty_rating:
+        description: Overall certainty or concern rating.
+        range: ConcernLevelEnum
+      meta_analysis_model:
+        description: Meta-analysis model if applicable.
+        range: MetaAnalysisModelEnum
+      effect_estimate:
+        description: Pooled or summary effect estimate.
+        range: float
+      effect_ci_lower:
+        description: Lower bound of the confidence interval for the effect estimate.
+        range: float
+      effect_ci_upper:
+        description: Upper bound of the confidence interval for the effect estimate.
+        range: float
+      heterogeneity_i2:
+        description: I-squared heterogeneity statistic (0-100).
+        range: float
+      reviewer_notes:
+        description: Additional reviewer notes for synthesis.
+
+  # 15. ChartingRecord
+  ChartingRecord:
+    description: A versioned record of data charted from an included source.
+    mixins:
+      - ProvenanceMixin
+    slots:
+      - was_revision_of
+    slot_usage:
+      was_generated_by:
+        range: ChartingActivity
+        inlined: true
+    attributes:
+      record_id:
+        description: Unique identifier for this charting record version.
+        identifier: true
+        range: uriorcurie
+      version_number:
+        description: Sequential version number of this charting record.
+        range: integer
+        required: true
+      version_label:
+        description: Human-readable version label (e.g., v1.0, draft).
+      is_current:
+        description: Whether this is the current (latest) version of the charting record.
+        range: boolean
+        ifabsent: "True"
+      section_a_publication:
+        description: Section A — publication and bibliographic information.
+        range: PublicationInfo
+        inlined: true
+      section_b_design:
+        description: Section B — study design information.
+        range: StudyDesignSection
+        inlined: true
+      section_c_primary_sample:
+        description: Section C — primary sample information.
+        range: PrimarySample
+        inlined: true
+      section_d_comparison:
+        description: Section D — comparison group information.
+        range: ComparisonGroup
+        inlined: true
+      section_e_data_collection:
+        description: Section E — data collection information.
+        range: DataCollection
+        inlined: true
+      section_f_methods_results:
+        description: Section F — methods and results information.
+        range: MethodsAndResults
+        inlined: true
+      section_g_synthesis:
+        description: Section G — synthesis and evidence information.
+        range: SynthesisFields
+        inlined: true
+
+  # 16. AppraisalDomain (abstract)
+  AppraisalDomain:
+    description: Abstract base class for a domain within a structured quality appraisal.
+    abstract: true
+    attributes:
+      overall_concern:
+        description: Overall level of concern for this appraisal domain.
+        range: ConcernLevelEnum
+      items:
+        description: Individual appraisal items within this domain.
+        multivalued: true
+        inlined_as_list: true
+        range: AppraisalItem
+
+  # 17. AppraisalItem
+  AppraisalItem:
+    description: An individual item in a structured quality appraisal checklist.
+    attributes:
+      item_text:
+        description: Text of the appraisal item or question.
+        required: true
+      rating:
+        description: Rating for this appraisal item.
+        range: ItemRatingEnum
+        required: true
+      justification:
+        description: Justification or evidence for the rating.
+
+  # 18. SamplePopulationDomain
+  SamplePopulationDomain:
+    description: Appraisal domain covering sample selection and population representativeness.
+    is_a: AppraisalDomain
+
+  # 19. DataCollectionDomain
+  DataCollectionDomain:
+    description: Appraisal domain covering data collection methods and measurement.
+    is_a: AppraisalDomain
+
+  # 20. MethodsAnalysisDomain
+  MethodsAnalysisDomain:
+    description: Appraisal domain covering analytical methods and statistical rigour.
+    is_a: AppraisalDomain
+
+  # 21. BiasTransparencyDomain
+  BiasTransparencyDomain:
+    description: Appraisal domain covering bias, transparency, and reporting quality.
+    is_a: AppraisalDomain
+
+  # 22. CriticalAppraisal
+  CriticalAppraisal:
+    description: A structured quality appraisal of an included source.
+    class_uri: prov:Entity
+    mixins:
+      - ProvenanceMixin
+    attributes:
+      appraisal_id:
+        description: Unique identifier for this appraisal record.
+        identifier: true
+        range: uriorcurie
+      tool_used:
+        description: Name of the appraisal tool or checklist used.
+      version_number:
+        description: Sequential version number of this appraisal.
+        range: integer
+        required: true
+      is_current:
+        description: Whether this is the current (latest) appraisal version.
+        range: boolean
+        ifabsent: "True"
+      was_revision_of_appraisal:
+        description: Prior appraisal that this appraisal revises.
+        slot_uri: prov:wasRevisionOf
+        range: uriorcurie
+      domain_1_sample:
+        description: Appraisal domain 1 — sample and population.
+        range: SamplePopulationDomain
+        inlined: true
+      domain_2_data_collection:
+        description: Appraisal domain 2 — data collection.
+        range: DataCollectionDomain
+        inlined: true
+      domain_3_methods:
+        description: Appraisal domain 3 — methods and analysis.
+        range: MethodsAnalysisDomain
+        inlined: true
+      domain_4_bias_transparency:
+        description: Appraisal domain 4 — bias and transparency.
+        range: BiasTransparencyDomain
+        inlined: true
+      overall_judgment:
+        description: Overall quality judgment across all appraisal domains.
+        range: ConcernLevelEnum
+
+  # 23. RoBDomainJudgment
+  RoBDomainJudgment:
+    description: A risk of bias judgment for a single domain of a RoB tool.
+    attributes:
+      domain_name:
+        description: Name of the risk of bias domain.
+        required: true
+      judgment:
+        description: Risk of bias judgment for this domain.
+        range: ConcernLevelEnum
+        required: true
+      supporting_quote:
+        description: Quote from the source supporting the judgment.
+
+  # 24. RiskOfBiasAssessment
+  RiskOfBiasAssessment:
+    description: A risk of bias assessment for an included source using a formal tool.
+    class_uri: prov:Entity
+    mixins:
+      - ProvenanceMixin
+    attributes:
+      rob_id:
+        description: Unique identifier for this risk of bias assessment.
+        identifier: true
+        range: uriorcurie
+      tool_used:
+        description: Risk of bias tool used for this assessment.
+        range: RoBToolEnum
+        required: true
+      overall_judgment:
+        description: Overall risk of bias judgment.
+        range: ConcernLevelEnum
+      domain_judgments:
+        description: Domain-level risk of bias judgments.
+        multivalued: true
+        inlined_as_list: true
+        range: RoBDomainJudgment
+      summary:
+        description: Narrative summary of the risk of bias assessment.
+
+  # 25. Prompt
+  Prompt:
+    description: A prompt submitted to a language model, with full text and metadata.
+    class_uri: prov:Entity
+    mixins:
+      - ProvenanceMixin
+    attributes:
+      prompt_id:
+        description: Unique identifier for this prompt.
+        identifier: true
+        range: uriorcurie
+      role:
+        description: Role of this message in the conversation.
+        range: PromptRoleEnum
+      system_prompt:
+        description: System-level prompt text.
+      user_prompt:
+        description: User-turn prompt text.
+      template_id:
+        description: Identifier of the prompt template used.
+      template_version:
+        description: Version of the prompt template used.
+      prompt_hash:
+        description: SHA-256 hash of the prompt content for integrity verification.
+        pattern: "^[a-f0-9]{64}$"
+      token_count:
+        description: Number of tokens in the prompt.
+        range: integer
+      referenced_inputs:
+        description: URIs of entities referenced in this prompt.
+        multivalued: true
+        range: uriorcurie
+
+  # 26. ModelConfiguration
+  ModelConfiguration:
+    description: Configuration parameters for a language model invocation.
+    class_uri: prov:Entity
+    attributes:
+      config_id:
+        description: Unique identifier for this model configuration.
+        identifier: true
+        range: uriorcurie
+      model_name:
+        description: Name of the language model.
+        required: true
+      model_version:
+        description: Version of the language model.
+      provider:
+        description: Provider or organisation offering the model.
+      temperature:
+        description: Sampling temperature parameter.
+        range: float
+      top_p:
+        description: Top-p (nucleus) sampling parameter.
+        range: float
+      top_k:
+        description: Top-k sampling parameter.
+        range: integer
+      max_tokens:
+        description: Maximum tokens to generate.
+        range: integer
+      seed:
+        description: Random seed for reproducibility.
+        range: integer
+      stop_sequences:
+        description: Stop sequences that terminate generation.
+        multivalued: true
+
+  # 27. ModelInvocation
+  ModelInvocation:
+    description: A single invocation of a language model during the review workflow.
+    class_uri: prov:Activity
+    mixins:
+      - ProvenanceMixin
+    attributes:
+      invocation_id:
+        description: Unique identifier for this model invocation.
+        identifier: true
+        range: uriorcurie
+      prompt:
+        description: Prompt submitted in this invocation.
+        range: Prompt
+        inlined: true
+        required: true
+      configuration:
+        description: Model configuration used in this invocation.
+        range: ModelConfiguration
+        inlined: true
+        required: true
+      response_text:
+        description: Full text of the model response.
+      response_uri:
+        description: URI referencing the stored response artifact.
+        range: uri
+      response_hash:
+        description: SHA-256 hash of the response for integrity verification.
+        pattern: "^[a-f0-9]{64}$"
+      stop_reason:
+        description: Reason the model stopped generating.
+        range: StopReasonEnum
+      input_tokens:
+        description: Number of input tokens consumed.
+        range: integer
+      output_tokens:
+        description: Number of output tokens generated.
+        range: integer
+      total_tokens:
+        description: Total tokens (input + output).
+        range: integer
+      cost_usd:
+        description: Estimated cost of this invocation in US dollars.
+        range: float
+      performed_by:
+        description: Software agent that performed this invocation.
+        range: SoftwareAgent
+        inlined: true
+      on_behalf_of:
+        description: Human agent on whose behalf this invocation was performed.
+        range: Agent
+        inlined: true
+      start_time:
+        description: Time at which the invocation started.
+        range: datetime
+      end_time:
+        description: Time at which the invocation ended.
+        range: datetime
+
+  # 28. ToolInvocation
+  ToolInvocation:
+    description: A single invocation of a tool during the review workflow.
+    class_uri: prov:Activity
+    mixins:
+      - ProvenanceMixin
+    attributes:
+      tool_invocation_id:
+        description: Unique identifier for this tool invocation.
+        identifier: true
+        range: uriorcurie
+      tool_name:
+        description: Name of the tool invoked.
+        required: true
+      tool_category:
+        description: Functional category of the tool.
+        range: ToolCategoryEnum
+      arguments_json:
+        description: JSON-serialized arguments passed to the tool.
+      result_text:
+        description: Text result returned by the tool.
+      result_uri:
+        description: URI referencing the stored result artifact.
+        range: uri
+      result_hash:
+        description: SHA-256 hash of the result for integrity verification.
+        pattern: "^[a-f0-9]{64}$"
+      success:
+        description: Whether the tool invocation succeeded.
+        range: boolean
+      error_message:
+        description: Error message if the tool invocation failed.
+      parent_invocation:
+        description: URI of the model invocation that triggered this tool call.
+        range: uriorcurie
+      start_time:
+        description: Time at which the tool invocation started.
+        range: datetime
+      end_time:
+        description: Time at which the tool invocation ended.
+        range: datetime
+
+  # 29. UserInput
+  UserInput:
+    description: A structured capture of input provided by a human user.
+    class_uri: prov:Entity
+    mixins:
+      - ProvenanceMixin
+    attributes:
+      input_id:
+        description: Unique identifier for this user input record.
+        identifier: true
+        range: uriorcurie
+      input_type:
+        description: Type of user input.
+        range: UserInputTypeEnum
+      question_asked:
+        description: Question or prompt presented to the user.
+      input_value:
+        description: Value or response provided by the user.
+        required: true
+      options_presented:
+        description: Options presented to the user (if applicable).
+        multivalued: true
+      captured_at_time:
+        description: Time at which the input was captured.
+        range: datetime
+      ui_context:
+        description: UI or workflow context in which the input was captured.
+      influences:
+        description: URIs of entities influenced by this user input.
+        multivalued: true
+        range: uriorcurie
+
+  # 30. ReviewEvent
+  ReviewEvent:
+    description: A human review and decision event on a generated or extracted entity.
+    class_uri: prov:Activity
+    mixins:
+      - ProvenanceMixin
+    attributes:
+      event_id:
+        description: Unique identifier for this review event.
+        identifier: true
+        range: uriorcurie
+      reviewer:
+        description: Person who performed this review.
+        range: Person
+        inlined: true
+        required: true
+      decision:
+        description: Decision made during this review event.
+        range: ReviewDecisionEnum
+        required: true
+      reviewed_entity:
+        description: URI of the entity reviewed in this event.
+        range: uriorcurie
+      fields_changed:
+        description: Names of fields that were changed during this review.
+        multivalued: true
+      original_values:
+        description: JSON-serialized map of original field values before review.
+        range: string
+      revised_values:
+        description: JSON-serialized map of revised field values after review.
+        range: string
+      reviewer_comment:
+        description: Free-text comment from the reviewer.
+      reviewed_at_time:
+        description: Time at which the review was performed.
+        range: datetime
+
+  # 31. StoredArtifact
+  StoredArtifact:
+    description: A content-addressed stored artifact identified by its SHA-256 hash.
+    class_uri: prov:Entity
+    attributes:
+      content_hash:
+        description: SHA-256 hash of the artifact content (content-addressed identifier).
+        identifier: true
+        pattern: "^[a-f0-9]{64}$"
+        required: true
+      artifact_kind:
+        description: Kind of artifact stored.
+        range: ArtifactKindEnum
+        required: true
+      media_type:
+        description: IANA media type of the stored artifact.
+      content_text:
+        description: Text content of the artifact (if textual).
+      content_uri:
+        description: URI where the artifact content can be retrieved.
+        range: uri
+      content_size_bytes:
+        description: Size of the artifact content in bytes.
+        range: integer
+      created_at_time:
+        description: Time at which the artifact was stored.
+        range: datetime
+
+  # 32. ArtifactStore
+  ArtifactStore:
+    description: A collection of content-addressed stored artifacts.
+    attributes:
+      store_id:
+        description: Unique identifier for this artifact store.
+        identifier: true
+        range: uriorcurie
+      artifacts:
+        description: Artifacts held in this store.
+        multivalued: true
+        inlined_as_list: true
+        range: StoredArtifact
+
+  # 33. PreWorkflowSession
+  PreWorkflowSession:
+    description: A pre-workflow session for protocol definition or calibration.
+    class_uri: prov:Activity
+    mixins:
+      - ProvenanceMixin
+    attributes:
+      session_id:
+        description: Unique identifier for this session.
+        identifier: true
+        range: uriorcurie
+      session_type:
+        description: Type of pre-workflow session.
+        range: PreWorkflowSessionTypeEnum
+      conducted_by:
+        description: Lead person who conducted this session.
+        range: Person
+        inlined: true
+      participants:
+        description: All participants in this session.
+        multivalued: true
+        inlined_as_list: true
+        range: Person
+      user_inputs:
+        description: User inputs captured during this session.
+        multivalued: true
+        inlined_as_list: true
+        range: UserInput
+      decisions_locked:
+        description: List of decisions or parameters locked during this session.
+        multivalued: true
+      resulting_configuration_uri:
+        description: URI of the configuration artifact produced by this session.
+        range: uri
+      session_date:
+        description: Date and time the session was conducted.
+        range: datetime
+
+  # 34. SystematicReview (tree_root)
+  SystematicReview:
+    description: The top-level container for a complete systematic literature review.
+    tree_root: true
+    class_uri: prov:Activity
+    mixins:
+      - ProvenanceMixin
+    attributes:
+      review_id:
+        description: Unique identifier for this systematic review.
+        identifier: true
+        range: uriorcurie
+      title:
+        description: Title of the systematic review.
+        slot_uri: dcterms:title
+        required: true
+      objective:
+        description: Research objective or question of the review.
+        slot_uri: dcterms:description
+      reporting_standard:
+        description: Reporting standard or guideline followed.
+        range: ReportingStandardEnum
+      primary_focus:
+        description: Primary clinical or methodological focus.
+        range: PrimaryFocusEnum
+      eligibility_framework:
+        description: Framework used to define eligibility criteria.
+        range: EligibilityFrameworkEnum
+      registration_id:
+        description: Protocol registration identifier.
+      registry:
+        description: Registry where the protocol was registered.
+        range: ProtocolRegistryEnum
+      date_of_last_search:
+        description: Date of the most recent database search.
+        range: date
+      search_activities:
+        description: Database search activities performed in this review.
+        multivalued: true
+        inlined_as_list: true
+        range: SearchActivity
+      screening_activities:
+        description: Screening activities performed in this review.
+        multivalued: true
+        inlined_as_list: true
+        range: ScreeningActivity
+      included_sources:
+        description: Sources included in this review.
+        multivalued: true
+        inlined_as_list: true
+        range: IncludedSource
+      excluded_sources:
+        description: Sources excluded from this review.
+        multivalued: true
+        inlined_as_list: true
+        range: ExcludedSource
+      pre_workflow_sessions:
+        description: Pre-workflow calibration and configuration sessions.
+        multivalued: true
+        inlined_as_list: true
+        range: PreWorkflowSession
+      artifact_store:
+        description: Store of content-addressed artifacts for this review.
+        range: ArtifactStore
+        inlined: true
+      research_question:
+        description: Full text of the primary research question.
+      pico_population:
+        description: PICO Population element.
+      pico_intervention:
+        description: PICO Intervention element.
+      pico_comparison:
+        description: PICO Comparator element.
+      pico_outcome:
+        description: PICO Outcome element.
+      databases_searched:
+        description: Databases searched across all search activities.
+        multivalued: true
+        range: DatabaseEnum
+      total_identified:
+        description: Total records identified across all searches.
+        range: integer
+      total_included:
+        description: Total sources included after all screening stages.
+        range: integer
+      synthesis_narrative:
+        description: Narrative synthesis of evidence across included sources.
+      limitations:
+        description: Limitations of the systematic review.
+      funding:
+        description: Funding sources for the review.
+      competing_interests:
+        description: Competing or conflicting interests of the review team.
