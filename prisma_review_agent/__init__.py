@@ -47,9 +47,28 @@ from prisma_review_agent.models import (
     RubricSectionOutput,
     RubricSectionConfig,
     StudyDataExtractionReport,
+    # Feature 006
+    FieldDefinition,
+    ChartingSection,
+    ChartingTemplate,
+    FieldAnswer,
+    SectionExtractionResult,
+    AppraisalItemSpec,
+    AppraisalDomainSpec,
+    CriticalAppraisalConfig,
+    ItemRating,
+    DomainAppraisal,
+    CriticalAppraisalResult,
 )
 from prisma_review_agent.pipeline import PRISMAReviewPipeline
-from prisma_review_agent.export import to_markdown, to_json, to_bibtex, to_turtle, to_jsonld, to_rubric_markdown, to_rubric_json
+from prisma_review_agent.agents import default_charting_template, default_appraisal_config
+from prisma_review_agent.export import (
+    to_markdown, to_json, to_bibtex, to_turtle, to_jsonld,
+    to_rubric_markdown, to_rubric_json,
+    # Feature 006
+    to_charting_markdown, to_charting_json,
+    to_appraisal_markdown, to_appraisal_json,
+)
 
 __version__ = "0.2.0"
 
@@ -104,4 +123,22 @@ __all__ = [
     "StudyDataExtractionReport",
     "to_rubric_markdown",
     "to_rubric_json",
+    # Feature 006
+    "FieldDefinition",
+    "ChartingSection",
+    "ChartingTemplate",
+    "FieldAnswer",
+    "SectionExtractionResult",
+    "AppraisalItemSpec",
+    "AppraisalDomainSpec",
+    "CriticalAppraisalConfig",
+    "ItemRating",
+    "DomainAppraisal",
+    "CriticalAppraisalResult",
+    "default_charting_template",
+    "default_appraisal_config",
+    "to_charting_markdown",
+    "to_charting_json",
+    "to_appraisal_markdown",
+    "to_appraisal_json",
 ]

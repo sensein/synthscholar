@@ -410,6 +410,160 @@ The combined per-study outputs are also available on `result.prisma_review.metho
 
 **Validation:** Invalid format values raise `ValueError` at `ReviewProtocol` construction time. Unknown section names in `section_output_formats` log a `UserWarning` and are ignored. If the LLM cannot produce the requested format for a section it falls back to `descriptive` and logs a warning — `formatted_answer` is never empty.
 
+### Field-Level Charting & Appraisal Output
+
+Configure per-field answer constraints (enumerated options, yes/no, free text, numeric) and a structured critical appraisal instrument with domain-level concern aggregation.
+
+**Zero-config — built-in defaults:**
+
+```python
+from prisma_review_agent import PRISMAReviewPipeline, ReviewProtocol
+from prisma_review_agent.export import to_charting_markdown, to_charting_json, to_appraisal_markdown, to_appraisal_json
+from pathlib import Path
+
+protocol = ReviewProtocol(
+    title="Bio-acoustic ML in neurological disorders",
+    inclusion_criteria="...",
+    exclusion_criteria="...",
+    # charting_template and critical_appraisal_config default to built-in schemas
+)
+
+result = await PRISMAReviewPipeline(api_key="...", protocol=protocol).run(auto_confirm=True)
+
+# Per-study field-level extraction
+Path("charting.md").write_text(to_charting_markdown(result))
+Path("charting.json").write_text(to_charting_json(result))
+
+# Structured appraisal with cross-study summary
+Path("appraisal.md").write_text(to_appraisal_markdown(result))
+Path("appraisal.json").write_text(to_appraisal_json(result))
+```
+
+Access the structured data directly:
+
+```python
+for study in result.prisma_review.methods.data_extraction:
+    print(f"\n=== {study.source_id} ===")
+    for section_key, section in study.field_answers.items():
+        print(f"  {section.section_title}")
+        for fa in section.field_answers:
+            print(f"    {fa.field_name}: {fa.value} [{fa.confidence}]")
+
+for appraisal in result.prisma_review.methods.critical_appraisal_results:
+    print(f"\n=== {appraisal.source_id} ===")
+    for domain in appraisal.domains:
+        print(f"  {domain.domain_name}: {domain.domain_concern}")
+```
+
+**Customise a single field's options:**
+
+```python
+from prisma_review_agent.agents import default_charting_template
+
+template = default_charting_template()
+custom = template.override_field(
+    section_key="B",
+    field_name="Study Design",
+    options=["Cross-sectional", "Longitudinal", "Retrospective cohort", "Prospective cohort"],
+)
+protocol = ReviewProtocol(..., charting_template=custom)
+```
+
+**Fully custom charting template:**
+
+```python
+from prisma_review_agent.models import ChartingTemplate, ChartingSection, FieldDefinition
+
+template = ChartingTemplate(sections=[
+    ChartingSection(
+        section_key="1",
+        section_title="Study Overview",
+        fields=[
+            FieldDefinition(
+                field_name="Design",
+                description="Overall study design",
+                answer_type="enumerated",
+                options=["RCT", "Cohort", "Case-control", "Cross-sectional"],
+            ),
+            FieldDefinition(field_name="Sample Size", description="Total N", answer_type="numeric"),
+            FieldDefinition(field_name="Country", description="Study country", answer_type="free_text"),
+        ],
+    ),
+    ChartingSection(
+        section_key="2",
+        section_title="Outcomes",
+        fields=[
+            FieldDefinition(
+                field_name="Primary Outcome Reported",
+                description="Was the primary outcome clearly reported?",
+                answer_type="yes_no_extended",
+                options=["Yes", "No", "Not Reported"],
+            ),
+            FieldDefinition(
+                field_name="Key Results",
+                description="Headline result",
+                answer_type="free_text",
+            ),
+            FieldDefinition(
+                field_name="Reviewer Assessment",
+                description="Qualitative assessment — filled by reviewer",
+                answer_type="free_text",
+                reviewer_only=True,    # excluded from LLM extraction
+            ),
+        ],
+    ),
+])
+protocol = ReviewProtocol(..., charting_template=template)
+```
+
+`reviewer_only=True` fields are excluded from the LLM prompt and rendered as `[Human reviewer]` in Markdown exports and `{"value": null, "reviewer_only": true}` in JSON exports.
+
+**Custom critical appraisal instrument:**
+
+```python
+from prisma_review_agent.models import CriticalAppraisalConfig, AppraisalDomainSpec, AppraisalItemSpec
+
+config = CriticalAppraisalConfig(domains=[
+    AppraisalDomainSpec(
+        domain_name="Reporting Quality",
+        concern_aggregation_rule="majority_yes",   # or "strict" / "lenient"
+        items=[
+            AppraisalItemSpec(
+                item_text="Were CONSORT/STROBE reporting guidelines followed?",
+                allowed_ratings=["Yes", "Partial", "No", "Not Reported"],
+            ),
+            AppraisalItemSpec(
+                item_text="Was the primary outcome pre-registered?",
+                allowed_ratings=["Yes", "No", "N/A"],
+            ),
+        ],
+    ),
+])
+protocol = ReviewProtocol(..., critical_appraisal_config=config)
+```
+
+`domain_concern` (`Low` / `Some` / `High`) is derived deterministically in Python from item ratings — it is never left to the LLM. The three aggregation rules:
+
+| Rule | Low | Some | High |
+|------|-----|------|------|
+| `majority_yes` | > 50% Yes | mixed | > 50% No / Not Reported |
+| `strict` | all Yes | any Partial or one No | two or more No |
+| `lenient` | any Yes | all Partial / mixed | all No / Not Reported |
+
+**Save and reload a template:**
+
+```python
+from pathlib import Path
+from prisma_review_agent.models import ChartingTemplate
+from prisma_review_agent.agents import default_charting_template
+
+template = default_charting_template()
+Path("my_template.json").write_text(template.model_dump_json(indent=2))
+
+loaded = ChartingTemplate.model_validate_json(Path("my_template.json").read_text())
+assert loaded == template   # full round-trip fidelity
+```
+
 **`confirm_callback` return value semantics:**
 
 | Return value | Meaning | Pipeline action |

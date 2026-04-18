@@ -48,6 +48,9 @@ from .models import (
     Theme,
     BUILTIN_SECTIONS,
     StudyDataExtractionReport,
+    SectionExtractionResult,
+    FieldAnswer,
+    CriticalAppraisalResult,
 )
 from .clients import Cache, PubMedClient, BioRxivClient
 from .evidence import extract_evidence
@@ -75,6 +78,8 @@ from .agents import (
     run_discussion_section,
     run_conclusion_section,
     run_quantitative_analysis,
+    default_charting_template,
+    default_appraisal_config,
 )
 
 try:
@@ -563,8 +568,13 @@ class PRISMAReviewPipeline:
         charting_questions = list(proto.charting_questions) if proto.charting_questions else None
         appraisal_domains = list(proto.appraisal_domains) if proto.appraisal_domains else None
 
+        # Feature 006: resolve template and config (None → factory default applied per-call)
+        charting_template = proto.charting_template or default_charting_template()
+        appraisal_config = proto.critical_appraisal_config or default_appraisal_config()
+
         data_charting_rubrics = []
         critical_appraisals = []
+        critical_appraisal_results: list[CriticalAppraisalResult] = []
         narrative_rows = []
 
         _resolved_cfg = _resolve_section_config(self.protocol)
@@ -573,14 +583,20 @@ class PRISMAReviewPipeline:
             try:
                 up(f"Charting article {article.pmid}…")
                 rubric = await run_data_charting(
-                    article, self.deps, charting_questions, resolved_section_config=_resolved_cfg
+                    article, self.deps, charting_questions,
+                    resolved_section_config=_resolved_cfg,
+                    charting_template=charting_template,
                 )
                 data_charting_rubrics.append(rubric)
 
-                appraisal = await run_critical_appraisal(article, rubric, self.deps, appraisal_domains)
-                critical_appraisals.append(appraisal)
+                appraisal_rubric, appraisal_result = await run_critical_appraisal(
+                    article, rubric, self.deps, appraisal_domains,
+                    appraisal_config=appraisal_config,
+                )
+                critical_appraisals.append(appraisal_rubric)
+                critical_appraisal_results.append(appraisal_result)
 
-                row = await run_narrative_row(rubric, appraisal, self.deps)
+                row = await run_narrative_row(rubric, appraisal_rubric, self.deps)
                 narrative_rows.append(row)
             except Exception as exc:
                 logger.warning("Charting/appraisal failed for %s: %s", article.pmid, exc)
@@ -644,6 +660,7 @@ class PRISMAReviewPipeline:
             structured_abstract=structured_abstract,
             introduction_text=introduction_text,
             conclusions_text=conclusions_text,
+            structured_appraisal_results=critical_appraisal_results,
         )
         final_result.quality_checklist = build_quality_checklist(final_result)
 
@@ -812,6 +829,7 @@ def _assemble_methods(
     charting_rubrics: list,
     bias_assessment: str,
     resolved_config: list[tuple[str, str, str]] | None = None,
+    appraisal_results: list[CriticalAppraisalResult] | None = None,
 ) -> Methods:
     """Build Methods deterministically from existing pipeline data — no LLM call."""
     prisma_flow = PrismaFlow(
@@ -846,7 +864,10 @@ def _assemble_methods(
         for section_name, fields in _CHARTING_SECTIONS
     ]
 
-    # Build data_extraction from rubric section_outputs (US5)
+    # Resolve charting template for field_answers assembly (Feature 006)
+    charting_template = protocol.charting_template or default_charting_template()
+
+    # Build data_extraction — sections from US5, field_answers from Feature 006
     data_extraction: list[StudyDataExtractionReport] = []
     if resolved_config:
         for rubric in charting_rubrics:
@@ -855,10 +876,51 @@ def _assemble_methods(
                 for _, title, _ in resolved_config
                 if title in rubric.section_outputs
             }
-            if sections_ordered:
-                data_extraction.append(
-                    StudyDataExtractionReport(source_id=rubric.source_id, sections=sections_ordered)
+
+            # Assemble field_answers from charting_template + rubric field values
+            field_answers: dict[str, SectionExtractionResult] = {}
+            for section in charting_template.sections:
+                extractable = [f for f in section.fields if not f.reviewer_only]
+                if not extractable:
+                    continue
+                fa_list: list[FieldAnswer] = []
+                for field_def in extractable:
+                    # Best-effort: look up value by field_name mapped to rubric attribute
+                    rubric_attr = field_def.field_name.lower().replace(" ", "_").replace("/", "_").replace("—", "_").replace("-", "_")
+                    rubric_attr = "".join(c if c.isalnum() or c == "_" else "_" for c in rubric_attr).strip("_")
+                    raw_value = getattr(rubric, rubric_attr, None)
+                    if raw_value is None:
+                        # Try section-prefixed lookup via _SECTION_KEY_FIELDS mapping
+                        from .agents import _SECTION_KEY_FIELDS as _skf
+                        section_fields = _skf.get(section.section_key, [])
+                        if section_fields:
+                            idx = extractable.index(field_def)
+                            if idx < len(section_fields):
+                                raw_value = getattr(rubric, section_fields[idx], None)
+                    value = str(raw_value) if raw_value is not None else None
+                    if value:
+                        fa_list.append(FieldAnswer(field_name=field_def.field_name, value=value, confidence="medium"))
+                    else:
+                        fa_list.append(FieldAnswer(
+                            field_name=field_def.field_name,
+                            value=None,
+                            confidence="low",
+                            extraction_note="Value not found in rubric",
+                        ))
+                if fa_list:
+                    field_answers[section.section_key] = SectionExtractionResult(
+                        section_key=section.section_key,
+                        section_title=section.section_title,
+                        field_answers=fa_list,
+                    )
+
+            data_extraction.append(
+                StudyDataExtractionReport(
+                    source_id=rubric.source_id,
+                    sections=sections_ordered,
+                    field_answers=field_answers,
                 )
+            )
 
     return Methods(
         search_strategy=search_strategy,
@@ -868,6 +930,7 @@ def _assemble_methods(
         data_extraction_schema=extraction_schemas,
         data_extraction=data_extraction,
         quality_assessment=bias_assessment or "Quality assessment completed.",
+        critical_appraisal_results=appraisal_results or [],
     )
 
 
@@ -920,6 +983,7 @@ async def assemble_prisma_review(
         charting_rubrics=result.data_charting_rubrics,
         bias_assessment=result.bias_assessment,
         resolved_config=resolved_config,
+        appraisal_results=result.structured_appraisal_results or None,
     )
     extracted_studies = _assemble_extracted_studies(result.data_charting_rubrics)
 

@@ -46,6 +46,19 @@ from .models import (
     Implications,
     RubricSectionOutput,
     SECTION_FORMAT,
+    # Feature 006
+    ChartingTemplate,
+    ChartingSection,
+    FieldDefinition,
+    FieldAnswer,
+    SectionExtractionResult,
+    CriticalAppraisalConfig,
+    AppraisalDomainSpec,
+    AppraisalItemSpec,
+    ItemRating,
+    DomainAppraisal,
+    CriticalAppraisalResult,
+    CONCERN_AGGREGATION_RULE,
 )
 
 
@@ -876,6 +889,46 @@ _FORMAT_PATTERNS: dict[str, str] = {
 }
 
 
+def _apply_concern_rule(
+    ratings: list[str],
+    rule: CONCERN_AGGREGATION_RULE,
+) -> str:
+    """Derive domain concern level from item ratings using the specified aggregation rule.
+
+    Returns "Low", "Some", or "High". Applied deterministically in Python — not delegated to LLM.
+    """
+    if not ratings:
+        return "High"
+
+    _positive = {"yes"}
+    _negative = {"no", "not reported"}
+
+    positive_count = sum(1 for r in ratings if r.strip().lower() in _positive)
+    negative_count = sum(1 for r in ratings if r.strip().lower() in _negative)
+    total = len(ratings)
+
+    if rule == "majority_yes":
+        if positive_count > total / 2:
+            return "Low"
+        if negative_count > total / 2:
+            return "High"
+        return "Some"
+
+    if rule == "strict":
+        if positive_count == total:
+            return "Low"
+        if negative_count >= 2:
+            return "High"
+        return "Some"
+
+    # lenient
+    if positive_count > 0:
+        return "Low"
+    if negative_count == total:
+        return "High"
+    return "Some"
+
+
 def _extract_section_text(rubric: DataChartingRubric, section_key: str, display_title: str) -> str:
     """Extract the raw text for a section from the rubric fields."""
     import re
@@ -905,11 +958,15 @@ async def run_data_charting(
     deps: AgentDeps,
     charting_questions: list[str] | None = None,
     resolved_section_config: list[tuple[str, str, str]] | None = None,
+    charting_template: ChartingTemplate | None = None,
 ) -> DataChartingRubric:
     """Extract data charting rubric from a single article.
 
     When resolved_section_config is provided, also populates rubric.section_outputs
     with per-section RubricSectionOutput entries using the configured format types.
+
+    When charting_template is provided, injects per-field constraints into the prompt
+    and validates/re-prompts out-of-vocabulary enumerated values.
     """
     import logging as _logging
     import re as _re
@@ -943,6 +1000,31 @@ async def run_data_charting(
             "If the requested format cannot be produced, use descriptive prose."
         )
 
+    field_constraint_block = ""
+    if charting_template:
+        constraint_lines = [
+            "\n\nField-level extraction constraints:",
+            "For fields with enumerated or yes_no_extended answer type you MUST select a value",
+            "from the declared options list EXACTLY as written. Do not paraphrase, abbreviate,",
+            "or translate the option text. If insufficient information is available, select the",
+            "option that most closely means 'unknown' or 'not reported' from the list and set",
+            "confidence to 'low'. Fields marked reviewer_only are excluded — do not fill them.\n",
+        ]
+        for section in charting_template.sections:
+            extractable = [f for f in section.fields if not f.reviewer_only]
+            if not extractable:
+                continue
+            constraint_lines.append(f"Section {section.section_key}: {section.section_title}")
+            for field in extractable:
+                opts = ""
+                if field.options:
+                    opts = ": " + " / ".join(field.options)
+                constraint_lines.append(
+                    f"  - {field.field_name} ({field.answer_type}{opts})"
+                    f"\n    {field.description}"
+                )
+        field_constraint_block = "\n".join(constraint_lines)
+
     result = await data_charting_agent.run(
         f"Article PMID: {article.pmid}\n"
         f"Title: {article.title}\n"
@@ -953,7 +1035,8 @@ async def run_data_charting(
         f"Abstract: {article.abstract[:2500]}\n"
         f"Full text: {(article.full_text or 'Not available')[:4000]}"
         + custom_block
-        + format_block,
+        + format_block
+        + field_constraint_block,
         deps=deps,
         model=model,
     )
@@ -1022,8 +1105,18 @@ async def run_critical_appraisal(
     charting: DataChartingRubric,
     deps: AgentDeps,
     appraisal_domains: list[str] | None = None,
-) -> CriticalAppraisalRubric:
-    """Perform critical appraisal of a study."""
+    appraisal_config: CriticalAppraisalConfig | None = None,
+) -> tuple[CriticalAppraisalRubric, CriticalAppraisalResult]:
+    """Perform critical appraisal of a study.
+
+    Returns both the legacy CriticalAppraisalRubric (backward compat) and the new
+    CriticalAppraisalResult (list-based, stored in Methods.critical_appraisal_results).
+    When appraisal_config is provided, uses its domain/item structure and derives
+    domain_concern via _apply_concern_rule() in Python (not delegated to LLM).
+    """
+    import logging as _logging
+    import json as _json
+    _log = _logging.getLogger(__name__)
     model = build_model(deps.api_key, deps.model_name)
 
     domain_labels = list(_DEFAULT_APPRAISAL_DOMAINS)
@@ -1031,7 +1124,28 @@ async def run_critical_appraisal(
         for i, name in enumerate(appraisal_domains[:4]):
             domain_labels[i] = name
 
+    # Build legacy domain label block (always produced)
     domains_block = "\n".join(f"  Domain {i+1}: {name}" for i, name in enumerate(domain_labels))
+
+    # Build structured per-domain/item prompt block when config is provided
+    config_block = ""
+    if appraisal_config:
+        config_lines = [
+            "\n\nStructured appraisal instrument — rate each item using ONLY the allowed ratings:",
+        ]
+        for domain in appraisal_config.domains:
+            config_lines.append(f"\nDomain: {domain.domain_name} (aggregation: {domain.concern_aggregation_rule})")
+            for item in domain.items:
+                config_lines.append(
+                    f"  - {item.item_text}\n"
+                    f"    Allowed ratings: {' / '.join(item.allowed_ratings)}"
+                )
+        config_lines.append(
+            "\nAfter rating all items, also provide an 'overall_concern' per domain "
+            "(Low / Some / High) as your initial estimate — it will be overridden by "
+            "the aggregation rule in post-processing."
+        )
+        config_block = "\n".join(config_lines)
 
     result = await critical_appraisal_agent.run(
         f"Article: {article.title} ({article.year})\n"
@@ -1041,23 +1155,64 @@ async def run_critical_appraisal(
         f"Features/Models: {charting.feature_types} → {charting.model_category}\n"
         f"Performance: {charting.key_performance_results}\n"
         f"Limitations noted: {charting.reviewer_notes}\n"
-        f"\nAppraisal domains to use:\n{domains_block}",
+        f"\nAppraisal domains to use:\n{domains_block}"
+        + config_block,
         deps=deps,
         model=model,
     )
-    appraisal = result.output
-    appraisal.source_id = charting.source_id
+    rubric = result.output
+    rubric.source_id = charting.source_id
     for domain_field, label in zip(
         [
-            appraisal.domain_1_participant_quality,
-            appraisal.domain_2_data_collection_quality,
-            appraisal.domain_3_feature_model_quality,
-            appraisal.domain_4_bias_transparency,
+            rubric.domain_1_participant_quality,
+            rubric.domain_2_data_collection_quality,
+            rubric.domain_3_feature_model_quality,
+            rubric.domain_4_bias_transparency,
         ],
         domain_labels,
     ):
         domain_field.domain_name = label
-    return appraisal
+
+    # Build CriticalAppraisalResult from appraisal_config + rubric domain items
+    resolved_config = appraisal_config if appraisal_config is not None else default_appraisal_config()
+    domain_appraisals: list[DomainAppraisal] = []
+    legacy_domains = [
+        rubric.domain_1_participant_quality,
+        rubric.domain_2_data_collection_quality,
+        rubric.domain_3_feature_model_quality,
+        rubric.domain_4_bias_transparency,
+    ]
+    for idx, domain_spec in enumerate(resolved_config.domains):
+        legacy_dom = legacy_domains[idx] if idx < len(legacy_domains) else None
+
+        # Collect item ratings from legacy rubric items (best-effort match by position)
+        item_ratings: list[ItemRating] = []
+        if legacy_dom and legacy_dom.items:
+            for item_spec, legacy_item in zip(domain_spec.items, legacy_dom.items):
+                item_ratings.append(
+                    ItemRating(item_text=item_spec.item_text, rating=legacy_item.rating or "Not Reported")
+                )
+        else:
+            for item_spec in domain_spec.items:
+                item_ratings.append(ItemRating(item_text=item_spec.item_text, rating="Not Reported"))
+
+        # Apply concern rule deterministically in Python
+        raw_ratings = [ir.rating for ir in item_ratings]
+        concern = _apply_concern_rule(raw_ratings, domain_spec.concern_aggregation_rule)
+
+        domain_appraisals.append(
+            DomainAppraisal(
+                domain_name=domain_spec.domain_name,
+                item_ratings=item_ratings,
+                domain_concern=concern,
+            )
+        )
+
+    appraisal_result = CriticalAppraisalResult(
+        source_id=charting.source_id,
+        domains=domain_appraisals,
+    )
+    return rubric, appraisal_result
 
 
 async def run_grounding_validation(
@@ -1439,3 +1594,245 @@ def build_quality_checklist(result) -> dict[str, bool]:
         "introduction_present": bool(result.introduction_text),
         "citation_style_set": bool(getattr(p, "citation_style", "")),
     }
+
+
+# ──────────────────── Feature 006: Bridge2AI Factory Functions ────────────────
+
+
+def default_charting_template() -> ChartingTemplate:
+    """Return the full Bridge2AI data charting template (Sections A–G, 60 fields).
+
+    Pure and deterministic — same output on every call.
+    """
+    def _f(name: str, desc: str, atype: str, opts=None, reviewer_only: bool = False) -> FieldDefinition:
+        return FieldDefinition(
+            field_name=name, description=desc, answer_type=atype,
+            options=opts, reviewer_only=reviewer_only,
+        )
+
+    YNR = ["Yes", "No", "Not Reported"]
+    YNA = ["Yes", "No", "N/A"]
+
+    sections = [
+        ChartingSection(
+            section_key="A",
+            section_title="Publication Information",
+            fields=[
+                _f("Source ID", "Unique ID assigned by reviewers (e.g., M-001, R-001, N-001)", "free_text"),
+                _f("Title", "Full title of the paper", "free_text"),
+                _f("Authors", "Last name, First initial", "free_text"),
+                _f("Year", "Publication year", "numeric"),
+                _f("Journal / Conference", "Full publication venue name", "free_text"),
+                _f("DOI", "Digital Object Identifier", "free_text"),
+                _f("Database Retrieved From", "Where source was found (e.g. PubMed, Scopus)", "free_text"),
+                _f("Disorder Cohort", "Which of the five Bridge2AI cohorts", "free_text"),
+                _f("Primary Focus", "Disorder-focused or technology-focused", "enumerated",
+                   opts=["Disorder-focused", "Technology-focused"]),
+            ],
+        ),
+        ChartingSection(
+            section_key="B",
+            section_title="Study Design",
+            fields=[
+                _f("Primary Study Goal", "What the study set out to do", "enumerated",
+                   opts=["Classification", "Severity assessment", "Feature identification", "Other"]),
+                _f("Study Design", "Overall design", "enumerated",
+                   opts=["Cross-sectional", "Longitudinal", "Not Reported"]),
+                _f("If Longitudinal: Duration", "How long participants were followed (e.g. 6 months)", "free_text"),
+                _f("If Longitudinal: Frequency", "How often data were collected (e.g. weekly)", "free_text"),
+                _f("Subject Model", "How comparisons were structured", "enumerated",
+                   opts=["Within-subjects", "Between-subjects", "Mixed", "Not Reported"]),
+                _f("Task Type", "Nature of the modeling task", "enumerated",
+                   opts=["Classification", "Regression", "Both", "Not Reported"]),
+                _f("Study Setting", "Where data were collected", "enumerated",
+                   opts=["Clinical", "Lab", "Remote/home", "Other", "Not Reported"]),
+                _f("Country / Region", "Where the study was conducted", "free_text"),
+            ],
+        ),
+        ChartingSection(
+            section_key="C",
+            section_title="Participants: Disordered Group",
+            fields=[
+                _f("Disorder / Diagnosis", "Specific condition studied", "free_text"),
+                _f("How Diagnosis Was Assessed", "Criteria or tool used (e.g. MDS-UPDRS, DSM-5)", "free_text"),
+                _f("N (Disordered)", "Number of participants in disordered group", "numeric"),
+                _f("Age — Mean (SD)", "Mean age and standard deviation", "free_text"),
+                _f("Age — Range", "Age range", "free_text"),
+                _f("Gender Distribution", "Gender distribution (e.g. 60% female)", "free_text"),
+                _f("Comorbidities — Included or Excluded",
+                   "Whether comorbid conditions were included or excluded from the study",
+                   "enumerated", opts=["Included", "Excluded", "Not Reported"]),
+                _f("Which Comorbidities Addressed",
+                   "Which comorbidities were included or excluded, if reported", "free_text"),
+                _f("Medications / Therapies",
+                   "Were participants on treatment at time of data collection?",
+                   "yes_no_extended", opts=YNR),
+                _f("If Yes — What Medications / Therapies",
+                   "Details of medications or therapies if reported", "free_text"),
+                _f("Severity Levels Included",
+                   "Range of disorder severity represented in the sample",
+                   "enumerated", opts=["Mild", "Moderate", "Severe", "Mixed", "Not Reported"]),
+            ],
+        ),
+        ChartingSection(
+            section_key="D",
+            section_title="Participants: Healthy Controls",
+            fields=[
+                _f("Healthy Controls Included",
+                   "Were healthy control participants included?",
+                   "yes_no_extended", opts=YNR),
+                _f("How Healthy Status Was Confirmed",
+                   "Criteria or method to confirm no relevant diagnosis", "free_text"),
+                _f("N (Healthy)", "Number of healthy control participants", "numeric"),
+                _f("Age — Mean (SD)", "Mean age and standard deviation for controls", "free_text"),
+                _f("Age — Range", "Age range for controls", "free_text"),
+                _f("Gender Distribution", "Gender distribution for controls", "free_text"),
+                _f("Age-Matched to Disordered Group",
+                   "Were healthy controls matched on age?",
+                   "yes_no_extended", opts=YNR),
+                _f("Gender-Matched to Disordered Group",
+                   "Were healthy controls matched on gender?",
+                   "yes_no_extended", opts=YNR),
+                _f("Neurodevelopmentally Typical",
+                   "Were healthy controls confirmed as neurodevelopmentally typical?",
+                   "yes_no_extended", opts=YNR),
+            ],
+        ),
+        ChartingSection(
+            section_key="E",
+            section_title="Data Collection",
+            fields=[
+                _f("Data Types Collected",
+                   "Modalities used (audio, video, text, physiological, etc.)", "free_text"),
+                _f("Tasks Performed",
+                   "What participants were asked to do", "free_text"),
+                _f("Equipment / Tools Used",
+                   "Hardware or software (e.g. specific microphone, app)", "free_text"),
+                _f("New Dataset Contributed",
+                   "Does the paper introduce a new dataset?",
+                   "yes_no_extended", opts=YNR),
+                _f("Dataset Openly Available",
+                   "Is the dataset openly available?",
+                   "yes_no_extended", opts=YNR),
+                _f("Dataset Available on Request",
+                   "Is the dataset available on request?",
+                   "yes_no_extended", opts=YNR),
+                _f("Sensitive Data Anonymized",
+                   "Was sensitive data anonymized?",
+                   "yes_no_extended", opts=YNR),
+            ],
+        ),
+        ChartingSection(
+            section_key="F",
+            section_title="Features and Models",
+            fields=[
+                _f("Feature Types Extracted",
+                   "Broad category of features", "enumerated",
+                   opts=["Acoustic", "Linguistic", "Articulatory", "DNN embeddings", "Combination"]),
+                _f("Specific Features Reported",
+                   "List key features (e.g. MFCCs, jitter, shimmer, F0, HNR)", "free_text"),
+                _f("Feature Extraction Tools / Libraries",
+                   "Software used (e.g. openSMILE, torchaudio, librosa)", "free_text"),
+                _f("Feature Importance Reported",
+                   "Did the paper identify top features?",
+                   "yes_no_extended", opts=YNR),
+                _f("Feature Importance Method",
+                   "If yes, what method was used (e.g. SHAP, permutation importance)", "free_text"),
+                _f("Top Features Identified",
+                   "If reported, list the top features", "free_text"),
+                _f("Direction of Feature Change",
+                   "Increase or decrease relative to healthy controls or severity",
+                   "enumerated", opts=["Increase", "Decrease", "Mixed", "Not Reported"]),
+                _f("Model Category",
+                   "Broad model type", "enumerated",
+                   opts=["Statistical", "Classical ML", "Deep learning", "Not Reported"]),
+                _f("Specific Algorithms Used",
+                   "e.g. SVM, Random Forest, LSTM, wav2vec", "free_text"),
+                _f("Validation Methodology",
+                   "How model was evaluated", "enumerated",
+                   opts=["Train/test split", "k-fold CV", "LOOCV", "Held-out test set", "Not Reported"]),
+                _f("Performance Metrics Reported",
+                   "e.g. Accuracy, AUC, F1, RMSE, R²", "free_text"),
+                _f("Key Performance Results",
+                   "Headline numbers as reported (e.g. AUC = 0.89)", "free_text"),
+            ],
+        ),
+        ChartingSection(
+            section_key="G",
+            section_title="Synthesis Fields",
+            fields=[
+                _f("Summary of Key Findings",
+                   "1–2 sentence summary of the study's main contribution",
+                   "free_text", reviewer_only=True),
+                _f("Features Most Associated With Disorder",
+                   "Key features identified as most relevant",
+                   "free_text", reviewer_only=True),
+                _f("Future Directions Recommended by Authors",
+                   "What the authors suggest for future work",
+                   "free_text", reviewer_only=True),
+                _f("Reviewer Notes",
+                   "Flags or observations for team discussion",
+                   "free_text", reviewer_only=True),
+            ],
+        ),
+    ]
+    return ChartingTemplate(sections=sections)
+
+
+def default_appraisal_config() -> CriticalAppraisalConfig:
+    """Return the four-domain Bridge2AI critical appraisal instrument.
+
+    Pure and deterministic — same output on every call.
+    """
+    def _item(text: str, ratings: list[str]) -> AppraisalItemSpec:
+        return AppraisalItemSpec(item_text=text, allowed_ratings=ratings)
+
+    _YPNR = ["Yes", "Partial", "No", "Not Reported"]
+    _YPNA = ["Yes", "Partial", "No", "N/A"]
+
+    return CriticalAppraisalConfig(
+        domains=[
+            AppraisalDomainSpec(
+                domain_name="Sample Quality",
+                concern_aggregation_rule="majority_yes",
+                items=[
+                    _item("Was sample size adequate and reported?", _YPNR),
+                    _item("Were demographic characteristics reported?", _YPNR),
+                    _item("Was diagnosis verified by a validated clinical measure?", _YPNR),
+                    _item("Were comorbidities assessed and reported?", _YPNR),
+                    _item("Were healthy controls included and appropriately matched?", _YPNA),
+                ],
+            ),
+            AppraisalDomainSpec(
+                domain_name="Data Collection Quality",
+                concern_aggregation_rule="majority_yes",
+                items=[
+                    _item("Was the recording setup described in sufficient detail?", _YPNR),
+                    _item("Were tasks clearly defined and standardized?", _YPNR),
+                    _item("Was data collected in a controlled or described setting?", _YPNR),
+                ],
+            ),
+            AppraisalDomainSpec(
+                domain_name="Feature and Model Quality",
+                concern_aggregation_rule="majority_yes",
+                items=[
+                    _item("Were features clearly defined and justified?", _YPNR),
+                    _item("Was feature selection methodology described?", _YPNR),
+                    _item("Was the model clearly described and reproducible?", _YPNR),
+                    _item("Was an appropriate validation strategy used?", _YPNR),
+                    _item("Were performance metrics appropriate for the task?", _YPNR),
+                ],
+            ),
+            AppraisalDomainSpec(
+                domain_name="Bias and Transparency",
+                concern_aggregation_rule="majority_yes",
+                items=[
+                    _item("Was class imbalance acknowledged and addressed?", _YPNA),
+                    _item("Were study limitations discussed by authors?", _YPNR),
+                    _item("Was feature importance or interpretability reported?", _YPNR),
+                    _item("Is the dataset or code publicly available?", _YPNR),
+                ],
+            ),
+        ]
+    )
+

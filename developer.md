@@ -11,6 +11,7 @@
 - [HTTP Clients & Caching](#http-clients--caching)
 - [Data Storage & State Management](#data-storage--state-management)
 - [PRISMA Flow Diagram — How It Works](#prisma-flow-diagram--how-it-works)
+- [Provenance & Reconstruct](#provenance--reconstruct)
 - [Design Decisions](#design-decisions)
 - [Adding a New Agent](#adding-a-new-agent)
 - [Environment & Configuration](#environment--configuration)
@@ -96,13 +97,13 @@ The `prisma_review_agent/` package is the installable form; root-level `.py` fil
 
 | Module | Responsibility | Key Types |
 |---|---|---|
-| `models.py` | All Pydantic v2 data models — no logic | `Article`, `ReviewProtocol`, `PRISMAFlowCounts`, `PRISMAReviewResult`, `EvidenceSpan`, `PrismaReview`, `ThematicSynthesisResult` (22 rich synthesis models). Per-rubric format control (005-US5): `SECTION_FORMAT` (`Literal["descriptive","yes_no","table","bullet_list","numeric"]`), `RubricSectionOutput` (per-section extraction result with `format_used`, `formatted_answer`, `section_summary`; validator enforces `section_summary` required for table/bullet_list/numeric), `RubricSectionConfig` (caller config per section: `section_key`, `section_name`, `order`, `output_format`), `StudyDataExtractionReport` (per-study container: `source_id`, `sections: dict[str, RubricSectionOutput]`). `BUILTIN_SECTIONS` module-level constant maps keys A–G to display titles. `ReviewProtocol` gains `section_output_formats: dict[str,str]` and `rubric_section_config: list[RubricSectionConfig]` with a `@model_validator` that rejects invalid format values. `DataChartingRubric` gains `section_outputs: dict[str, RubricSectionOutput]`. `Methods` gains `data_extraction: list[StudyDataExtractionReport]`. |
+| `models.py` | All Pydantic v2 data models — no logic | `Article`, `ReviewProtocol`, `PRISMAFlowCounts`, `PRISMAReviewResult`, `EvidenceSpan`, `PrismaReview`, `ThematicSynthesisResult` (22 rich synthesis models). Per-rubric format control (005-US5): `SECTION_FORMAT`, `RubricSectionOutput`, `RubricSectionConfig`, `StudyDataExtractionReport`. **Feature 006 — field-level charting & appraisal schema**: `ANSWER_TYPE` (`Literal["enumerated","free_text","numeric","yes_no_extended"]`), `FieldDefinition` (validates option presence for enumerated/yes_no_extended; yes_no_extended options must be exactly `["Yes","No","Not Reported"]` or `["Yes","No","N/A"]`), `ChartingSection`, `ChartingTemplate` (immutable-style; `override_field()` and `add_section()` return new instances), `FieldAnswer`, `SectionExtractionResult`, `CONCERN_AGGREGATION_RULE` (`Literal["majority_yes","strict","lenient"]`), `AppraisalItemSpec`, `AppraisalDomainSpec`, `CriticalAppraisalConfig`, `ItemRating`, `DomainAppraisal`, `CriticalAppraisalResult`. `StudyDataExtractionReport` gains `field_answers: dict[str, SectionExtractionResult]`. `Methods` gains `critical_appraisal_results: list[CriticalAppraisalResult]`. `ReviewProtocol` gains `charting_template: Optional[ChartingTemplate]` and `critical_appraisal_config: Optional[CriticalAppraisalConfig]`. `PRISMAReviewResult` gains `structured_appraisal_results: list[CriticalAppraisalResult]`. |
 | `clients.py` | HTTP data acquisition + SQLite cache | `PubMedClient`, `BioRxivClient`, `Cache` |
-| `agents.py` | LLM agent definitions + async runners | `AgentDeps`, 18 `Agent` instances, `run_*` functions. Rich synthesis agents: `abstract_section_agent`, `introduction_section_agent`, `thematic_synthesis_agent`, `quantitative_analysis_agent`, `discussion_section_agent`, `conclusion_section_agent` |
-| `pipeline.py` | Async orchestrator — calls clients, agents, cache; hosts plan confirmation checkpoint (step 1a), `_build_review_plan()` helper, and rich synthesis assembly. `assemble_prisma_review()` runs a two-wave `asyncio.gather` to build the full `PrismaReview` object; `_assemble_methods(protocol, strategy, flow_counts, charting_rubrics, resolved_config?)` and `_assemble_extracted_studies()` are deterministic helpers (no LLM). `_backfill_plain_text_fields()` preserves backward compat. `_resolve_section_config(protocol) -> list[tuple[str,str,str]]` returns `[(key, display_title, format_type)]` ordered by display priority — precedence: `rubric_section_config` > `section_output_formats` > BUILTIN_SECTIONS defaults > `charting_questions`; computed once per run before the charting loop and passed into `run_data_charting()` and `_assemble_methods()`. | `PRISMAReviewPipeline.run(progress_callback, data_items, auto_confirm, confirm_callback, max_plan_iterations, output_synthesis_style)` |
+| `agents.py` | LLM agent definitions + async runners | `AgentDeps`, 18 `Agent` instances, `run_*` functions. Rich synthesis agents: `abstract_section_agent`, `introduction_section_agent`, `thematic_synthesis_agent`, `quantitative_analysis_agent`, `discussion_section_agent`, `conclusion_section_agent`. **Feature 006**: `_apply_concern_rule(ratings, rule) -> str` (deterministic Python, not LLM — computes `domain_concern` for auditable appraisal); `default_charting_template() -> ChartingTemplate` (7-section, 60-field factory); `default_appraisal_config() -> CriticalAppraisalConfig` (4-domain, 17-item factory). `run_data_charting()` extended with `charting_template` param — injects field constraints into LLM prompt; `reviewer_only` fields excluded. `run_critical_appraisal()` extended with `appraisal_config` param; return type changed to `tuple[CriticalAppraisalRubric, CriticalAppraisalResult]` for backward compat. |
+| `pipeline.py` | Async orchestrator — calls clients, agents, cache; hosts plan confirmation checkpoint (step 1a), `_build_review_plan()` helper, and rich synthesis assembly. `assemble_prisma_review()` runs a two-wave `asyncio.gather` to build the full `PrismaReview` object; `_assemble_methods(protocol, strategy, flow_counts, charting_rubrics, resolved_config?)` and `_assemble_extracted_studies()` are deterministic helpers (no LLM). `_backfill_plain_text_fields()` preserves backward compat. `_resolve_section_config(protocol) -> list[tuple[str,str,str]]` returns `[(key, display_title, format_type)]` ordered by display priority. **Feature 006**: pipeline loop resolves `charting_template = proto.charting_template or default_charting_template()` and `appraisal_config = proto.critical_appraisal_config or default_appraisal_config()` before the per-article loop; unpacks `tuple` from `run_critical_appraisal()`; assembles `field_answers` dict from template + rubric attributes; stores `structured_appraisal_results` on `PRISMAReviewResult`. | `PRISMAReviewPipeline.run(progress_callback, data_items, auto_confirm, confirm_callback, max_plan_iterations, output_synthesis_style)` |
 | `evidence.py` | Evidence extraction + source grounding gate | `extract_evidence()` |
 | `validation.py` | Source grounding validator — rapidfuzz matching | `filter_grounded()`, `validate_grounding()`, `ValidationReport` |
-| `export.py` | Output formatters with cache provenance | `to_markdown()`, `to_json()`, `to_bibtex()`, `to_turtle()`, `to_jsonld()`, `to_oxigraph_store()`, `to_rubric_markdown(result) -> str` (H2 per study / H3 per section / `**Format**:` / `**Summary**:` ; falls back to stub when no `section_outputs` present), `to_rubric_json(result) -> str` (JSON array of `{source_id, title, sections:{title:{format_used, formatted_answer, section_summary}}}` ; returns `"[]"` fallback) |
+| `export.py` | Output formatters with cache provenance | `to_markdown()`, `to_json()`, `to_bibtex()`, `to_turtle()`, `to_jsonld()`, `to_oxigraph_store()`, `to_rubric_markdown()`, `to_rubric_json()`. **Feature 006**: `to_charting_markdown(result) -> str` (H2 per study / H3 per section / pipe table; `reviewer_only` fields render as `_[Human reviewer]_`; fallback when no `field_answers`), `to_charting_json(result) -> str` (JSON array; `reviewer_only` fields use `{"value": null, "reviewer_only": true}`), `to_appraisal_markdown(result) -> str` (H2 per study / H3 per domain / item table + Overall Concern row; cross-study summary table appended), `to_appraisal_json(result) -> str` (`{"studies": [...], "summary": {domain: {Low:N, Some:N, High:N, total:N}}}`). |
 | `main.py` | CLI argument parsing + `ReviewProtocol` construction; `_cli_confirm()` callback for interactive plan confirmation; `--auto` / `--max-plan-iterations` flags | `main()`, `run_review()`, `_cli_confirm()` |
 | `ontology/namespaces.py` | RDF namespace constants + URI-minting helpers | `SLR`, `PROV`, `DCTERMS`, `FABIO`, `BIBO`, `OA`; `article_uri()`, `review_uri()`, `bind_namespaces()` |
 | `ontology/rdf_export.py` | rdflib graph construction + Turtle / JSON-LD serialization | `_build_graph()`, `to_turtle()`, `to_jsonld()`, `_add_charting()`, `_add_rob()`, `_add_evidence_spans()` |
@@ -238,6 +239,84 @@ classDiagram
     Article "1" --> "0..1" RiskOfBiasResult
     Article "1" --> "0..1" StudyDataExtraction
 ```
+
+### Feature 006 — Field-Level Charting & Appraisal Models
+
+```mermaid
+classDiagram
+    class ChartingTemplate {
+        +list~ChartingSection~ sections
+        +override_field(section_key, field_name, **kwargs) ChartingTemplate
+        +add_section(section_key, section_title, fields) ChartingTemplate
+    }
+    class ChartingSection {
+        +str section_key
+        +str section_title
+        +list~FieldDefinition~ fields
+    }
+    class FieldDefinition {
+        +str field_name
+        +str description
+        +ANSWER_TYPE answer_type
+        +list~str~ options
+        +bool reviewer_only
+        +_validate_options()
+    }
+    class SectionExtractionResult {
+        +str section_key
+        +str section_title
+        +list~FieldAnswer~ field_answers
+    }
+    class FieldAnswer {
+        +str field_name
+        +str value
+        +str confidence
+        +str extraction_note
+        +_validate_extraction_note()
+    }
+    class CriticalAppraisalConfig {
+        +list~AppraisalDomainSpec~ domains
+    }
+    class AppraisalDomainSpec {
+        +str domain_name
+        +list~AppraisalItemSpec~ items
+        +CONCERN_AGGREGATION_RULE concern_aggregation_rule
+    }
+    class AppraisalItemSpec {
+        +str item_text
+        +list~str~ valid_ratings
+    }
+    class CriticalAppraisalResult {
+        +str source_id
+        +list~DomainAppraisal~ domains
+    }
+    class DomainAppraisal {
+        +str domain_name
+        +list~ItemRating~ item_ratings
+        +str domain_concern
+    }
+    class ItemRating {
+        +str item_text
+        +str rating
+    }
+
+    ChartingTemplate "1" --> "*" ChartingSection
+    ChartingSection "1" --> "*" FieldDefinition
+    SectionExtractionResult "1" --> "*" FieldAnswer
+    CriticalAppraisalConfig "1" --> "*" AppraisalDomainSpec
+    AppraisalDomainSpec "1" --> "*" AppraisalItemSpec
+    CriticalAppraisalResult "1" --> "*" DomainAppraisal
+    DomainAppraisal "1" --> "*" ItemRating
+```
+
+**Key invariants:**
+
+- `FieldDefinition.answer_type in ("enumerated", "yes_no_extended")` → `options` must be non-empty.
+- `yes_no_extended` options must be exactly `["Yes","No","Not Reported"]` or `["Yes","No","N/A"]`.
+- `FieldAnswer.confidence == "low"` → `extraction_note` is required.
+- `reviewer_only=True` fields: excluded from LLM prompt entirely; rendered as `_[Human reviewer]_` in Markdown, `{"value": null, "reviewer_only": true}` in JSON.
+- `domain_concern` is computed deterministically by `_apply_concern_rule()` in Python — never delegated to the LLM.
+- `ReviewProtocol` accepts both fields as `Optional`; the pipeline falls back to `default_charting_template()` / `default_appraisal_config()` when they are `None`.
 
 ### LLM Output Models (agent → Pydantic)
 
@@ -380,8 +459,8 @@ flowchart LR
 | 2 | `screening_agent` | `run_screening(articles, deps, stage)` | `ScreeningBatchResult` |
 | 3 | `rob_agent` | `run_risk_of_bias(article, deps)` | `RiskOfBiasResult` |
 | 4 | `data_extraction_agent` | `run_data_extraction(article, items, deps)` | `StudyDataExtraction` |
-| 5 | `data_charting_agent` | `run_data_charting(article, deps)` | `DataChartingRubric` |
-| 6 | `critical_appraisal_agent` | `run_critical_appraisal(article, rubric, deps)` | `CriticalAppraisalRubric` |
+| 5 | `data_charting_agent` | `run_data_charting(article, deps, *, charting_template=None)` | `DataChartingRubric` |
+| 6 | `critical_appraisal_agent` | `run_critical_appraisal(article, rubric, deps, appraisal_domains, *, appraisal_config=None)` | `tuple[CriticalAppraisalRubric, CriticalAppraisalResult]` |
 | 7 | `narrative_row_agent` | `run_narrative_row(rubric, appraisal, deps)` | `PRISMANarrativeRow` |
 | 8 | `synthesis_agent` | `run_synthesis(articles, evidence, flow, deps)` | `str` |
 | 9 | `grade_agent` | `run_grade(outcome, articles, deps)` | `GRADEAssessment` |
@@ -807,6 +886,200 @@ flowchart TD
 
     G1 & G2 & G3 & G4 & G5 & G6 --> NOTE
 ```
+
+---
+
+## Provenance & Reconstruct
+
+The system captures full provenance for every review at two levels: a **semantic RDF graph** (who reviewed what, when, using which model and criteria) and a **relational snapshot** (the full result JSON + every article that was considered). Together they let you reconstruct any prior review from scratch or replay it in a UI.
+
+### How provenance is captured
+
+#### RDF layer (`ontology/rdf_export.py` + `ontology/rdf_store.py`)
+
+Every call to `to_turtle()` / `to_jsonld()` builds an rdflib graph that includes a `prov:` provenance subgraph alongside the review content:
+
+```turtle
+@prefix prov: <http://www.w3.org/ns/prov#> .
+@prefix slr:  <https://w3id.org/slr/ontology#> .
+@prefix dcterms: <http://purl.org/dc/terms/> .
+
+<urn:slr:review:{criteria_fingerprint}>
+    a slr:SystematicReview ;
+    dcterms:created "{timestamp}"^^xsd:dateTime ;
+    prov:wasGeneratedBy <urn:slr:activity:{criteria_fingerprint}> ;
+    prov:used <urn:slr:protocol:{criteria_fingerprint}> .
+
+<urn:slr:activity:{criteria_fingerprint}>
+    a prov:Activity ;
+    prov:startedAtTime  "{timestamp}"^^xsd:dateTime ;
+    prov:endedAtTime    "{timestamp}"^^xsd:dateTime ;
+    prov:wasAssociatedWith <urn:slr:agent:llm:{model_name}> .
+
+<urn:slr:agent:llm:{model_name}>
+    a prov:SoftwareAgent ;
+    rdfs:label "{model_name}" .
+```
+
+Each included article gets a `prov:wasDerivedFrom` triple linking it to the review activity. Evidence spans get `prov:wasQuotedFrom` triples back to their source article URI.
+
+#### PostgreSQL layer (`cache/store.py` + `cache/article_store.py`)
+
+| Table | What is stored | Key provenance fields |
+|---|---|---|
+| `review_cache` | Full `PRISMAReviewResult` as JSON | `criteria_fingerprint` (SHA-256), `model_name`, `created_at`, `expires_at`, `criteria_json` |
+| `article_store` | Every article ever fetched | `pmid`, `title`, `abstract`, `full_text`, `tsvector` search index |
+
+The `criteria_fingerprint` is the bridge: the RDF graph URI `urn:slr:review:{fingerprint}` matches the `criteria_fingerprint` in `review_cache`, so you can round-trip between the RDF provenance and the full result payload.
+
+### How to reconstruct a prior review
+
+**Step 1 — look up by fingerprint (exact match)**
+
+```python
+from prisma_review_agent.cache.store import CacheStore
+from prisma_review_agent.cache.similarity import compute_fingerprint
+
+async with CacheStore(pg_dsn) as store:
+    fingerprint = compute_fingerprint(protocol)
+    entry = await store.lookup_exact(fingerprint)
+    if entry:
+        result = PRISMAReviewResult.model_validate_json(entry.result_json)
+```
+
+**Step 2 — look up by similarity (fuzzy match)**
+
+```python
+    hit = await store.lookup_similar(protocol, threshold=0.90)
+    # hit.similarity_score tells you how close the criteria were
+    result = PRISMAReviewResult.model_validate_json(hit.entry.result_json)
+```
+
+**Step 3 — re-hydrate articles from ArticleStore**
+
+The `result_json` snapshot includes article metadata but may not include `full_text` (large blobs are trimmed in some export paths). Re-attach full text from the article library:
+
+```python
+from prisma_review_agent.cache.article_store import ArticleStore
+
+async with ArticleStore(pg_dsn) as astore:
+    pmids = [a.pmid for a in result.included_articles]
+    stored = await astore.get_by_pmids(pmids)
+    by_pmid = {a.pmid: a for a in stored}
+    for article in result.included_articles:
+        if article.pmid in by_pmid:
+            article.full_text = by_pmid[article.pmid].full_text
+```
+
+**Step 4 — re-attach RDF provenance**
+
+```python
+from prisma_review_agent.ontology.rdf_store import SLRStore
+
+store = SLRStore(path="review_store.oxigraph")
+store.load_from_file("prior_review.ttl")
+
+# Query who generated the review
+sparql = """
+PREFIX prov: <http://www.w3.org/ns/prov#>
+PREFIX slr:  <https://w3id.org/slr/ontology#>
+SELECT ?agent ?started WHERE {
+    ?activity a prov:Activity ;
+              prov:wasAssociatedWith ?agent ;
+              prov:startedAtTime ?started .
+}
+"""
+rows = store.query(sparql)
+```
+
+**Useful SPARQL queries**
+
+```sparql
+# All reviews in the store with their timestamps
+SELECT ?review ?created WHERE {
+    ?review a slr:SystematicReview ;
+            dcterms:created ?created .
+} ORDER BY DESC(?created)
+
+# Which model was used for a specific fingerprint
+SELECT ?model WHERE {
+    <urn:slr:review:{fingerprint}> prov:wasGeneratedBy ?activity .
+    ?activity prov:wasAssociatedWith ?model .
+}
+
+# All articles used as evidence in a review
+SELECT ?article ?title WHERE {
+    <urn:slr:review:{fingerprint}> prov:used ?article .
+    ?article dcterms:title ?title .
+}
+
+# Evidence spans with their source articles
+SELECT ?span ?claim ?source WHERE {
+    ?span a slr:EvidenceSpan ;
+          slr:claim ?claim ;
+          prov:wasQuotedFrom ?source .
+}
+```
+
+### UI perspective — provenance view and reconstruct
+
+A front-end can surface provenance and offer reconstruct/replay by consuming the two storage layers:
+
+#### Provenance view (read-only display)
+
+| UI element | Data source | Field |
+|---|---|---|
+| Review timestamp | `review_cache.created_at` | ISO 8601 |
+| Model used | `review_cache.model_name` or RDF `prov:wasAssociatedWith` | string |
+| Criteria fingerprint | `review_cache.criteria_fingerprint` | SHA-256 hex (first 12 chars as display ID) |
+| Similarity score (if fuzzy hit) | `CacheLookupResult.similarity_score` | 0.0–1.0, render as % |
+| Article count | `len(result.included_articles)` | integer |
+| Evidence spans | `result.evidence_spans` | list; show grounding_score per span |
+| Charting results | `result.structured_appraisal_results` | per-domain concern; heat-map by concern level |
+| RDF graph download | `to_turtle(result)` | offer as `.ttl` export button |
+
+**Recommended provenance panel layout:**
+
+```
+┌─ Review provenance ─────────────────────────────────────────────────────┐
+│  ID        3f9a2c1d                   (first 12 chars of fingerprint)   │
+│  Created   2026-04-17 14:32 UTC                                         │
+│  Model     anthropic/claude-sonnet-4                                    │
+│  Articles  47 included  (312 screened)                                  │
+│  Cache     HIT  similarity 97.3%  [view matched criteria]               │
+│  [Download Turtle]  [Download JSON]  [Reconstruct]                      │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Reconstruct / replay from UI
+
+The "Reconstruct" action re-runs the pipeline using the stored `criteria_json` as input, optionally with `force_refresh=True` to bypass the cache. The UI flow:
+
+1. User clicks **Reconstruct** on a prior review entry.
+2. Front-end loads `review_cache.criteria_json` → deserializes into `ReviewProtocol`.
+3. Front-end optionally lets the user override `model_name` or `force_refresh`.
+4. Calls `PRISMAReviewPipeline(protocol=reconstructed_protocol, ...).run()`.
+5. Streams `progress_callback` events to update a live progress bar.
+6. On completion, renders the new result side-by-side with the original for diff comparison.
+
+```python
+# Minimal reconstruct from a stored criteria_json
+import json
+from prisma_review_agent import PRISMAReviewPipeline, ReviewProtocol
+
+raw = json.loads(cache_entry.criteria_json)
+protocol = ReviewProtocol.model_validate(raw)
+protocol.force_refresh = True   # bypass cache to get a fresh run
+
+pipeline = PRISMAReviewPipeline(
+    api_key=api_key,
+    model_name=override_model or cache_entry.model_name,
+    protocol=protocol,
+)
+result = await pipeline.run(progress_callback=emit_to_websocket)
+```
+
+The `charting_template` and `critical_appraisal_config` stored in the original `ReviewProtocol` are automatically carried forward during reconstruct, ensuring the same field schema is applied to the new run.
 
 ---
 
