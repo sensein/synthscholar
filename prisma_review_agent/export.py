@@ -23,6 +23,8 @@ __all__ = [
     # Feature 007
     "to_compare_markdown", "to_compare_json",
     "to_compare_charting_markdown", "to_compare_charting_json",
+    # Narrative summary
+    "to_narrative_summary_markdown", "to_narrative_summary_json",
 ]
 
 
@@ -133,16 +135,36 @@ def to_markdown(result: PRISMAReviewResult) -> str:
             f"| {a.short_author} | {a.year} | {a.journal[:30]} | {design} | {rob} |"
         )
 
+    # Narrative summary table
+    if result.narrative_rows:
+        lines.append("\n### 3.3 Narrative Summary Table\n")
+        lines.append("| Source | Design / Sample / Dataset | Methods | Outcomes | Limitations | Relevance Notes | Review Q&A |")
+        lines.append("|--------|--------------------------|---------|----------|-------------|-----------------|------------|")
+        for row in result.narrative_rows:
+            def _cell(text: str, limit: int = 120) -> str:
+                t = (text or "").replace("|", "\\|").replace("\n", " ")
+                return t[:limit] + "..." if len(t) > limit else t
+            lines.append(
+                f"| {row.source_id} "
+                f"| {_cell(row.study_design_sample_dataset)} "
+                f"| {_cell(row.methods)} "
+                f"| {_cell(row.outcomes)} "
+                f"| {_cell(row.key_limitations)} "
+                f"| {_cell(row.relevance_notes)} "
+                f"| {_cell(row.review_specific_questions)} |"
+            )
+        lines.append("")
+
     # Synthesis
-    lines.extend(["\n### 3.3 Synthesis\n", result.synthesis_text or "[Synthesis pending]"])
+    lines.extend(["\n### 3.4 Synthesis\n", result.synthesis_text or "[Synthesis pending]"])
 
     # Risk of bias
     if result.bias_assessment:
-        lines.extend(["\n### 3.4 Risk of Bias Assessment (Items 18, 21)\n", result.bias_assessment])
+        lines.extend(["\n### 3.5 Risk of Bias Assessment (Items 18, 21)\n", result.bias_assessment])
 
     # GRADE
     if result.grade_assessments:
-        lines.append("\n### 3.5 Certainty of Evidence - GRADE (Item 22)\n")
+        lines.append("\n### 3.6 Certainty of Evidence - GRADE (Item 22)\n")
         for outcome, grade in result.grade_assessments.items():
             lines.append(f"**{outcome}:** {grade.overall_certainty.value}")
             lines.append(f"  {grade.summary}\n")
@@ -207,9 +229,7 @@ def to_markdown(result: PRISMAReviewResult) -> str:
             lines.append("### Data Extraction\n")
             for report in pr.methods.data_extraction:
                 lines.append(f"**{report.source_id}**: {', '.join(report.sections.keys())}")
-            lines.append(
-                "\n*(See `to_rubric_markdown()` for full structured per-section content.)*\n"
-            )
+            lines.append("")
         lines.extend([
             "\n---\n",
             "## Results\n",
@@ -256,17 +276,103 @@ def to_markdown(result: PRISMAReviewResult) -> str:
             f"### Key Takeaways\n\n{pr.conclusion.key_takeaways}\n",
             f"### Recommendations\n\n{pr.conclusion.recommendations}\n",
             f"### Future Research\n\n{pr.conclusion.future_research}\n",
-            "\n---\n",
-            "## References\n",
         ])
-        for i, ref in enumerate(pr.references, 1):
-            lines.append(f"{i}. {ref}\n")
+
+    # Appendix B: full data extraction rubrics (inline, not a pointer)
+    rubrics_with_outputs = [r for r in result.data_charting_rubrics if r.section_outputs]
+    if rubrics_with_outputs:
+        lines.append("\n---\n")
+        lines.append("## Appendix B: Data Extraction Rubrics\n")
+        for rubric in rubrics_with_outputs:
+            lines.append(f"### {rubric.source_id} — {rubric.title or 'Unknown'}\n")
+            for section_title, section_out in rubric.section_outputs.items():
+                lines.append(f"#### {section_title}\n")
+                body = section_out.formatted_answer
+                if section_out.format_used == "json" or body.lstrip().startswith(("{", "[")):
+                    lines.append(f"```json\n{body}\n```")
+                else:
+                    lines.append(body)
+                lines.append("")
+                if section_out.section_summary:
+                    lines.append(f"**Summary**: {section_out.section_summary}\n")
+            lines.append("---\n")
+
+    # Appendix C: critical appraisal results
+    appraisal_results = _get_appraisal_results(result)
+    if appraisal_results:
+        lines.append("\n---\n")
+        lines.append("## Appendix C: Critical Appraisal Results\n")
+        for appraisal in appraisal_results:
+            title = next(
+                (r.title for r in result.data_charting_rubrics if r.source_id == appraisal.source_id),
+                "",
+            )
+            heading = f"### {appraisal.source_id}" + (f" — {title}" if title else "")
+            lines.append(heading + "\n")
+            for i, domain in enumerate(appraisal.domains, 1):
+                lines.append(f"#### Domain {i}: {domain.domain_name}\n")
+                lines.append("| Item | Rating |")
+                lines.append("|------|--------|")
+                for item_rating in domain.item_ratings:
+                    lines.append(f"| {item_rating.item_text} | {item_rating.rating} |")
+                lines.append("")
+                lines.append(f"**Overall Concern**: {domain.domain_concern}\n")
+            lines.append("---\n")
 
     lines.append(
         f"\n---\n*Generated by PRISMA Agent on {result.timestamp[:10]}. "
         f"AI-assisted components should be verified before publication.*"
     )
     return "\n".join(lines)
+
+
+def to_narrative_summary_markdown(result: PRISMAReviewResult) -> str:
+    """Export the narrative summary table as standalone Markdown.
+
+    Produces the same table rendered inside to_markdown() but as a self-contained
+    document, suitable for direct display or sharing.
+    """
+    if not result.narrative_rows:
+        return "# Narrative Summary Table\n\n*No narrative summary rows available.*\n"
+
+    def _cell(text: str, limit: int = 120) -> str:
+        t = (text or "").replace("|", "\\|").replace("\n", " ")
+        return t[:limit] + "..." if len(t) > limit else t
+
+    n = len(result.narrative_rows)
+    lines = [
+        f"# Narrative Summary Table ({n} {'study' if n == 1 else 'studies'})\n",
+        "| Source | Design / Sample / Dataset | Methods | Outcomes | Limitations | Relevance Notes | Review Q&A |",
+        "|--------|--------------------------|---------|----------|-------------|-----------------|------------|",
+    ]
+    for row in result.narrative_rows:
+        lines.append(
+            f"| {row.source_id} "
+            f"| {_cell(row.study_design_sample_dataset)} "
+            f"| {_cell(row.methods)} "
+            f"| {_cell(row.outcomes)} "
+            f"| {_cell(row.key_limitations)} "
+            f"| {_cell(row.relevance_notes)} "
+            f"| {_cell(row.review_specific_questions)} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def to_narrative_summary_json(result: PRISMAReviewResult) -> str:
+    """Export the narrative summary rows as a JSON array."""
+    rows = [
+        {
+            "source_id": row.source_id,
+            "study_design_sample_dataset": row.study_design_sample_dataset,
+            "methods": row.methods,
+            "outcomes": row.outcomes,
+            "key_limitations": row.key_limitations,
+            "relevance_notes": row.relevance_notes,
+            "review_specific_questions": row.review_specific_questions,
+        }
+        for row in result.narrative_rows
+    ]
+    return json.dumps(rows, indent=2, ensure_ascii=False)
 
 
 def to_bibtex(result: PRISMAReviewResult) -> str:
@@ -323,8 +429,11 @@ def to_rubric_markdown(result: PRISMAReviewResult) -> str:
         lines.append(f"## {rubric.source_id} — {rubric.title or 'Unknown'}\n")
         for section_title, section_out in rubric.section_outputs.items():
             lines.append(f"### {section_title}\n")
-            lines.append(f"**Format**: {section_out.format_used}\n")
-            lines.append(section_out.formatted_answer)
+            body = section_out.formatted_answer
+            if section_out.format_used == "json" or (body.lstrip().startswith(("{", "["))):
+                lines.append(f"```json\n{body}\n```")
+            else:
+                lines.append(body)
             lines.append("")
             if section_out.section_summary:
                 lines.append(f"**Summary**: {section_out.section_summary}\n")
@@ -571,6 +680,8 @@ def to_appraisal_json(result: PRISMAReviewResult) -> str:
             "appraisal": appraisal_data,
         })
 
+    return json.dumps({"studies": studies, "summary": summary}, indent=2, ensure_ascii=False)
+
 
 # ────────────────── Feature 007: Compare-mode exports ──────────────────
 
@@ -770,5 +881,3 @@ def to_compare_charting_json(result: CompareReviewResult) -> str:
         studies.append({"source_id": source_id, "fields": fields_data})
 
     return json.dumps({"compare_models": result.compare_models, "studies": studies}, indent=2)
-
-    return json.dumps({"studies": studies, "summary": summary}, indent=2, ensure_ascii=False)
