@@ -44,10 +44,21 @@ def to_oxigraph_store(result: PRISMAReviewResult) -> SLRStore:
 
 
 def to_markdown(result: PRISMAReviewResult) -> str:
-    """Export review as PRISMA 2020 structured Markdown."""
+    """Export review as a complete PRISMA 2020 structured Markdown paper.
+
+    Produces one cohesive document.  When result.prisma_review is present its
+    richer content fills the corresponding sections (Abstract, Introduction,
+    Methods, Results, Discussion, Conclusion) instead of being appended as a
+    second document after the main paper.
+    """
     p = result.protocol
     f = result.flow
     included = result.included_articles
+    pr = result.prisma_review  # may be None
+
+    def _cell(text: str, limit: int = 120) -> str:
+        t = (text or "").replace("|", "\\|").replace("\n", " ")
+        return t[:limit] + "..." if len(t) > limit else t
 
     cache_banner = ""
     if result.cache_hit:
@@ -64,40 +75,63 @@ def to_markdown(result: PRISMAReviewResult) -> str:
         f"\n*Generated: {result.timestamp} | PRISMA 2020 Compliant*\n",
         cache_banner,
         "---\n",
+    ]
 
-        "## Abstract\n",
-        f"**Objective:** {p.objective}\n",
-        f"**Methods:** A systematic search of {', '.join(p.databases)} was conducted. "
-        f"Studies were screened against predefined criteria. Risk of bias was assessed "
-        f"using {p.rob_tool.value}.\n",
-        f"**Results:** {f.total_identified} records were identified. After removing "
-        f"{f.duplicates_removed} duplicates and screening, {f.included_synthesis} "
-        f"studies were included.\n",
+    # ── Abstract ──────────────────────────────────────────────────────────────
+    lines.append("## Abstract\n")
+    if pr and pr.abstract:
+        lines.extend([
+            f"**Background:** {pr.abstract.background}\n",
+            f"**Objective:** {pr.abstract.objective}\n",
+            f"**Methods:** {pr.abstract.methods}\n",
+            f"**Results:** {pr.abstract.results}\n",
+            f"**Conclusion:** {pr.abstract.conclusion}\n",
+        ])
+    else:
+        lines.extend([
+            f"**Objective:** {p.objective}\n",
+            f"**Methods:** A systematic search of {', '.join(p.databases)} was conducted. "
+            f"Studies were screened against predefined criteria. Risk of bias was assessed "
+            f"using {p.rob_tool.value}.\n",
+            f"**Results:** {f.total_identified} records were identified. After removing "
+            f"{f.duplicates_removed} duplicates and screening, {f.included_synthesis} "
+            f"studies were included.\n",
+        ])
 
-        "---\n",
-        "## 1. Introduction\n",
-        f"### 1.1 Rationale (PRISMA Item 3)\n\n{p.objective}\n",
-        "### 1.2 Objectives (PRISMA Item 4)\n",
-        f"- **Population:** {p.pico_population or 'N/A'}",
-        f"- **Intervention:** {p.pico_intervention or 'N/A'}",
-        f"- **Comparison:** {p.pico_comparison or 'N/A'}",
-        f"- **Outcome:** {p.pico_outcome or 'N/A'}\n",
+    # ── 1. Introduction ───────────────────────────────────────────────────────
+    lines.extend(["---\n", "## 1. Introduction\n"])
+    if pr and pr.introduction:
+        lines.extend([
+            f"### 1.1 Background\n\n{pr.introduction.background}\n",
+            f"### 1.2 Problem Statement\n\n{pr.introduction.problem_statement}\n",
+            f"### 1.3 Research Gap\n\n{pr.introduction.research_gap}\n",
+            f"### 1.4 Objectives (PRISMA Item 4)\n\n{pr.introduction.objectives}\n",
+        ])
+    else:
+        lines.extend([
+            f"### 1.1 Rationale (PRISMA Item 3)\n\n{p.objective}\n",
+            "### 1.2 Objectives (PRISMA Item 4)\n",
+            f"- **Population:** {p.pico_population or 'N/A'}",
+            f"- **Intervention:** {p.pico_intervention or 'N/A'}",
+            f"- **Comparison:** {p.pico_comparison or 'N/A'}",
+            f"- **Outcome:** {p.pico_outcome or 'N/A'}\n",
+        ])
 
-        "---\n",
-        "## 2. Methods\n",
+    # ── 2. Methods ────────────────────────────────────────────────────────────
+    lines.extend(["---\n", "## 2. Methods\n"])
+    lines.extend([
         "### 2.1 Eligibility Criteria (PRISMA Item 5)\n",
         f"**Inclusion:** {p.inclusion_criteria}\n",
         f"**Exclusion:** {p.exclusion_criteria}\n",
-        f"### 2.2 Information Sources (PRISMA Item 6)\n",
+        "### 2.2 Information Sources (PRISMA Item 6)\n",
         f"Databases searched: {', '.join(p.databases)}\n",
         f"Date of last search: {result.timestamp[:10]}\n",
         f"Multi-hop citation navigation: up to {p.max_hops} hops\n",
         "### 2.3 Search Strategy (PRISMA Item 7)\n",
         "Queries used:",
-    ]
+    ])
     for q in result.search_queries:
         lines.append(f"- `{q}`")
-
     lines.extend([
         "\n### 2.4 Selection Process (PRISMA Item 8)\n",
         "Studies were screened using AI-assisted batch screening with human "
@@ -105,12 +139,22 @@ def to_markdown(result: PRISMAReviewResult) -> str:
         "screening was strict.\n",
         f"### 2.5 Risk of Bias (PRISMA Item 11)\n",
         f"Risk of bias was assessed using **{p.rob_tool.value}**.\n",
+    ])
+    if pr and pr.methods:
+        if pr.methods.quality_assessment:
+            lines.extend(["### 2.6 Quality Assessment\n", f"{pr.methods.quality_assessment}\n"])
+        if pr.methods.data_extraction:
+            lines.append("### 2.7 Data Extraction (PRISMA Item 10)\n")
+            for report in pr.methods.data_extraction:
+                lines.append(f"**{report.source_id}**: {', '.join(report.sections.keys())}")
+            lines.append("")
 
-        "---\n",
-        "## 3. Results\n",
+    # ── 3. Results ────────────────────────────────────────────────────────────
+    lines.extend(["---\n", "## 3. Results\n"])
+
+    lines.extend([
         "### 3.1 PRISMA Flow (Item 16a)\n",
-        "| Stage | Count |",
-        "|-------|-------|",
+        "| Stage | Count |", "|-------|-------|",
         f"| PubMed | {f.db_pubmed} |",
         f"| bioRxiv | {f.db_biorxiv} |",
         f"| Related articles | {f.db_related} |",
@@ -124,60 +168,90 @@ def to_markdown(result: PRISMAReviewResult) -> str:
         f"| **Included** | **{f.included_synthesis}** |\n",
     ])
 
-    # Study characteristics table
     lines.append("### 3.2 Study Characteristics (Item 17)\n")
-    lines.append("| Authors | Year | Journal | Design | RoB |")
-    lines.append("|---------|------|---------|--------|-----|")
+    lines.extend(["| Authors | Year | Journal | Design | RoB |", "|---------|------|---------|--------|-----|"])
     for a in included:
         design = a.extracted_data.study_design if a.extracted_data else "NR"
         rob = a.risk_of_bias.overall.value if a.risk_of_bias else "NR"
-        lines.append(
-            f"| {a.short_author} | {a.year} | {a.journal[:30]} | {design} | {rob} |"
-        )
+        lines.append(f"| {a.short_author} | {a.year} | {a.journal[:30]} | {design} | {rob} |")
+    lines.append("")
 
-    # Narrative summary table
     if result.narrative_rows:
-        lines.append("\n### 3.3 Narrative Summary Table\n")
-        lines.append("| Source | Design / Sample / Dataset | Methods | Outcomes | Limitations | Relevance Notes | Review Q&A |")
-        lines.append("|--------|--------------------------|---------|----------|-------------|-----------------|------------|")
+        lines.append("### 3.3 Narrative Summary Table\n")
+        lines.extend([
+            "| Source | Design / Sample / Dataset | Methods | Outcomes | Limitations | Relevance Notes | Review Q&A |",
+            "|--------|--------------------------|---------|----------|-------------|-----------------|------------|",
+        ])
         for row in result.narrative_rows:
-            def _cell(text: str, limit: int = 120) -> str:
-                t = (text or "").replace("|", "\\|").replace("\n", " ")
-                return t[:limit] + "..." if len(t) > limit else t
             lines.append(
-                f"| {row.source_id} "
-                f"| {_cell(row.study_design_sample_dataset)} "
-                f"| {_cell(row.methods)} "
-                f"| {_cell(row.outcomes)} "
-                f"| {_cell(row.key_limitations)} "
-                f"| {_cell(row.relevance_notes)} "
+                f"| {row.source_id} | {_cell(row.study_design_sample_dataset)} "
+                f"| {_cell(row.methods)} | {_cell(row.outcomes)} "
+                f"| {_cell(row.key_limitations)} | {_cell(row.relevance_notes)} "
                 f"| {_cell(row.review_specific_questions)} |"
             )
         lines.append("")
 
-    # Synthesis
-    lines.extend(["\n### 3.4 Synthesis\n", result.synthesis_text or "[Synthesis pending]"])
+    lines.append("### 3.4 Synthesis\n")
+    if pr and pr.results and pr.results.themes:
+        for theme in pr.results.themes:
+            lines.extend([f"#### Theme: {theme.theme_name}\n", f"{theme.description}\n", "**Key findings:**"])
+            for kf in theme.key_findings:
+                lines.append(f"- {kf}")
+            lines.append("")
+        if pr.results.paragraph_summary:
+            for block in pr.results.paragraph_summary:
+                if block.heading:
+                    lines.append(f"**{block.heading}**\n")
+                lines.append(f"{block.text}\n")
+    else:
+        lines.append(result.synthesis_text or "[Synthesis pending]")
 
-    # Risk of bias
+    if pr and pr.results and pr.results.quantitative_analysis:
+        qa = pr.results.quantitative_analysis
+        lines.extend([
+            "\n### 3.5 Quantitative Analysis\n",
+            f"**Effect size:** {qa.effect_size or 'N/A'}\n",
+            f"**Confidence intervals:** {qa.confidence_intervals or 'N/A'}\n",
+            f"**Heterogeneity:** {qa.heterogeneity or 'N/A'}\n",
+        ])
+
     if result.bias_assessment:
-        lines.extend(["\n### 3.5 Risk of Bias Assessment (Items 18, 21)\n", result.bias_assessment])
+        lines.extend(["\n### 3.6 Risk of Bias Assessment (Items 18, 21)\n", result.bias_assessment])
 
-    # GRADE
     if result.grade_assessments:
-        lines.append("\n### 3.6 Certainty of Evidence - GRADE (Item 22)\n")
+        lines.append("\n### 3.7 Certainty of Evidence - GRADE (Item 22)\n")
         for outcome, grade in result.grade_assessments.items():
             lines.append(f"**{outcome}:** {grade.overall_certainty.value}")
             lines.append(f"  {grade.summary}\n")
 
-    # Limitations
-    lines.extend(["\n---\n", "## 4. Discussion\n"])
-    if result.limitations:
+    # ── 4. Discussion ─────────────────────────────────────────────────────────
+    lines.extend(["---\n", "## 4. Discussion\n"])
+    if pr and pr.discussion:
+        lines.extend([
+            f"### 4.1 Summary of Findings\n\n{pr.discussion.summary_of_findings}\n",
+            f"### 4.2 Interpretation\n\n{pr.discussion.interpretation}\n",
+            f"### 4.3 Comparison with Literature\n\n{pr.discussion.comparison_with_literature}\n",
+            "### 4.4 Implications\n",
+            f"**Clinical:** {pr.discussion.implications.clinical}\n",
+            f"**Policy:** {pr.discussion.implications.policy}\n",
+            f"**Research:** {pr.discussion.implications.research}\n",
+            f"### 4.5 Limitations\n\n{pr.discussion.limitations}\n",
+        ])
+    elif result.limitations:
         lines.extend(["### 4.1 Limitations\n", result.limitations])
 
-    # Other information
+    # ── 5. Conclusion ─────────────────────────────────────────────────────────
+    if pr and pr.conclusion:
+        lines.extend([
+            "---\n", "## 5. Conclusion\n",
+            f"### 5.1 Key Takeaways\n\n{pr.conclusion.key_takeaways}\n",
+            f"### 5.2 Recommendations\n\n{pr.conclusion.recommendations}\n",
+            f"### 5.3 Future Research\n\n{pr.conclusion.future_research}\n",
+        ])
+
+    # ── 6. Other Information ──────────────────────────────────────────────────
     lines.extend([
-        "\n---\n",
-        "## 5. Other Information\n",
+        "---\n", "## 6. Other Information\n",
         f"- **Registration:** {p.registration_number or 'Not registered'}",
         f"- **Protocol:** {p.protocol_url or 'Not prepared'}",
         f"- **Funding:** {p.funding_sources or 'None declared'}",
@@ -185,104 +259,24 @@ def to_markdown(result: PRISMAReviewResult) -> str:
         f"- **Amendments:** {p.amendments or 'None'}\n",
     ])
 
-    # References
-    lines.append("\n## References\n")
+    # ── References (single canonical list, consistent with to_bibtex) ─────────
+    lines.append("## References\n")
     for i, a in enumerate(included, 1):
         lines.append(f"{i}. {a.citation}\n")
 
-    # Evidence spans
+    # ── Appendix A: Evidence Spans ────────────────────────────────────────────
     if result.evidence_spans:
-        lines.append("\n## Appendix: Evidence Spans\n")
-        for e in result.evidence_spans[:20]:
+        lines.extend(["\n---\n", "## Appendix A: Evidence Spans\n"])
+        for e in result.evidence_spans:
             lines.append(
                 f"- **PMID:{e.paper_pmid}** (score: {e.relevance_score:.2f}): "
-                f'"{e.text[:200]}..."'
+                f'"{e.text}"'
             )
 
-    # Rich structured PrismaReview sections — appended when available
-    if result.prisma_review is not None:
-        pr = result.prisma_review
-        lines.extend([
-            "\n---\n",
-            "## Abstract\n",
-            f"**Background:** {pr.abstract.background}\n",
-            f"**Objective:** {pr.abstract.objective}\n",
-            f"**Methods:** {pr.abstract.methods}\n",
-            f"**Results:** {pr.abstract.results}\n",
-            f"**Conclusion:** {pr.abstract.conclusion}\n",
-            "\n---\n",
-            "## Introduction\n",
-            f"### Background\n\n{pr.introduction.background}\n",
-            f"### Problem Statement\n\n{pr.introduction.problem_statement}\n",
-            f"### Research Gap\n\n{pr.introduction.research_gap}\n",
-            f"### Objectives\n\n{pr.introduction.objectives}\n",
-            "\n---\n",
-            "## Methods\n",
-            f"### Search Strategy\n\n{pr.methods.search_strategy}\n",
-            f"### Inclusion Criteria\n\n"
-            + "\n".join(f"- {c}" for c in pr.methods.inclusion_criteria) + "\n",
-            f"### Exclusion Criteria\n\n"
-            + "\n".join(f"- {c}" for c in pr.methods.exclusion_criteria) + "\n",
-            f"### Quality Assessment\n\n{pr.methods.quality_assessment}\n",
-        ])
-        if pr.methods.data_extraction:
-            lines.append("### Data Extraction\n")
-            for report in pr.methods.data_extraction:
-                lines.append(f"**{report.source_id}**: {', '.join(report.sections.keys())}")
-            lines.append("")
-        lines.extend([
-            "\n---\n",
-            "## Results\n",
-        ])
-        for theme in pr.results.themes:
-            lines.extend([
-                f"### Theme: {theme.theme_name}\n",
-                f"{theme.description}\n",
-                "**Key findings:**",
-            ])
-            for kf in theme.key_findings:
-                lines.append(f"- {kf}")
-            lines.append("")
-
-        if pr.results.paragraph_summary:
-            lines.append("### Synthesis\n")
-            for block in pr.results.paragraph_summary:
-                if block.heading:
-                    lines.append(f"**{block.heading}**\n")
-                lines.append(f"{block.text}\n")
-
-        if pr.results.quantitative_analysis:
-            qa = pr.results.quantitative_analysis
-            lines.extend([
-                "### Quantitative Analysis\n",
-                f"**Effect size:** {qa.effect_size or 'N/A'}\n",
-                f"**Confidence intervals:** {qa.confidence_intervals or 'N/A'}\n",
-                f"**Heterogeneity:** {qa.heterogeneity or 'N/A'}\n",
-            ])
-
-        lines.extend([
-            "\n---\n",
-            "## Discussion\n",
-            f"### Summary of Findings\n\n{pr.discussion.summary_of_findings}\n",
-            f"### Interpretation\n\n{pr.discussion.interpretation}\n",
-            f"### Comparison with Literature\n\n{pr.discussion.comparison_with_literature}\n",
-            "### Implications\n",
-            f"**Clinical:** {pr.discussion.implications.clinical}\n",
-            f"**Policy:** {pr.discussion.implications.policy}\n",
-            f"**Research:** {pr.discussion.implications.research}\n",
-            f"### Limitations\n\n{pr.discussion.limitations}\n",
-            "\n---\n",
-            "## Conclusion\n",
-            f"### Key Takeaways\n\n{pr.conclusion.key_takeaways}\n",
-            f"### Recommendations\n\n{pr.conclusion.recommendations}\n",
-            f"### Future Research\n\n{pr.conclusion.future_research}\n",
-        ])
-
-    # Appendix B: full data extraction rubrics (inline, not a pointer)
+    # ── Appendix B: Data Extraction Rubrics (full inline) ─────────────────────
     rubrics_with_outputs = [r for r in result.data_charting_rubrics if r.section_outputs]
     if rubrics_with_outputs:
-        lines.append("\n---\n")
-        lines.append("## Appendix B: Data Extraction Rubrics\n")
+        lines.extend(["\n---\n", "## Appendix B: Data Extraction Rubrics\n"])
         for rubric in rubrics_with_outputs:
             lines.append(f"### {rubric.source_id} — {rubric.title or 'Unknown'}\n")
             for section_title, section_out in rubric.section_outputs.items():
@@ -297,22 +291,18 @@ def to_markdown(result: PRISMAReviewResult) -> str:
                     lines.append(f"**Summary**: {section_out.section_summary}\n")
             lines.append("---\n")
 
-    # Appendix C: critical appraisal results
+    # ── Appendix C: Critical Appraisal Results ────────────────────────────────
     appraisal_results = _get_appraisal_results(result)
     if appraisal_results:
-        lines.append("\n---\n")
-        lines.append("## Appendix C: Critical Appraisal Results\n")
+        lines.extend(["\n---\n", "## Appendix C: Critical Appraisal Results\n"])
         for appraisal in appraisal_results:
             title = next(
-                (r.title for r in result.data_charting_rubrics if r.source_id == appraisal.source_id),
-                "",
+                (r.title for r in result.data_charting_rubrics if r.source_id == appraisal.source_id), ""
             )
-            heading = f"### {appraisal.source_id}" + (f" — {title}" if title else "")
-            lines.append(heading + "\n")
+            lines.append(f"### {appraisal.source_id}" + (f" — {title}" if title else "") + "\n")
             for i, domain in enumerate(appraisal.domains, 1):
                 lines.append(f"#### Domain {i}: {domain.domain_name}\n")
-                lines.append("| Item | Rating |")
-                lines.append("|------|--------|")
+                lines.extend(["| Item | Rating |", "|------|--------|"])
                 for item_rating in domain.item_ratings:
                     lines.append(f"| {item_rating.item_text} | {item_rating.rating} |")
                 lines.append("")
