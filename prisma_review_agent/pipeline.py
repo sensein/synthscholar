@@ -12,6 +12,8 @@ from collections import defaultdict
 from datetime import datetime
 from typing import Callable, Optional
 
+import logging
+
 from .models import (
     Article,
     ReviewProtocol,
@@ -37,6 +39,17 @@ from .agents import (
     run_limitations,
 )
 
+try:
+    from .cache.store import CacheStore
+    from .cache.article_store import ArticleStore
+    from .cache.skill import cache_lookup, cache_store
+    from .cache.models import CacheUnavailableError, CacheSchemaError
+    _CACHE_AVAILABLE = True
+except ImportError:
+    _CACHE_AVAILABLE = False
+
+logger = logging.getLogger(__name__)
+
 
 class PRISMAReviewPipeline:
     """Full PRISMA 2020 pipeline with async agent orchestration."""
@@ -59,6 +72,7 @@ class PRISMAReviewPipeline:
         self.max_per_query = max_per_query
         self.related_depth = related_depth
         self.biorxiv_days = biorxiv_days
+        self.model_name = model_name
         self.deps = AgentDeps(
             protocol=self.protocol,
             api_key=api_key,
@@ -87,6 +101,54 @@ class PRISMAReviewPipeline:
             self.log(msg)
             if progress_callback:
                 progress_callback(msg)
+
+        # ── 0. PostgreSQL review-result cache check ──
+        pg_store: Optional[CacheStore] = None
+        art_store: Optional[ArticleStore] = None
+        criteria_dict = proto.model_dump()
+
+        if _CACHE_AVAILABLE and proto.pg_dsn:
+            try:
+                pg_store = CacheStore(dsn=proto.pg_dsn)
+                await pg_store.connect()
+                art_store = ArticleStore(dsn=proto.pg_dsn)
+                await art_store.connect()
+
+                if not proto.force_refresh:
+                    up("Checking review cache...")
+                    lookup = await cache_lookup(
+                        pg_store, criteria_dict, self.model_name,
+                        threshold=proto.cache_threshold,
+                        ttl_days=proto.cache_ttl_days,
+                    )
+                    if lookup.hit and lookup.entry:
+                        score = lookup.similarity_score or 1.0
+                        matched = lookup.entry.criteria_json.get("title", "")
+                        up(
+                            f"Cache HIT (similarity={score:.1%}) — matched: '{matched}' "
+                            f"[cached {lookup.entry.created_at.strftime('%Y-%m-%d')}]"
+                        )
+                        cached_result = PRISMAReviewResult.model_validate(
+                            lookup.entry.result_json
+                        )
+                        cached_result.cache_hit = True
+                        cached_result.cache_similarity_score = score
+                        cached_result.cache_matched_criteria = lookup.entry.criteria_json
+                        await pg_store.close()
+                        await art_store.close()
+                        return cached_result
+                    else:
+                        up("Cache miss — running full pipeline.")
+                else:
+                    up("Force-refresh: skipping cache lookup.")
+            except (CacheUnavailableError, CacheSchemaError) as exc:
+                logger.warning("Cache unavailable (%s) — continuing without cache.", exc)
+                pg_store = None
+                art_store = None
+            except Exception as exc:
+                logger.warning("Cache check failed (%s) — continuing without cache.", exc)
+                pg_store = None
+                art_store = None
 
         # ── 1. Search strategy (LLM agent) ──
         up("Generating search strategy...")
@@ -262,7 +324,25 @@ class PRISMAReviewPipeline:
 
         # ── 8. Full-text retrieval ──
         flow.sought_fulltext = len(ta_included)
-        pmc_articles = [a for a in ta_included if a.pmc_id]
+
+        # 8a. Pre-populate full_text from ArticleStore to reduce API calls
+        if art_store:
+            try:
+                pmids_needed = [a.pmid for a in ta_included if not a.full_text and a.pmc_id]
+                if pmids_needed:
+                    cached_arts = await art_store.get_by_pmids(pmids_needed)
+                    cached_map = {a.pmid: a for a in cached_arts}
+                    prefilled = 0
+                    for a in ta_included:
+                        if a.pmid in cached_map and cached_map[a.pmid].full_text:
+                            a.full_text = cached_map[a.pmid].full_text
+                            prefilled += 1
+                    if prefilled:
+                        up(f"  Pre-filled {prefilled} full texts from article store")
+            except Exception as exc:
+                logger.warning("ArticleStore pre-populate failed (%s) — continuing.", exc)
+
+        pmc_articles = [a for a in ta_included if a.pmc_id and not a.full_text]
         if pmc_articles:
             up(f"Fetching full text for {len(pmc_articles)} PMC articles...")
             texts = self.pubmed.fetch_full_text([a.pmc_id for a in pmc_articles])
@@ -270,6 +350,15 @@ class PRISMAReviewPipeline:
                 if a.pmc_id in texts:
                     a.full_text = texts[a.pmc_id]
             up(f"  Retrieved {len(texts)} full texts")
+
+        # 8b. Persist all fetched articles to ArticleStore for future reuse
+        if art_store:
+            try:
+                n = await art_store.upsert_articles(ta_included)
+                up(f"  Stored {n} articles in article store")
+            except Exception as exc:
+                logger.warning("ArticleStore upsert failed (%s) — continuing.", exc)
+
         flow.not_retrieved = len(ta_included) - len(
             [a for a in ta_included if a.full_text or a.abstract]
         )
@@ -398,7 +487,7 @@ class PRISMAReviewPipeline:
 
         up("Review complete!")
 
-        return PRISMAReviewResult(
+        final_result = PRISMAReviewResult(
             research_question=proto.question,
             protocol=proto,
             search_queries=all_search_queries,
@@ -412,3 +501,28 @@ class PRISMAReviewPipeline:
             grade_assessments=grade_assessments,
             timestamp=datetime.now().isoformat(),
         )
+
+        # ── 15. Persist result to PostgreSQL cache ──
+        if pg_store:
+            try:
+                await cache_store(
+                    pg_store,
+                    criteria_dict,
+                    self.model_name,
+                    final_result.model_dump(mode="json"),
+                    threshold=proto.cache_threshold,
+                    ttl_days=proto.cache_ttl_days,
+                )
+                up("Result stored in review cache.")
+            except Exception as exc:
+                logger.warning("Failed to store result in cache (%s).", exc)
+            finally:
+                await pg_store.close()
+
+        if art_store:
+            try:
+                await art_store.close()
+            except Exception:
+                pass
+
+        return final_result

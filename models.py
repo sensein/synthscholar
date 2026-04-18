@@ -263,13 +263,40 @@ class ReviewProtocol(BaseModel):
     databases: list[str] = Field(default_factory=lambda: ["PubMed", "bioRxiv"])
     date_range_start: str = ""
     date_range_end: str = ""
-    max_hops: int = 1
+    max_hops: int = 10
     registration_number: str = ""
     protocol_url: str = ""
     funding_sources: str = ""
     competing_interests: str = ""
     amendments: str = ""
     rob_tool: RoBTool = RoBTool.ROB_2
+    # Section 1 required inputs (per brief)
+    grey_literature_sources: list[str] = Field(default_factory=list)
+    target_audience: str = ""   # academic journal | policymaker | industry | thesis
+    word_count_target: int = 8000
+    citation_style: str = "APA 7"  # APA 7 | Vancouver | Harvard | IEEE | Chicago
+    languages: list[str] = Field(default_factory=lambda: ["English"])
+    protocol_overrides: str = ""  # custom charting fields / cohort taxonomies
+    # Custom per-article charting questions (answered into DataChartingRubric.custom_fields).
+    # Leave empty to rely solely on the built-in sections A–G.
+    charting_questions: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Domain-specific questions answered per included article. "
+            "Each question becomes a key in DataChartingRubric.custom_fields. "
+            "Example: ['What sequencing method was used?', 'Which diversity index was reported?']"
+        ),
+    )
+    # Custom appraisal domain names (replaces the four default domain labels when provided).
+    appraisal_domains: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Override the four default appraisal domain names. "
+            "Provide exactly 1–4 names; unspecified positions keep their defaults. "
+            "Default domains: ['Participant and Sample Quality', 'Data Collection Quality', "
+            "'Feature and Model Quality', 'Bias and Transparency']"
+        ),
+    )
 
     @property
     def pico_text(self) -> str:
@@ -327,6 +354,210 @@ class PRISMAReviewResult(BaseModel):
     limitations: str = ""
     grade_assessments: dict[str, GRADEAssessment] = Field(default_factory=dict)
     timestamp: str = ""
+    # Enhanced output formats
+    data_charting_rubrics: list[DataChartingRubric] = Field(default_factory=list)
+    narrative_rows: list[PRISMANarrativeRow] = Field(default_factory=list)
+    critical_appraisals: list[CriticalAppraisalRubric] = Field(default_factory=list)
+    grounding_validation: Optional[GroundingValidationResult] = Field(default=None, description="Grounding validation of AI-generated synthesis")
+    # Full document sections (brief §2.2, §2.3, §2.7)
+    structured_abstract: str = ""
+    introduction_text: str = ""
+    conclusions_text: str = ""
+    quality_checklist: dict[str, bool] = Field(default_factory=dict)
+
+
+# ────────────────────── Enhanced Output Models ─────────────────────────
+
+class DataChartingRubric(BaseModel):
+    """Data Charting Rubric with sections A-G for each included source."""
+    source_id: str  # e.g., M-001, R-001, N-001
+
+    # Section A — Publication Information
+    title: str = ""
+    authors: str = ""  # Last name, First initial
+    year: str = ""
+    journal_conference: str = ""
+    doi: str = ""
+    database_retrieved: str = ""  # PubMed, Scopus, etc.
+    disorder_cohort: str = ""  # One of the five Bridge2AI cohorts
+    primary_focus: str = ""  # disorder-focused vs. technology-focused
+
+    # Section B — Study Design
+    primary_goal: str = ""  # classification, severity assessment, etc.
+    study_design: str = ""  # cross-sectional / longitudinal
+    duration_frequency: str = ""  # if longitudinal
+    subject_model: str = ""  # within / between / mixed
+    task_type: str = ""  # classification / regression / both
+    study_setting: str = ""  # clinical / lab / remote
+    country_region: str = ""
+
+    # Section C — Participants: Disordered Group
+    disorder_diagnosis: str = ""
+    diagnosis_assessment: str = ""  # MDS-UPDRS, DSM-5, etc.
+    n_disordered: str = ""
+    age_mean_sd: str = ""
+    age_range: str = ""
+    gender_distribution: str = ""
+    comorbidities_included_excluded: str = ""
+    medications_therapies: str = ""
+    severity_levels: str = ""  # Mild / Moderate / Severe / Mixed / Not Reported
+
+    # Section D — Participants: Healthy Controls
+    healthy_controls_included: str = ""  # Y/N
+    healthy_status_confirmed: str = ""
+    n_controls: str = ""
+    age_mean_sd_controls: str = ""
+    age_range_controls: str = ""
+    gender_distribution_controls: str = ""
+    age_matched: str = ""  # Y/N/NR
+    gender_matched: str = ""  # Y/N/NR
+    neurodevelopmentally_typical: str = ""  # Y/N/NR
+
+    # Section E — Data Collection
+    data_types: str = ""  # audio, video, text, physiological
+    tasks_performed: str = ""  # sustained vowel, read speech, etc.
+    equipment_tools: str = ""
+    new_dataset_contributed: str = ""  # Y/N
+    dataset_openly_available: str = ""  # Y/N/NR
+    dataset_available_request: str = ""  # Y/N/NR
+    sensitive_data_anonymized: str = ""  # Y/N/NR
+
+    # Section F — Features and Models
+    feature_types: str = ""  # acoustic / linguistic / articulatory / DNN embeddings / combination
+    specific_features: str = ""  # MFCCs, jitter, shimmer, F0, HNR
+    feature_extraction_tools: str = ""  # openSMILE, torchaudio, librosa
+    feature_importance_reported: str = ""  # Y/N
+    importance_method: str = ""  # SHAP, permutation, correlation
+    top_features_identified: str = ""
+    feature_change_direction: str = ""  # Increase / Decrease / Mixed / NR
+    model_category: str = ""  # statistical / classical ML / deep learning
+    specific_algorithms: str = ""  # SVM, Random Forest, LSTM, wav2vec
+    validation_methodology: str = ""  # train/test, k-fold CV, LOOCV, held-out test
+    performance_metrics: str = ""  # Accuracy, AUC, F1, RMSE, R²
+    key_performance_results: str = ""
+
+    # Section G — Synthesis Fields
+    summary_key_findings: str = ""  # 1–2 sentences
+    features_associated_disorder: str = ""
+    future_directions_recommended: str = ""
+    reviewer_notes: str = ""
+
+    # Answers to protocol.charting_questions (question text → extracted answer)
+    custom_fields: dict[str, str] = Field(default_factory=dict)
+
+
+class PRISMANarrativeRow(BaseModel):
+    """PRISMA-Style Narrative Row — condensed summary from charting data."""
+    source_id: str
+    study_design_sample_dataset: str = ""  # Drawn from Sections B, C, D, E
+    methods: str = ""  # Drawn from Sections E, F (feature extraction, model, validation)
+    outcomes: str = ""  # Drawn from Section F (key performance results), Section G (summary of findings)
+    key_limitations: str = ""  # Drawn from Section G (reviewer notes) + appraisal domains
+    relevance_notes: str = ""  # Drawn from Section A (disorder cohort, primary focus), Section G
+    review_specific_questions: str = ""  # Customized per review protocol
+
+
+class CriticalAppraisalItem(BaseModel):
+    """Single item in critical appraisal rubric."""
+    item_text: str
+    rating: str  # Yes / Partial / No / Not Reported / N/A
+    notes: str = ""
+
+
+class CriticalAppraisalDomain(BaseModel):
+    """Domain in critical appraisal rubric."""
+    domain_name: str
+    items: list[CriticalAppraisalItem] = Field(default_factory=list)
+    overall_concern: str = ""  # Low / Some / High
+
+
+class CriticalAppraisalRubric(BaseModel):
+    """Critical Appraisal Rubric completed by human reviewer."""
+    source_id: str
+    domain_1_participant_quality: CriticalAppraisalDomain = Field(default_factory=lambda: CriticalAppraisalDomain(domain_name="Participant and Sample Quality"))
+    domain_2_data_collection_quality: CriticalAppraisalDomain = Field(default_factory=lambda: CriticalAppraisalDomain(domain_name="Data Collection Quality"))
+    domain_3_feature_model_quality: CriticalAppraisalDomain = Field(default_factory=lambda: CriticalAppraisalDomain(domain_name="Feature and Model Quality"))
+    domain_4_bias_transparency: CriticalAppraisalDomain = Field(default_factory=lambda: CriticalAppraisalDomain(domain_name="Bias and Transparency"))
+
+    @property
+    def overall_concern_score(self) -> str:
+        """Calculate overall concern based on domain scores."""
+        domains = [self.domain_1_participant_quality, self.domain_2_data_collection_quality,
+                  self.domain_3_feature_model_quality, self.domain_4_bias_transparency]
+        concerns = [d.overall_concern for d in domains if d.overall_concern]
+        if "High" in concerns:
+            return "High"
+        elif "Some" in concerns:
+            return "Some"
+        elif concerns and all(c == "Low" for c in concerns):
+            return "Low"
+        return "Not Assessed"
+
+
+class ScoringConvention(BaseModel):
+    """Scoring conventions and definitions."""
+    item_level_definitions: dict[str, str] = Field(default_factory=dict)
+    domain_level_definitions: dict[str, str] = Field(default_factory=dict)
+    process_guidelines: str = ""
+
+
+# ────────────────────── Grounding Validation Models ─────────────────────────
+
+class GroundingVerdict(str, Enum):
+    """Grounding validation verdicts."""
+    SUPPORTED = "SUPPORTED"
+    PARTIALLY_SUPPORTED = "PARTIALLY_SUPPORTED"
+    UNSUPPORTED = "UNSUPPORTED"
+    CONTRADICTED = "CONTRADICTED"
+    UNVERIFIABLE = "UNVERIFIABLE"
+
+
+class ClaimType(str, Enum):
+    """Types of atomic claims for grounding validation."""
+    DESIGN = "Design"
+    POPULATION = "Population"
+    INTERVENTION = "Intervention"
+    COMPARATOR = "Comparator"
+    OUTCOME = "Outcome"
+    TIMEPOINT = "Timepoint"
+    EFFECT = "Effect"
+    STATISTIC = "Statistic"
+    CITATION = "Citation"
+    QUALITATIVE = "Qualitative"
+    OTHER = "Other"
+
+
+class AtomicClaim(BaseModel):
+    """An atomic claim extracted from AI-generated text for grounding validation."""
+    id: str = Field(description="Unique identifier for the claim (e.g., 'C1', 'C2')")
+    excerpt_text: str = Field(description="Verbatim text of the claim from the target excerpt")
+    claim_type: ClaimType = Field(description="Type of claim being made")
+    cited_sources: list[str] = Field(default_factory=list, description="Citation keys referenced for this claim")
+    source_span: str = Field(description="Supporting text from source corpus, or 'NO SUPPORTING SPAN FOUND'")
+    verdict: GroundingVerdict = Field(description="Grounding validation verdict")
+    rule_violated: Optional[str] = Field(default=None, description="Specific rule violated (e.g., 'R-NUM-1')")
+    discrepancy_note: Optional[str] = Field(default=None, description="Explanation of the discrepancy")
+    suggested_correction: Optional[str] = Field(default=None, description="Suggested correction grounded in source")
+
+
+class GroundingValidationResult(BaseModel):
+    """Complete grounding validation result for an AI-generated excerpt."""
+    prerequisites_ok: bool = Field(description="Whether all required inputs (corpus, citation_map, excerpt) are present")
+    n_atomic_claims: int = Field(description="Total number of atomic claims decomposed")
+    grounding_rate: float = Field(description="Proportion of claims that are SUPPORTED (0.0 to 1.0)")
+    critical_error_count: int = Field(description="Number of CONTRADICTED claims involving critical elements")
+    hallucinated_citation_count: int = Field(description="Number of hallucinated citations")
+    overall_verdict: str = Field(description="PASS | REVISE | FAIL")
+    claims: list[AtomicClaim] = Field(default_factory=list, description="Detailed validation results for each claim")
+    unresolved_citations: list[str] = Field(default_factory=list, description="Citation keys not found in citation map")
+    notes: Optional[str] = Field(default=None, description="Free-text notes on systemic issues")
+
+
+class GroundingValidationDeps(BaseModel):
+    """Dependencies for grounding validation."""
+    target_excerpt: str = Field(description="The AI-generated text to validate")
+    corpus_documents: dict[str, str] = Field(description="Citation key -> full text mapping")
+    citation_map: dict[str, str] = Field(description="Citation key -> document identifier mapping")
 
 
 # ── Forward reference resolution ──

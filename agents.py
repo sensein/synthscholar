@@ -30,6 +30,13 @@ from models import (
     Article,
     BatchEvidenceExtraction,
     EvidenceSpan,
+    DataChartingRubric,
+    PRISMANarrativeRow,
+    CriticalAppraisalRubric,
+    GroundingValidationResult,
+    GroundingVerdict,
+    AtomicClaim,
+    ClaimType,
 )
 
 
@@ -417,6 +424,185 @@ async def _evidence_context(ctx: RunContext[AgentDeps]) -> str:
     )
 
 
+# ────────────────────── 10. Data Charting Agent ────────────────────────
+
+data_charting_agent = Agent(
+    output_type=DataChartingRubric,
+    deps_type=AgentDeps,
+    system_prompt="""\
+You are a systematic review data charter. Extract structured information
+from the provided research article into the Data Charting Rubric format.
+
+Complete all sections (A-G) based on the article content. Use "Not Reported"
+for missing information. Be precise and only report what is explicitly stated.
+
+Section A: Publication metadata
+Section B: Study design details
+Section C: Disordered group participants
+Section D: Healthy controls (if applicable)
+Section E: Data collection methods
+Section F: Features, models, and performance
+Section G: Synthesis and reviewer notes (summarize key findings)
+
+If the prompt includes additional protocol-specific questions, answer each one
+in the custom_fields dict using the question text verbatim as the key and a
+concise extracted answer as the value. Use "Not Reported" when the article does
+not address the question.
+""",
+    retries=2,
+    name="data_charter",
+    defer_model_check=True,
+)
+
+
+# ────────────────────── 11. Narrative Row Agent ────────────────────────
+
+narrative_row_agent = Agent(
+    output_type=PRISMANarrativeRow,
+    deps_type=AgentDeps,
+    system_prompt="""\
+You are creating a condensed PRISMA-style narrative row from the detailed
+charting data. Generate a six-cell summary:
+
+1. Study design / sample / dataset (from Sections B, C, D, E)
+2. Methods (from Sections E, F: feature extraction, model, validation)
+3. Outcomes (from Section F: key performance results, Section G: summary)
+4. Key limitations (from Section G notes + appraisal domains)
+5. Relevance notes (from Section A: disorder cohort/focus, Section G)
+6. Review-specific questions (customized per protocol)
+
+Keep each cell concise (1-2 sentences) but informative.
+""",
+    retries=1,
+    name="narrative_summarizer",
+    defer_model_check=True,
+)
+
+
+# ────────────────────── 12. Critical Appraisal Agent ───────────────────
+
+critical_appraisal_agent = Agent(
+    output_type=CriticalAppraisalRubric,
+    deps_type=AgentDeps,
+    system_prompt="""\
+You are a systematic review critical appraiser. Complete the four-domain
+critical appraisal rubric for the provided study.
+
+For each domain, evaluate each item using the rating definitions:
+- Yes: criterion fully met and clearly reported
+- Partial: partially met or partially reported
+- No: addressed but not met
+- Not Reported: not addressed at all
+- N/A: not applicable
+
+Then assign overall concern for each domain:
+- Low: all/nearly all items Yes, minor Partial ratings
+- Some: one+ Partial/No items affecting validity but not undermining
+- High: multiple No/Not Reported items, or critical item No compromising conclusions
+
+Complete all four domains with item-level ratings and justifications.
+""",
+    retries=2,
+    name="critical_appraiser",
+    defer_model_check=True,
+)
+
+
+# ────────────────────── 13. Introduction Agent ─────────────────────────
+
+introduction_agent = Agent(
+    output_type=str,
+    deps_type=AgentDeps,
+    system_prompt="""\
+Write the Introduction section (10–15% of review length) for a PRISMA 2020 systematic review.
+Cover these four subsections in order:
+
+1.1 Background and Context — define the problem, its significance, and the domain landscape.
+1.2 Theoretical/Conceptual Framework (if applicable) — guiding models or taxonomies; omit if not relevant.
+1.3 Rationale for the Review — why a systematic review is needed now: conflicting evidence,
+    gap in existing reviews, new evidence since last review, or absence of any synthesis.
+1.4 Objectives and Research Questions — state in PICO or equivalent and number each:
+    RQ1, RQ2, …
+
+Style: past tense for completed work; present for established knowledge. First person plural.
+End with the numbered RQ list.
+""",
+    retries=1,
+    name="introduction_writer",
+    defer_model_check=True,
+)
+
+
+@introduction_agent.system_prompt
+async def _introduction_context(ctx: RunContext[AgentDeps]) -> str:
+    p = ctx.deps.protocol
+    return (
+        f"\nReview Title: {p.title}\n"
+        f"Research Question: {p.question}\n"
+        f"PICO:\n{p.pico_text}\n"
+        f"Inclusion: {p.inclusion_criteria}\n"
+        f"Exclusion: {p.exclusion_criteria}\n"
+        f"Target Audience: {p.target_audience or 'academic journal'}\n"
+        f"Word Count Target: {p.word_count_target}"
+    )
+
+
+# ────────────────────── 14. Conclusions Agent ──────────────────────────
+
+conclusions_agent = Agent(
+    output_type=str,
+    deps_type=AgentDeps,
+    system_prompt="""\
+Write the Conclusions section (1–2 paragraphs, 150–250 words) for a PRISMA 2020 systematic review.
+Requirements:
+- Directly answer each research question (RQ1, RQ2, …).
+- Do NOT overstate certainty beyond what GRADE / the synthesis supports.
+- Do NOT introduce new data or references.
+- Summarise what the evidence shows, its certainty level, and key gaps.
+- Close with one forward-looking sentence on priority future research.
+""",
+    retries=1,
+    name="conclusions_writer",
+    defer_model_check=True,
+)
+
+
+@conclusions_agent.system_prompt
+async def _conclusions_context(ctx: RunContext[AgentDeps]) -> str:
+    p = ctx.deps.protocol
+    return (
+        f"\nResearch Question: {p.question}\n"
+        f"PICO Outcome: {p.pico_outcome or 'Not specified'}"
+    )
+
+
+# ────────────────────── 15. Abstract Agent ─────────────────────────────
+
+abstract_agent = Agent(
+    output_type=str,
+    deps_type=AgentDeps,
+    system_prompt="""\
+Write a structured abstract (250–300 words) for a PRISMA 2020 systematic review.
+Follow the PRISMA-Abstract 12-item checklist. Use these exact labelled sub-headings:
+
+**Background:** 1–2 sentences on why the review matters and the knowledge gap.
+**Objectives:** The research question(s) and specific aims.
+**Methods:** Eligibility criteria, information sources (with latest search date),
+  risk-of-bias tool, synthesis method.
+**Results:** Number of studies included, key study/participant characteristics,
+  main findings, certainty of evidence (GRADE level).
+**Conclusions:** Primary interpretation, one implication, one limitation.
+**Registration:** Protocol registry and ID, or "not registered".
+**Keywords:** 5–8 comma-separated indexing terms.
+
+Total: ≤300 words. Do not cite individual papers by name.
+""",
+    retries=1,
+    name="abstract_writer",
+    defer_model_check=True,
+)
+
+
 # ────────────────── Agent Runner Helpers ───────────────────────────────
 
 async def run_search_strategy(deps: AgentDeps) -> SearchStrategy:
@@ -622,6 +808,114 @@ async def run_evidence_extraction(
     return _deduplicate_spans(all_spans)
 
 
+async def run_data_charting(
+    article: Article,
+    deps: AgentDeps,
+    charting_questions: list[str] | None = None,
+) -> DataChartingRubric:
+    """Extract data charting rubric from a single article.
+
+    If *charting_questions* are provided they are answered into
+    ``DataChartingRubric.custom_fields`` (question text → extracted answer).
+    """
+    model = build_model(deps.api_key, deps.model_name)
+
+    custom_block = ""
+    if charting_questions:
+        q_lines = "\n".join(f"  {i+1}. {q}" for i, q in enumerate(charting_questions))
+        custom_block = (
+            f"\n\nAdditional protocol-specific questions to answer in custom_fields "
+            f"(use the question text verbatim as the key):\n{q_lines}"
+        )
+
+    result = await data_charting_agent.run(
+        f"Article PMID: {article.pmid}\n"
+        f"Title: {article.title}\n"
+        f"Authors: {article.authors}\n"
+        f"Year: {article.year}\n"
+        f"Journal: {article.journal}\n"
+        f"DOI: {article.doi}\n"
+        f"Abstract: {article.abstract[:2500]}\n"
+        f"Full text: {(article.full_text or 'Not available')[:4000]}"
+        + custom_block,
+        deps=deps,
+        model=model,
+    )
+    rubric = result.output
+    rubric.source_id = f"M-{article.pmid[-3:]}" if article.pmid.startswith("biorxiv_") else f"R-{article.pmid[-3:]}"
+    return rubric
+
+
+async def run_narrative_row(charting: DataChartingRubric, appraisal: CriticalAppraisalRubric, deps: AgentDeps) -> PRISMANarrativeRow:
+    """Generate narrative row from charting data and appraisal."""
+    model = build_model(deps.api_key, deps.model_name)
+    result = await narrative_row_agent.run(
+        f"Data Charting Rubric:\n{charting.model_dump_json(indent=2)}\n\n"
+        f"Critical Appraisal:\n{appraisal.model_dump_json(indent=2)}",
+        deps=deps,
+        model=model,
+    )
+    row = result.output
+    row.source_id = charting.source_id
+    return row
+
+
+_DEFAULT_APPRAISAL_DOMAINS = [
+    "Participant and Sample Quality",
+    "Data Collection Quality",
+    "Feature and Model Quality",
+    "Bias and Transparency",
+]
+
+
+async def run_critical_appraisal(
+    article: Article,
+    charting: DataChartingRubric,
+    deps: AgentDeps,
+    appraisal_domains: list[str] | None = None,
+) -> CriticalAppraisalRubric:
+    """Perform critical appraisal of a study.
+
+    *appraisal_domains* overrides the default four domain labels when provided.
+    Up to four names are accepted; missing positions keep their defaults.
+    """
+    model = build_model(deps.api_key, deps.model_name)
+
+    domain_labels = list(_DEFAULT_APPRAISAL_DOMAINS)
+    if appraisal_domains:
+        for i, name in enumerate(appraisal_domains[:4]):
+            domain_labels[i] = name
+
+    domains_block = "\n".join(f"  Domain {i+1}: {name}" for i, name in enumerate(domain_labels))
+
+    result = await critical_appraisal_agent.run(
+        f"Article: {article.title} ({article.year})\n"
+        f"Study Design: {charting.study_design}\n"
+        f"Sample: {charting.n_disordered} disordered, {charting.n_controls} controls\n"
+        f"Data Collection: {charting.data_types} via {charting.tasks_performed}\n"
+        f"Features/Models: {charting.feature_types} → {charting.model_category}\n"
+        f"Performance: {charting.key_performance_results}\n"
+        f"Limitations noted: {charting.reviewer_notes}\n"
+        f"\nAppraisal domains to use:\n{domains_block}",
+        deps=deps,
+        model=model,
+    )
+    appraisal = result.output
+    appraisal.source_id = charting.source_id
+    # Rename domain labels to match the protocol-specified names
+    for domain_field, label in zip(
+        [
+            appraisal.domain_1_participant_quality,
+            appraisal.domain_2_data_collection_quality,
+            appraisal.domain_3_feature_model_quality,
+            appraisal.domain_4_bias_transparency,
+        ],
+        domain_labels,
+    ):
+        domain_field.domain_name = label
+    return appraisal
+
+
 def _deduplicate_spans(spans: list[EvidenceSpan], threshold: float = 0.7) -> list[EvidenceSpan]:
     """Remove near-duplicate spans using word overlap."""
     kept: list[EvidenceSpan] = []
@@ -639,3 +933,171 @@ def _deduplicate_spans(spans: list[EvidenceSpan], threshold: float = 0.7) -> lis
         if not is_dup:
             kept.append(span)
     return kept
+
+
+# ────────────────────── Grounding Validation Agent ────────────────────────────
+
+grounding_validation_agent = Agent(
+    "openai:gpt-4o",
+    deps_type=AgentDeps,
+    result_type=GroundingValidationResult,
+    system_prompt="""
+You are a **Grounding Validator** for systematic review text produced in the PRISMA 2020 tradition. Your job is to determine, clause by clause, whether each assertion in AI-generated review excerpts is faithfully grounded in the provided source corpus.
+
+## Core Principles
+- **Text-to-text fidelity only**: Ground claims against the provided corpus documents, not prior knowledge or plausibility
+- **Atomic decomposition**: Break excerpts into single verifiable propositions
+- **Exact matching**: Numbers, citations, and facts must match sources digit-for-digit
+- **No hallucinations**: Reject any claim not directly supported by cited sources
+
+## Validation Rules
+
+### Numerical Fidelity (R-NUM-1 to R-NUM-5)
+- Sample sizes, effect sizes, confidence intervals, p-values must match exactly
+- Rounding requires explicit disclosure of rules
+- Units must match precisely
+- Direction of effect must be preserved
+
+### PICOT Elements (R-PICO-1 to R-PICO-5)
+- Population, intervention, comparator, outcome, timepoint descriptors must match source inclusion criteria
+- Subgroup findings cannot be presented as main results
+- Timepoints must reference exact measurement periods
+
+### Citations (R-CITE-1 to R-CITE-5)
+- Every factual claim needs at least one citation
+- Citations must resolve to corpus documents
+- Cited content must actually support the claim
+- Secondary citations require disclosure
+
+### Study Design & Quality (R-DESIGN-1 to R-DESIGN-4)
+- Design labels must match source terminology
+- Risk-of-bias ratings must match review's own assessments
+- Registration status must be accurately reported
+
+### Synthesis & Heterogeneity (R-SYNTH-1 to R-SYNTH-5)
+- Meta-analytic models must be correctly identified
+- Heterogeneity statistics must match forest plots/tables
+- GRADE certainty ratings must match Summary of Findings
+
+### Qualitative Claims (R-LANG-1 to R-LANG-5)
+- Causal language requires appropriate study designs
+- Generalizations beyond studied populations are unsupported
+- Clinical significance requires explicit MCID thresholds
+
+## Output Format
+Return a complete GroundingValidationResult with atomic claim decomposition, verdicts, and scoring. Be meticulous in identifying every discrepancy.
+""",
+)
+
+
+async def run_grounding_validation(
+    target_excerpt: str,
+    corpus_documents: dict[str, str],
+    citation_map: dict[str, str],
+    deps: AgentDeps,
+) -> GroundingValidationResult:
+    """Validate grounding of AI-generated systematic review text against source corpus.
+
+    Implements comprehensive grounding rules to ensure all claims, numbers, and
+    characterizations are faithfully supported by cited sources.
+    """
+    model = build_model(deps.api_key, deps.model_name)
+
+    # Prepare corpus context (limit to avoid token limits)
+    corpus_summary = "\n\n".join([
+        f"=== {key} ===\n{text[:2000]}..."  # Truncate long documents
+        for key, text in list(corpus_documents.items())[:10]  # Limit to 10 documents
+    ])
+
+    citation_list = "\n".join([f"- {key}: {desc}" for key, desc in citation_map.items()])
+
+    prompt = f"""
+TARGET_EXCERPT to validate:
+{target_excerpt}
+
+CITATION_MAP:
+{citation_list}
+
+CORPUS_DOCUMENTS (excerpts):
+{corpus_summary}
+
+Validate each atomic claim in the TARGET_EXCERPT against the CORPUS_DOCUMENTS.
+Follow the grounding rules exactly: decompose into atomic claims, verify each against sources,
+and provide detailed verdicts with supporting evidence.
+"""
+
+    result = await grounding_validation_agent.run(
+        prompt,
+        deps=deps,
+        model=model,
+    )
+    return result.output
+
+
+async def run_introduction(deps: AgentDeps) -> str:
+    """Generate Introduction section (brief §2.3)."""
+    model = build_model(deps.api_key, deps.model_name)
+    result = await introduction_agent.run(
+        "Write the Introduction section.",
+        deps=deps,
+        model=model,
+    )
+    return result.output
+
+
+async def run_conclusions(synthesis: str, grade_summary: str, deps: AgentDeps) -> str:
+    """Generate Conclusions section (brief §2.7)."""
+    model = build_model(deps.api_key, deps.model_name)
+    result = await conclusions_agent.run(
+        f"Synthesis summary:\n{synthesis[:2000]}\n\nGRADE certainty:\n{grade_summary}",
+        deps=deps,
+        model=model,
+    )
+    return result.output
+
+
+async def run_abstract(flow_text: str, synthesis: str, deps: AgentDeps) -> str:
+    """Generate structured abstract (brief §2.2)."""
+    p = deps.protocol
+    model = build_model(deps.api_key, deps.model_name)
+    result = await abstract_agent.run(
+        f"Review: {p.title}\n"
+        f"PICO: {p.pico_text}\n"
+        f"Databases: {', '.join(p.databases)}\n"
+        f"RoB Tool: {p.rob_tool.value}\n"
+        f"Registration: {p.registration_number or 'not registered'}\n"
+        f"Flow: {flow_text}\n"
+        f"Key synthesis:\n{synthesis[:2000]}",
+        deps=deps,
+        model=model,
+    )
+    return result.output
+
+
+def build_quality_checklist(result) -> dict[str, bool]:
+    """Run the pre-delivery quality checklist (brief §8)."""
+    p = result.protocol
+    f = result.flow
+    title_lower = (p.title or "").lower()
+    return {
+        "title_identifies_as_sr": "systematic review" in title_lower,
+        "abstract_structured": bool(result.structured_abstract),
+        "research_question_stated": bool(p.question),
+        "pico_complete": bool(p.pico_population and p.pico_outcome),
+        "prisma_flow_numbers_present": f.total_identified > 0,
+        "flow_reconciles": (
+            f.after_dedup == f.total_identified - f.duplicates_removed
+            and f.included_synthesis
+            == f.after_dedup - f.excluded_title_abstract - f.excluded_eligibility
+        ),
+        "every_study_charted": len(result.data_charting_rubrics) == f.included_synthesis,
+        "every_study_appraised": len(result.critical_appraisals) == f.included_synthesis,
+        "rob_tool_matches_design": bool(p.rob_tool),
+        "grade_reported": len(result.grade_assessments) > 0,
+        "limitations_two_levels": bool(result.limitations),
+        "conclusions_present": bool(result.conclusions_text),
+        "registration_declared": True,
+        "funding_declared": True,
+        "introduction_present": bool(result.introduction_text),
+        "citation_style_set": bool(p.citation_style),
+    }

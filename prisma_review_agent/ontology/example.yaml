@@ -1,0 +1,328 @@
+review_id: slr:review/R-001
+title: 'AI-Assisted Prognostic Models in Critical Care: A Systematic Review'
+objective: Evaluate the diagnostic accuracy and clinical utility of machine learning models for predicting ICU mortality
+reporting_standard: PRISMA_2020
+primary_focus: prognostic
+eligibility_framework: PICO
+registration_id: CRD42024000001
+registry: PROSPERO
+date_of_last_search: '2024-06-30'
+research_question: Do ML-based prognostic models improve prediction of 28-day ICU mortality compared to standard scoring systems?
+pico_population: Adult ICU patients (18 years or older)
+pico_intervention: Machine learning prognostic models
+pico_comparison: Standard ICU scoring systems (APACHE II, SOFA)
+pico_outcome: 28-day all-cause mortality (AUROC, calibration)
+total_identified: 847
+total_included: 1
+pre_workflow_sessions:
+- session_id: slr:session/S-001
+  session_type: eligibility_calibration
+  session_date: '2024-01-15T09:00:00Z'
+  conducted_by:
+    agent_id: orcid:0000-0001-2345-6789
+    name: Dr. Jane Smith
+    email: jsmith@hospital.org
+    role: lead_reviewer
+  decisions_locked:
+  - Include only peer-reviewed RCTs and cohort studies
+  - Exclude studies with fewer than 50 patients
+  - Primary outcome must be mortality
+  user_inputs:
+  - input_id: slr:input/UI-001
+    input_type: elicitation_response
+    question_asked: What is the minimum sample size threshold for inclusion?
+    input_value: 50 patients minimum
+    options_presented:
+    - No minimum
+    - 50 patients
+    - 100 patients
+    - 200 patients
+    captured_at_time: '2024-01-15T09:05:00Z'
+    influences:
+    - slr:charting/CR-001-v1
+    - slr:charting/CR-001-v2
+  - input_id: slr:input/UI-002
+    input_type: preference_setting
+    question_asked: Which charting template version should be used?
+    input_value: template_v1.2.0
+    captured_at_time: '2024-01-15T09:10:00Z'
+    influences:
+    - slr:charting/CR-001-v1
+included_sources:
+- source_id: https://pubmed.ncbi.nlm.nih.gov/38012345/
+  title: 'Deep Learning for ICU Mortality Prediction: A Multicenter Cohort Study'
+  authors:
+  - Johnson AL
+  - Chen B
+  - Patel R
+  year: 2023
+  journal: Critical Care Medicine
+  pmid: '38012345'
+  doi: 10.1097/CCM.0000000000005901
+  database_source: PubMed
+  charting_record:
+    record_id: slr:charting/CR-001-v2
+    version_number: 2
+    version_label: v2-country-corrected
+    is_current: true
+    was_revision_of: slr:charting/CR-001-v1
+    generated_at_time: '2024-02-20T14:30:00Z'
+    was_generated_by:
+      activity_id: slr:activity/CA-002
+      start_time: '2024-02-20T14:00:00Z'
+      end_time: '2024-02-20T14:30:00Z'
+      model_invocations:
+      - invocation_id: slr:inv/MI-002
+        start_time: '2024-02-20T14:05:00Z'
+        end_time: '2024-02-20T14:07:00Z'
+        prompt:
+          prompt_id: slr:prompt/P-002
+          role: user
+          system_prompt: You are a systematic review assistant. Extract structured data from the provided study abstract and
+            full text according to the charting template.
+          user_prompt: 'Extract charting data for: Johnson AL et al. (2023) Deep Learning for ICU Mortality Prediction. PMID:
+            38012345. Correct the country field — the study was conducted in the United States (Boston, MA).'
+          template_id: charting-template
+          template_version: v1.2.0
+          prompt_hash: cee5fbd409779b60d95a1a7dc9003a6886c728d753cb0c052bbb966e797ead32
+          token_count: 512
+        configuration:
+          config_id: slr:config/MC-001
+          model_name: claude-sonnet-4
+          model_version: claude-sonnet-4-20240229
+          provider: anthropic
+          temperature: 0.0
+          seed: 42
+          max_tokens: 4096
+          top_p: 1.0
+        response_text: 'Charting complete. Section A: country_region corrected to United States. All other fields unchanged
+          from v1.'
+        response_hash: b8dce5984d68be4330167476308e9f6824f76115158149046599828840a00640
+        stop_reason: end_turn
+        input_tokens: 512
+        output_tokens: 128
+        total_tokens: 640
+        cost_usd: 0.0048
+        performed_by:
+          agent_id: slr:agent/SA-001
+          name: PRISMA Agent
+          model_name: claude-sonnet-4
+          model_version: claude-sonnet-4-20240229
+      tool_invocations:
+      - tool_invocation_id: slr:tool/TI-002
+        tool_name: pubmed_fetch
+        tool_category: retrieval
+        arguments_json: '{"pmid": "38012345", "fields": ["abstract", "affiliation"]}'
+        result_text: 'Affiliation: Department of Critical Care Medicine, Massachusetts General Hospital, Boston, MA, USA.'
+        result_hash: e9a33b25103ed2b4ebfaf9ab95be7aa490cb0ea8b2ae08e85fa41b0cba058a63
+        success: true
+        start_time: '2024-02-20T14:01:00Z'
+        end_time: '2024-02-20T14:02:00Z'
+      review_events:
+      - event_id: slr:event/RE-001
+        reviewed_at_time: '2024-02-20T14:28:00Z'
+        decision: approved_with_revision
+        reviewed_entity: slr:charting/CR-001-v2
+        fields_changed:
+        - section_a_publication.country_region
+        original_values: '{"section_a_publication.country_region": "United Kingdom"}'
+        revised_values: '{"section_a_publication.country_region": "United States"}'
+        reviewer_comment: Corrected country based on institutional affiliation in full text.
+        reviewer:
+          agent_id: orcid:0000-0001-2345-6789
+          name: Dr. Jane Smith
+          email: jsmith@hospital.org
+          role: lead_reviewer
+    section_a_publication:
+      country_region: United States
+      language: English
+      publication_type: Journal article
+      funding_sources:
+      - NIH R01 HL123456
+      conflicts_of_interest: None declared
+      protocol_registration: PROSPERO
+      protocol_id: CRD42023000002
+    section_b_design:
+      study_design: cohort_prospective
+      subject_model: human
+      study_setting: academic_medical_center
+      follow_up_duration: 28 days
+      blinding: 'no'
+      randomization: 'no'
+    section_c_primary_sample:
+      population_studied: Adult ICU patients aged 18 or older admitted for at least 24 hours
+      sample_size: 12450
+      eligibility_criteria: Age 18 or above, ICU stay 24h or more, complete EHR data
+      age_range: 18-89 years
+      sex_distribution: 58% male
+    section_f_methods_results:
+      method_category: deep_learning
+      algorithm_names:
+      - LSTM
+      - Transformer
+      validation_methodology: temporal_split
+      primary_metric: AUROC
+      primary_metric_value: 0.87
+      confidence_interval: 0.85-0.89
+      direction_of_effect: favors_intervention
+      key_results:
+      - AUROC 0.87 (95% CI 0.85-0.89) vs APACHE II 0.74
+      - Net reclassification improvement 0.12
+      outcome:
+      - 28-day all-cause mortality
+      effect_measure:
+      - AUC
+    section_g_synthesis:
+      summary_of_findings: Deep learning model significantly outperformed APACHE II for 28-day mortality prediction in a large
+        multicenter cohort.
+      narrative_framework: GRADE
+      certainty_of_evidence: GRADE
+      certainty_rating: some
+  charting_record_history:
+  - record_id: slr:charting/CR-001-v1
+    version_number: 1
+    version_label: v1-initial
+    is_current: false
+    generated_at_time: '2024-02-15T10:00:00Z'
+    was_generated_by:
+      activity_id: slr:activity/CA-001
+      start_time: '2024-02-15T09:30:00Z'
+      end_time: '2024-02-15T10:00:00Z'
+      model_invocations:
+      - invocation_id: slr:inv/MI-001
+        start_time: '2024-02-15T09:35:00Z'
+        end_time: '2024-02-15T09:37:00Z'
+        prompt:
+          prompt_id: slr:prompt/P-001
+          role: user
+          system_prompt: You are a systematic review assistant. Extract structured data from the provided study abstract and
+            full text according to the charting template.
+          user_prompt: 'Extract charting data for: Johnson AL et al. (2023) Deep Learning for ICU Mortality Prediction. PMID:
+            38012345. Abstract: A multicenter prospective cohort study conducted across 5 hospitals in the United Kingdom
+            and United States.'
+          template_id: charting-template
+          template_version: v1.2.0
+          prompt_hash: 2c469f5b285c3c82d73946960886bf07eb707563cfaa8f2bc32ab5da825628df
+          token_count: 487
+        configuration:
+          config_id: slr:config/MC-001
+          model_name: claude-sonnet-4
+          model_version: claude-sonnet-4-20240229
+          provider: anthropic
+          temperature: 0.0
+          seed: 42
+          max_tokens: 4096
+          top_p: 1.0
+        response_text: 'Charting complete for PMID 38012345. Section A: country_region set to United Kingdom based on first
+          author affiliation. Section B: cohort_prospective study design. Section C: 12450 patients.'
+        response_hash: 7b856ab5a4ae4ae5c9e521bc7f52338a4845136219f0bcce0636f33a5d885b9f
+        stop_reason: end_turn
+        input_tokens: 487
+        output_tokens: 156
+        total_tokens: 643
+        cost_usd: 0.0051
+        performed_by:
+          agent_id: slr:agent/SA-001
+          name: PRISMA Agent
+          model_name: claude-sonnet-4
+          model_version: claude-sonnet-4-20240229
+      tool_invocations:
+      - tool_invocation_id: slr:tool/TI-001
+        tool_name: pubmed_search
+        tool_category: search
+        arguments_json: '{"query": "deep learning ICU mortality prediction multicenter", "max_results": 50}'
+        result_text: 'Found 50 results. Top result: PMID 38012345 - Johnson AL et al. Deep Learning for ICU Mortality Prediction.
+          Multicenter cohort study across 5 academic hospitals.'
+        result_hash: 5620271dad942c5fb10ef89eed758dd15ab3c1096d18b4c9001e19310a4478e8
+        success: true
+        start_time: '2024-02-15T09:31:00Z'
+        end_time: '2024-02-15T09:33:00Z'
+    section_a_publication:
+      country_region: United Kingdom
+      language: English
+      publication_type: Journal article
+      funding_sources:
+      - NIH R01 HL123456
+      conflicts_of_interest: None declared
+      protocol_registration: PROSPERO
+      protocol_id: CRD42023000002
+    section_b_design:
+      study_design: cohort_prospective
+      subject_model: human
+      study_setting: academic_medical_center
+      follow_up_duration: 28 days
+      blinding: 'no'
+      randomization: 'no'
+    section_c_primary_sample:
+      population_studied: Adult ICU patients aged 18 or older admitted for at least 24 hours
+      sample_size: 12450
+      eligibility_criteria: Age 18 or above, ICU stay 24h or more, complete EHR data
+      age_range: 18-89 years
+      sex_distribution: 58% male
+    section_f_methods_results:
+      method_category: deep_learning
+      algorithm_names:
+      - LSTM
+      - Transformer
+      validation_methodology: temporal_split
+      primary_metric: AUROC
+      primary_metric_value: 0.87
+      confidence_interval: 0.85-0.89
+      direction_of_effect: favors_intervention
+      key_results:
+      - AUROC 0.87 (95% CI 0.85-0.89) vs APACHE II 0.74
+      outcome:
+      - 28-day all-cause mortality
+      effect_measure:
+      - AUC
+    section_g_synthesis:
+      summary_of_findings: Deep learning model significantly outperformed APACHE II for 28-day mortality prediction.
+      narrative_framework: GRADE
+      certainty_of_evidence: GRADE
+      certainty_rating: some
+artifact_store:
+  store_id: slr:store/AS-001
+  artifacts:
+  - content_hash: 2c469f5b285c3c82d73946960886bf07eb707563cfaa8f2bc32ab5da825628df
+    artifact_kind: prompt_text
+    media_type: text/plain
+    content_text: 'You are a systematic review assistant. Extract structured data from the provided study abstract and full
+      text according to the charting template.
+
+
+      Extract charting data for: Johnson AL et al. (2023) Deep Learning for ICU Mortality Prediction. PMID: 38012345. Abstract:
+      A multicenter prospective cohort study conducted across 5 hospitals in the United Kingdom and United States.'
+    created_at_time: '2024-02-15T09:35:00Z'
+  - content_hash: 7b856ab5a4ae4ae5c9e521bc7f52338a4845136219f0bcce0636f33a5d885b9f
+    artifact_kind: model_response
+    media_type: text/plain
+    content_text: 'Charting complete for PMID 38012345. Section A: country_region set to United Kingdom based on first author
+      affiliation. Section B: cohort_prospective study design. Section C: 12450 patients.'
+    created_at_time: '2024-02-15T09:37:00Z'
+  - content_hash: 5620271dad942c5fb10ef89eed758dd15ab3c1096d18b4c9001e19310a4478e8
+    artifact_kind: tool_result
+    media_type: text/plain
+    content_text: 'Found 50 results. Top result: PMID 38012345 - Johnson AL et al. Deep Learning for ICU Mortality Prediction.
+      Multicenter cohort study across 5 academic hospitals.'
+    created_at_time: '2024-02-15T09:33:00Z'
+  - content_hash: cee5fbd409779b60d95a1a7dc9003a6886c728d753cb0c052bbb966e797ead32
+    artifact_kind: prompt_text
+    media_type: text/plain
+    content_text: 'You are a systematic review assistant. Extract structured data from the provided study abstract and full
+      text according to the charting template.
+
+
+      Extract charting data for: Johnson AL et al. (2023) Deep Learning for ICU Mortality Prediction. PMID: 38012345. Correct
+      the country field — the study was conducted in the United States (Boston, MA).'
+    created_at_time: '2024-02-20T14:05:00Z'
+  - content_hash: b8dce5984d68be4330167476308e9f6824f76115158149046599828840a00640
+    artifact_kind: model_response
+    media_type: text/plain
+    content_text: 'Charting complete. Section A: country_region corrected to United States. All other fields unchanged from
+      v1.'
+    created_at_time: '2024-02-20T14:07:00Z'
+  - content_hash: e9a33b25103ed2b4ebfaf9ab95be7aa490cb0ea8b2ae08e85fa41b0cba058a63
+    artifact_kind: tool_result
+    media_type: text/plain
+    content_text: 'Affiliation: Department of Critical Care Medicine, Massachusetts General Hospital, Boston, MA, USA.'
+    created_at_time: '2024-02-20T14:02:00Z'

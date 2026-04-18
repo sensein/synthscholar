@@ -5,24 +5,35 @@ A standalone, agent-based systematic literature review tool following **PRISMA 2
 ## Architecture
 
 ```
-prisma-agent/
-├── models.py      # Pydantic v2 models (Article, Protocol, Evidence, GRADE, etc.)
-├── clients.py     # HTTP clients: PubMed (NCBI E-utilities), bioRxiv, SQLite cache
-├── agents.py      # 9 pydantic-ai agents with typed outputs + runner functions
-├── evidence.py    # LLM-powered evidence extraction (delegates to agent)
-├── pipeline.py    # Async orchestrator — runs the full 15-step PRISMA pipeline
-├── export.py      # Export: Markdown (PRISMA 2020 format), JSON, BibTeX
-├── main.py        # Standalone CLI with argparse + interactive mode
-└── README.md
+prisma-review-agent/
+├── models.py           # Pydantic v2 models (Article, Protocol, Evidence, GRADE, etc.)
+├── clients.py          # HTTP clients: PubMed (NCBI E-utilities), bioRxiv, SQLite cache
+├── agents.py           # 12 pydantic-ai agents with typed outputs + runner functions
+├── evidence.py         # Evidence extraction + source grounding validation gate
+├── validation.py       # Source grounding validator — rapidfuzz fuzzy matching
+├── pipeline.py         # Async orchestrator — 16-step PRISMA pipeline with cache
+├── export.py           # Export: Markdown, JSON, BibTeX, CSV formats
+├── main.py             # Standalone CLI with argparse + interactive mode
+└── prisma_review_agent/
+    └── cache/          # PostgreSQL cache sub-package
+        ├── models.py        # CacheEntry, SimilarityConfig, StoredArticle
+        ├── similarity.py    # SHA-256 fingerprinting + weighted fuzzy scoring
+        ├── store.py         # CacheStore — async PostgreSQL CRUD
+        ├── article_store.py # ArticleStore — article persistence + full-text search
+        ├── skill.py         # pydantic-ai CacheAgent with @agent.tool tools
+        ├── admin.py         # list/inspect/clear cache entries
+        └── migrations/001_initial.sql
 ```
 
 ### Design Principles
 
 - **Agent-per-task**: Each PRISMA step that requires LLM reasoning has a dedicated pydantic-ai `Agent` with a typed `output_type`. No raw string parsing — the LLM returns validated Pydantic models.
 - **No hardcoded heuristics**: Evidence extraction, screening, bias assessment, and synthesis are all handled by specialized LLM agents. No keyword lists or regex scoring.
+- **Source grounding**: Every extracted evidence span is verified against its source article using rapidfuzz fuzzy matching before being included. Ungrounded spans are silently dropped.
 - **Typed throughout**: Every data structure is a Pydantic `BaseModel` with validation. Structured outputs from agents are parsed and validated automatically by pydantic-ai.
+- **PostgreSQL result cache**: Reviews with ≥ 95% similar criteria are served from cache in seconds instead of minutes. All fetched articles are indexed for future source reuse.
 - **Async pipeline**: The orchestrator uses `asyncio` for concurrent LLM calls (bias + GRADE + limitations run in parallel).
-- **Standalone**: No web framework dependency. Runs as a CLI tool. Can be imported as a library.
+- **Standalone**: No web framework dependency. PostgreSQL is optional — the pipeline degrades gracefully without it.
 
 ## Installation
 
@@ -112,8 +123,26 @@ protocol = ReviewProtocol(
     pico_outcome="Microbiome diversity, specific taxa abundance",
     inclusion_criteria="Human studies, English, 2018-2024",
     exclusion_criteria="Animal studies, reviews, case reports",
-    max_hops=1,
+    max_hops=10,
     rob_tool=RoBTool.NEWCASTLE_OTTAWA,
+
+    # Domain-specific charting questions — answered per included article and stored
+    # in DataChartingRubric.custom_fields (question text → extracted answer).
+    # Leave out entirely to use only the built-in sections A–G.
+    charting_questions=[
+        "What sequencing method was used (16S rRNA, shotgun metagenomics, or other)?",
+        "Which taxonomic level was the primary analysis performed at?",
+        "What alpha-diversity indices were reported (Shannon, Simpson, Chao1, …)?",
+        "Was the gut-brain axis or HPA axis explicitly discussed?",
+        "Were dietary intake data collected and reported?",
+    ],
+
+    # Override the four default appraisal domain names for this review type.
+    # Unspecified positions (here: 3 and 4) keep their defaults.
+    appraisal_domains=[
+        "Participant Recruitment and Microbiome Sampling Quality",
+        "Sequencing and Bioinformatic Pipeline Quality",
+    ],
 )
 
 async def run():
@@ -142,7 +171,135 @@ async def run():
 asyncio.run(run())
 ```
 
-## Pipeline Steps (15-step PRISMA 2020)
+## Enhanced Output Formats
+
+The PRISMA Agent now includes comprehensive structured outputs for systematic review documentation:
+
+### Data Charting Rubric (CSV)
+Structured extraction of study characteristics across 7 sections (A-G):
+- **Section A**: Publication Information (title, authors, year, journal, DOI, database)
+- **Section B**: Study Design (goals, design type, sample size, tasks, settings)
+- **Section C**: Disordered Group Participants (diagnosis, assessment, demographics)
+- **Section D**: Healthy Controls (inclusion, matching criteria)
+- **Section E**: Data Collection (data types, tasks, equipment, datasets)
+- **Section F**: Features & Models (feature types, algorithms, performance metrics)
+- **Section G**: Synthesis (key findings, limitations, future directions)
+
+### PRISMA Narrative Rows (CSV)
+Condensed 6-cell summary format derived from charting data:
+- Study design/sample/dataset
+- Methods (feature extraction, modeling, validation)
+- Outcomes (key performance results + findings)
+- Key limitations
+- Relevance notes
+- Review-specific questions
+
+### Critical Appraisal Rubric (CSV)
+Quality assessment across 4 domains:
+- **Domain 1**: Participant & Sample Quality (5 items)
+- **Domain 2**: Data Collection Quality (3 items)
+- **Domain 3**: Feature & Model Quality (5 items)
+- **Domain 4**: Bias & Transparency (4 items)
+
+Each domain includes item-level ratings (Yes/Partial/No/Not Reported/N/A) and overall concern (Low/Some/High).
+
+### Enhanced Markdown
+Professional systematic literature review brief with HTML styling, figures, and comprehensive documentation including:
+- **Executive Summary** with key findings and statistics
+- **Background & Rationale** with PICO framework
+- **Detailed Methods** with eligibility criteria tables and search strategies
+- **Comprehensive Results** with PRISMA flow diagrams, study characteristics, and visual data representations
+- **Discussion** with implications for practice and research
+- **Conclusions** with key takeaways
+- **References** in academic format
+- **Detailed Appendices** with data charting rubrics, critical appraisal results, and evidence spans
+
+The enhanced format produces publication-ready SLR briefs with professional styling, color-coded sections, and visual elements suitable for stakeholder presentations and academic publications.
+
+### Export Options
+
+```bash
+# Default enhanced format
+prisma-review --title "..." --export enhanced_md
+
+# All structured formats
+prisma-review --title "..." --export enhanced_md charting_csv narrative_csv appraisal_csv
+
+# Individual formats
+prisma-review --title "..." --export charting narrative appraisal json
+
+# RDF / Linked Data formats
+prisma-review --title "..." --export ttl           # Turtle RDF
+prisma-review --title "..." --export jsonld        # JSON-LD
+prisma-review --title "..." --export ttl jsonld md # all three together
+
+# Persist a queryable pyoxigraph store
+prisma-review --title "..." --export ttl --rdf-store-path review.ttl
+```
+
+### RDF / Linked Data Export
+
+Export results as RDF using the [SLR Ontology](https://w3id.org/slr-ontology/) (v0.2.0). The Turtle and JSON-LD files are self-contained linked-data documents that can be loaded into any SPARQL endpoint (Apache Jena, Oxigraph, Blazegraph, etc.) or processed with standard RDF tools.
+
+**Namespace prefixes used:**
+
+| Prefix | URI |
+|--------|-----|
+| `slr:` | `https://w3id.org/slr-ontology/` |
+| `prov:` | `http://www.w3.org/ns/prov#` |
+| `dcterms:` | `http://purl.org/dc/terms/` |
+| `fabio:` | `http://purl.org/spar/fabio/` |
+| `bibo:` | `http://purl.org/ontology/bibo/` |
+| `oa:` | `http://www.w3.org/ns/oa#` |
+| `xsd:` | `http://www.w3.org/2001/XMLSchema#` |
+
+**Python API:**
+
+```python
+from prisma_review_agent.export import to_turtle, to_jsonld
+
+turtle_str = to_turtle(result)
+jsonld_str = to_jsonld(result)
+```
+
+### Pyoxigraph SPARQL Store
+
+For in-process SPARQL queries, load the result directly into a [pyoxigraph](https://pyoxigraph.readthedocs.io/) store:
+
+```python
+from prisma_review_agent.export import to_oxigraph_store
+
+store = to_oxigraph_store(result)
+
+# Find all included sources
+rows = store.query("""
+    PREFIX slr: <https://w3id.org/slr-ontology/>
+    PREFIX dcterms: <http://purl.org/dc/terms/>
+    SELECT ?src ?title WHERE {
+        ?src a slr:IncludedSource ;
+             dcterms:title ?title .
+    }
+""")
+
+# Check provenance timestamp
+rows = store.query("""
+    PREFIX prov: <http://www.w3.org/ns/prov#>
+    SELECT ?review ?t WHERE { ?review prov:generatedAtTime ?t }
+""")
+
+# Save store to disk for later re-use
+store.save("review_store.ttl")
+```
+
+Or from the CLI — pass `--rdf-store-path` to write the store after export:
+
+```bash
+prisma-review --title "..." --export ttl --rdf-store-path review_store.ttl
+```
+
+**Note**: The system processes ALL studies that pass screening criteria through complete data charting and critical appraisal. There are no artificial limits on corpus size — from small pilot reviews (5-10 studies) to comprehensive systematic reviews (50+ studies).
+
+## Pipeline Steps (17-step Enhanced PRISMA)
 
 | Step | Agent | Output Type | Description |
 |------|-------|-------------|-------------|
@@ -158,9 +315,12 @@ asyncio.run(run())
 | 10. Evidence Extraction | `evidence_extraction_agent` | `BatchEvidenceExtraction` | LLM identifies claims + evidence spans |
 | 11. Data Extraction | `data_extraction_agent` | `StudyDataExtraction` | Per-study structured data |
 | 12. Risk of Bias | `rob_agent` | `RiskOfBiasResult` | Per-study RoB 2 / ROBINS-I / NOS |
-| 13. Synthesis | `synthesis_agent` | `str` | Grounded narrative with PMID citations |
-| 14. Bias + GRADE | `bias_summary_agent` + `grade_agent` | `str` + `GRADEAssessment` | Parallel assessment |
-| 15. Limitations | `limitations_agent` | `str` | Review limitations section |
+| 13. Data Charting | `data_charting_agent` | `DataChartingRubric` | Structured charting across 7 sections (A-G) |
+| 14. Critical Appraisal | `critical_appraisal_agent` | `CriticalAppraisalRubric` | Quality assessment across 4 domains |
+| 15. Narrative Rows | `narrative_row_agent` | `PRISMANarrativeRow` | Condensed 6-cell summary format |
+| 16. Synthesis | `synthesis_agent` | `str` | Grounded narrative with PMID citations |
+| 17. Bias + GRADE | `bias_summary_agent` + `grade_agent` | `str` + `GRADEAssessment` | Parallel assessment |
+| 18. Limitations | `limitations_agent` | `str` | Review limitations section |
 
 ## Agents Reference
 
@@ -280,14 +440,54 @@ Standard `@article{}` entries for all included studies.
 
 ## Caching
 
-SQLite cache (`prisma_agent_cache.db`) stores:
-- PubMed search results (72h TTL)
-- Article metadata
-- Full-text content
+### HTTP Cache (SQLite)
+
+SQLite cache (`prisma_agent_cache.db`) stores raw HTTP responses with a 72-hour TTL:
+- PubMed search results
+- Article metadata and full text
 - Related article links
 - bioRxiv search results
 
 Disable with `--no-cache` or `enable_cache=False`.
+
+### Review Result Cache (PostgreSQL)
+
+When `--pg-dsn` is provided, completed review results are cached in PostgreSQL. On subsequent runs with ≥ 95% similar criteria (configurable), the full result is served from cache in seconds rather than minutes.
+
+```bash
+# Run with PostgreSQL cache
+prisma-review \
+  --title "GLP-1 agonists for type 2 diabetes" \
+  --inclusion "RCTs, English, 2019-2024" \
+  --pg-dsn "postgresql://user:pass@localhost/prisma_db" \
+  --cache-threshold 0.95 \
+  --export md
+
+# Force a fresh run (bypass cache)
+prisma-review --title "..." --pg-dsn "..." --force-refresh
+```
+
+**Setup** — run the migration once before first use:
+
+```bash
+psql "$PRISMA_PG_DSN" -f prisma_review_agent/cache/migrations/001_initial.sql
+```
+
+Or set the DSN via environment variable:
+```bash
+export PRISMA_PG_DSN="postgresql://user:pass@localhost/prisma_db"
+prisma-review --title "..."
+```
+
+The Markdown export includes a cache banner when a result is served from cache:
+
+```
+⚡ Served from cache (similarity 97.3%) — matched: *GLP-1 agonists for type 2 diabetes*
+```
+
+### Article Store (PostgreSQL)
+
+All fetched articles are persisted to the `article_store` table (same PostgreSQL connection). Full-text content is indexed with a GIN/tsvector index for fast retrieval. On subsequent runs, stored full text is used as the primary source before falling back to live PubMed fetch — reducing API calls and improving reproducibility.
 
 ## CLI Reference
 
@@ -320,8 +520,15 @@ Pipeline:
   --no-cache           Disable SQLite cache
   --extract-data       Enable per-study data extraction
 
+Cache (PostgreSQL):
+  --pg-dsn             PostgreSQL DSN (or set PRISMA_PG_DSN env var)
+  --force-refresh      Bypass cache and run fresh pipeline
+  --cache-threshold    Similarity threshold for cache hit (default: 0.95)
+  --cache-ttl-days     Cache entry TTL in days; 0=never expire (default: 30)
+
 Output:
-  --export, -e         Export formats: md json bib (default: md)
+  --export, -e         Export formats: md json bib ttl jsonld (default: md)
+  --rdf-store-path     Save pyoxigraph RDF store to this Turtle file path
   --interactive, -i    Interactive protocol setup
 ```
 
@@ -367,6 +574,11 @@ async def run_my_agent(data: str, deps: AgentDeps) -> MyOutput:
 | `pydantic-ai` | >=1.0 | Agent framework with typed outputs |
 | `pydantic` | >=2.0 | Data validation and serialization |
 | `httpx` | >=0.25 | Async-capable HTTP client |
+| `psycopg[async]` | >=3.1 | Async PostgreSQL driver (optional) |
+| `psycopg-pool` | >=3.1 | Async connection pooling (optional) |
+| `rapidfuzz` | >=3.0 | Fuzzy string matching for cache similarity + source grounding |
+| `rdflib` | >=6.0 | RDF graph construction and Turtle / JSON-LD serialization |
+| `pyoxigraph` | >=0.3 | Fast in-process SPARQL store for queryable RDF output |
 
 ## License
 

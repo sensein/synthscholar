@@ -1,7 +1,8 @@
 """
 Export functions for PRISMA review results.
 
-Supports Markdown (PRISMA 2020 format), JSON, and BibTeX.
+Supports Markdown (PRISMA 2020 format), JSON, BibTeX, Turtle, JSON-LD,
+and a queryable pyoxigraph RDF store.
 """
 
 from __future__ import annotations
@@ -10,6 +11,25 @@ import re
 import json
 
 from .models import PRISMAReviewResult
+from .ontology.rdf_export import to_turtle, to_jsonld  # noqa: F401 — re-exported
+from .ontology.rdf_store import SLRStore  # noqa: F401 — re-exported
+
+__all__ = ["to_markdown", "to_bibtex", "to_json", "to_turtle", "to_jsonld", "to_oxigraph_store"]
+
+
+def to_oxigraph_store(result: PRISMAReviewResult) -> SLRStore:
+    """Load *result* into an in-memory pyoxigraph store and return it.
+
+    The returned store is immediately queryable via SPARQL::
+
+        store = to_oxigraph_store(result)
+        rows = store.query(
+            "SELECT ?src WHERE { ?src a <https://w3id.org/slr-ontology/IncludedSource> }"
+        )
+    """
+    store = SLRStore()
+    store.load(result)
+    return store
 
 
 def to_markdown(result: PRISMAReviewResult) -> str:
@@ -18,9 +38,20 @@ def to_markdown(result: PRISMAReviewResult) -> str:
     f = result.flow
     included = result.included_articles
 
+    cache_banner = ""
+    if result.cache_hit:
+        matched_title = result.cache_matched_criteria.get("title", "")
+        score_pct = f"{result.cache_similarity_score:.1%}"
+        cache_banner = (
+            f"\n> **⚡ Served from cache** (similarity {score_pct})"
+            + (f" — matched: *{matched_title}*" if matched_title else "")
+            + "\n"
+        )
+
     lines = [
         f"# {p.title or 'Systematic Review'}",
         f"\n*Generated: {result.timestamp} | PRISMA 2020 Compliant*\n",
+        cache_banner,
         "---\n",
 
         "## Abstract\n",

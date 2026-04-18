@@ -35,6 +35,14 @@ from agents import (
     run_grade,
     run_bias_summary,
     run_limitations,
+    run_data_charting,
+    run_narrative_row,
+    run_critical_appraisal,
+    run_grounding_validation,
+    run_introduction,
+    run_conclusions,
+    run_abstract,
+    build_quality_checklist,
 )
 
 
@@ -355,7 +363,52 @@ class PRISMAReviewPipeline:
             except Exception as e:
                 up(f"  RoB failed for {art.pmid}: {e}")
 
-        # ── 13. Grounded synthesis (LLM agent) ──
+        # ── 13. Data charting rubrics (LLM agent) ──
+        up(f"Creating data charting rubrics for {len(ft_included)} studies...")
+        data_charting_rubrics = []
+        for i, art in enumerate(ft_included):
+            up(f"  [{i+1}/{len(ft_included)}] Charting {art.title[:50]}...")
+            try:
+                rubric = await run_data_charting(
+                    art,
+                    self.deps,
+                    charting_questions=proto.charting_questions or None,
+                )
+                data_charting_rubrics.append(rubric)
+            except Exception as e:
+                up(f"  Data charting failed for {art.pmid}: {e}")
+
+        # ── 14. Critical appraisal (LLM agent) ──
+        up(f"Performing critical appraisal for {len(data_charting_rubrics)} studies...")
+        critical_appraisals = []
+        for i, rubric in enumerate(data_charting_rubrics):
+            up(f"  [{i+1}/{len(data_charting_rubrics)}] Appraising {rubric.source_id}...")
+            try:
+                # Find the corresponding article
+                art = next((a for a in ft_included if str(a.pmid).endswith(rubric.source_id.split('-')[1])), None)
+                if art:
+                    appraisal = await run_critical_appraisal(
+                        art,
+                        rubric,
+                        self.deps,
+                        appraisal_domains=proto.appraisal_domains or None,
+                    )
+                    critical_appraisals.append(appraisal)
+            except Exception as e:
+                up(f"  Critical appraisal failed for {rubric.source_id}: {e}")
+
+        # ── 15. Narrative rows (LLM agent) ──
+        up(f"Generating narrative rows for {len(data_charting_rubrics)} studies...")
+        narrative_rows = []
+        for i, (rubric, appraisal) in enumerate(zip(data_charting_rubrics, critical_appraisals)):
+            up(f"  [{i+1}/{len(data_charting_rubrics)}] Summarizing {rubric.source_id}...")
+            try:
+                row = await run_narrative_row(rubric, appraisal, self.deps)
+                narrative_rows.append(row)
+            except Exception as e:
+                up(f"  Narrative row failed for {rubric.source_id}: {e}")
+
+        # ── 16. Grounded synthesis (LLM agent) ──
         flow_text = (
             f"Identified: {flow.total_identified} | "
             f"After dedup: {flow.after_dedup} | "
@@ -368,8 +421,36 @@ class PRISMAReviewPipeline:
         up(f"Synthesizing {len(ft_included)} articles...")
         synthesis = await run_synthesis(ft_included, evidence, flow_text, self.deps)
 
-        # ── 14. Overall bias assessment + GRADE (LLM agents, parallel) ──
-        up("Assessing overall bias and GRADE...")
+        # ── 17. Grounding validation (LLM agent) ──
+        up("Validating synthesis grounding against source articles...")
+        try:
+            # Prepare corpus documents for validation
+            corpus_documents = {}
+            citation_map = {}
+
+            for i, art in enumerate(ft_included):
+                citation_key = f"Article{i+1}"
+                citation_map[citation_key] = f"{art.short_author} ({art.year}) - {art.title[:50]}..."
+                corpus_documents[citation_key] = (
+                    f"Title: {art.title}\n"
+                    f"Abstract: {art.abstract or 'N/A'}\n"
+                    f"Full text: {art.full_text or 'N/A'}\n"
+                    f"Risk of bias: {art.risk_of_bias.overall.value if art.risk_of_bias else 'N/A'}\n"
+                    f"Data extraction: {art.extracted_data.study_design if art.extracted_data else 'N/A'}"
+                )
+
+            grounding_validation = await run_grounding_validation(
+                synthesis, corpus_documents, citation_map, self.deps
+            )
+            up(f"Grounding validation: {grounding_validation.overall_verdict} "
+               f"({grounding_validation.grounding_rate:.1%} supported)")
+
+        except Exception as e:
+            up(f"Grounding validation failed: {e}")
+            grounding_validation = None
+
+        # ── 18. Overall bias, GRADE, limitations, Introduction, Conclusions, Abstract (parallel) ──
+        up("Assessing overall bias, GRADE, and generating document sections...")
         bias_task = run_bias_summary(ft_included, self.deps)
 
         outcome_text = proto.pico_outcome or "Primary outcome"
@@ -380,25 +461,41 @@ class PRISMAReviewPipeline:
         }
 
         limitations_task = run_limitations(flow_text, ft_included, self.deps)
+        introduction_task = run_introduction(self.deps)
 
-        # Run bias, GRADE, and limitations concurrently
-        bias_result, limitations_result, *grade_results = await asyncio.gather(
+        all_gathered = await asyncio.gather(
             bias_task,
             limitations_task,
+            introduction_task,
             *grade_tasks.values(),
             return_exceptions=True,
         )
+        bias_result, limitations_result, intro_result = all_gathered[:3]
+        grade_results = all_gathered[3:]
 
         bias_text = bias_result if isinstance(bias_result, str) else ""
         limitations_text = limitations_result if isinstance(limitations_result, str) else ""
+        introduction_text = intro_result if isinstance(intro_result, str) else ""
         grade_assessments: dict[str, GRADEAssessment] = {}
-        for outcome, result in zip(grade_tasks.keys(), grade_results):
-            if isinstance(result, GRADEAssessment):
-                grade_assessments[outcome] = result
+        for outcome, res in zip(grade_tasks.keys(), grade_results):
+            if isinstance(res, GRADEAssessment):
+                grade_assessments[outcome] = res
+
+        # Conclusions and abstract depend on synthesis + GRADE — run after
+        grade_summary = "\n".join(
+            f"{o}: {g.overall_certainty.value}" for o, g in grade_assessments.items()
+        )
+        conclusions_result, abstract_result = await asyncio.gather(
+            run_conclusions(synthesis, grade_summary, self.deps),
+            run_abstract(flow_text, synthesis, self.deps),
+            return_exceptions=True,
+        )
+        conclusions_text = conclusions_result if isinstance(conclusions_result, str) else ""
+        structured_abstract = abstract_result if isinstance(abstract_result, str) else ""
 
         up("Review complete!")
 
-        return PRISMAReviewResult(
+        final_result = PRISMAReviewResult(
             research_question=proto.question,
             protocol=proto,
             search_queries=all_search_queries,
@@ -410,5 +507,14 @@ class PRISMAReviewPipeline:
             bias_assessment=bias_text,
             limitations=limitations_text,
             grade_assessments=grade_assessments,
+            data_charting_rubrics=data_charting_rubrics,
+            narrative_rows=narrative_rows,
+            critical_appraisals=critical_appraisals,
+            grounding_validation=grounding_validation,
+            introduction_text=introduction_text,
+            conclusions_text=conclusions_text,
+            structured_abstract=structured_abstract,
             timestamp=datetime.now().isoformat(),
         )
+        final_result.quality_checklist = build_quality_checklist(final_result)
+        return final_result

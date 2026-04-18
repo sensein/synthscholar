@@ -47,7 +47,7 @@ except ImportError:
     from prisma_review_agent import __version__  # type: ignore[no-redef]
     from models import ReviewProtocol, RoBTool  # type: ignore[no-redef]
     from pipeline import PRISMAReviewPipeline  # type: ignore[no-redef]
-    from export import to_markdown, to_bibtex, to_json  # type: ignore[no-redef]
+    from export import to_markdown, to_bibtex, to_json, to_data_charting_csv, to_narrative_csv, to_appraisal_csv, to_enhanced_markdown, to_source_json  # type: ignore[no-redef]
 
 ROB_TOOL_CHOICES = [t.value for t in RoBTool]
 
@@ -67,6 +67,8 @@ def get_api_key() -> str:
 
 def build_protocol_from_args(args: argparse.Namespace) -> ReviewProtocol:
     """Build ReviewProtocol from CLI arguments."""
+    import os
+    pg_dsn = getattr(args, "pg_dsn", "") or os.environ.get("PRISMA_PG_DSN", "")
     return ReviewProtocol(
         title=args.title,
         objective=args.objective or args.title,
@@ -82,6 +84,15 @@ def build_protocol_from_args(args: argparse.Namespace) -> ReviewProtocol:
         max_hops=args.hops,
         registration_number=args.registration or "",
         rob_tool=RoBTool(args.rob_tool),
+        grey_literature_sources=args.grey_literature or [],
+        target_audience=args.target_audience or "",
+        word_count_target=args.word_count,
+        citation_style=args.citation_style,
+        languages=args.languages,
+        pg_dsn=pg_dsn,
+        force_refresh=getattr(args, "force_refresh", False),
+        cache_threshold=getattr(args, "cache_threshold", 0.95),
+        cache_ttl_days=getattr(args, "cache_ttl_days", 30),
     )
 
 
@@ -105,8 +116,8 @@ def build_protocol_interactive() -> ReviewProtocol:
     exclusion = input("Exclusion criteria: ").strip()
 
     print("\n--- Search settings ---")
-    hops = input("Citation hops (0-4) [1]: ").strip()
-    hops = int(hops) if hops.isdigit() else 1
+    hops = input("Citation hops (0-10) [10]: ").strip()
+    hops = int(hops) if hops.isdigit() else 10
     print("  Available RoB tools:")
     for i, tool in enumerate(RoBTool, 1):
         print(f"    {i}. {tool.value}")
@@ -114,6 +125,22 @@ def build_protocol_interactive() -> ReviewProtocol:
     rob_idx = int(rob_choice) - 1 if rob_choice.isdigit() else 0
     rob_tools_list = list(RoBTool)
     rob = rob_tools_list[min(rob_idx, len(rob_tools_list) - 1)]
+
+    print("\n--- Output preferences (brief §1) ---")
+    target_audience = (
+        input("Target audience (academic journal/policymaker/industry/thesis) [academic journal]: ").strip()
+        or "academic journal"
+    )
+    citation_style = (
+        input("Citation style (APA 7/Vancouver/Harvard/IEEE/Chicago) [APA 7]: ").strip()
+        or "APA 7"
+    )
+    wc_raw = input("Target word count [8000]: ").strip()
+    word_count = int(wc_raw) if wc_raw.isdigit() else 8000
+    grey_raw = input("Grey literature sources (comma-separated, or Enter to skip): ").strip()
+    grey_sources = [s.strip() for s in grey_raw.split(",") if s.strip()] if grey_raw else []
+    lang_raw = input("Languages to include (comma-separated) [English]: ").strip()
+    languages = [la.strip() for la in lang_raw.split(",") if la.strip()] if lang_raw else ["English"]
 
     return ReviewProtocol(
         title=title,
@@ -126,6 +153,11 @@ def build_protocol_interactive() -> ReviewProtocol:
         exclusion_criteria=exclusion,
         max_hops=hops,
         rob_tool=rob if isinstance(rob, RoBTool) else RoBTool(rob),
+        grey_literature_sources=grey_sources,
+        target_audience=target_audience,
+        word_count_target=word_count,
+        citation_style=citation_style,
+        languages=languages,
     )
 
 
@@ -142,6 +174,11 @@ def save_exports(result, formats: list[str]):
         path.write_text(to_markdown(result), encoding="utf-8")
         saved.append(str(path))
 
+    if "enhanced_md" in formats or "enhanced_markdown" in formats:
+        path = OUTPUT_DIR / f"{base}_enhanced.md"
+        path.write_text(to_enhanced_markdown(result), encoding="utf-8")
+        saved.append(str(path))
+
     if "json" in formats:
         path = OUTPUT_DIR / f"{base}.json"
         path.write_text(to_json(result), encoding="utf-8")
@@ -150,6 +187,26 @@ def save_exports(result, formats: list[str]):
     if "bib" in formats or "bibtex" in formats:
         path = OUTPUT_DIR / f"{base}.bib"
         path.write_text(to_bibtex(result), encoding="utf-8")
+        saved.append(str(path))
+
+    if "charting" in formats or "charting_csv" in formats:
+        path = OUTPUT_DIR / f"{base}_charting.csv"
+        path.write_text(to_data_charting_csv(result), encoding="utf-8")
+        saved.append(str(path))
+
+    if "narrative" in formats or "narrative_csv" in formats:
+        path = OUTPUT_DIR / f"{base}_narrative.csv"
+        path.write_text(to_narrative_csv(result), encoding="utf-8")
+        saved.append(str(path))
+
+    if "appraisal" in formats or "appraisal_csv" in formats:
+        path = OUTPUT_DIR / f"{base}_appraisal.csv"
+        path.write_text(to_appraisal_csv(result), encoding="utf-8")
+        saved.append(str(path))
+
+    if "source_json" in formats:
+        path = OUTPUT_DIR / f"{base}_sources.json"
+        path.write_text(to_source_json(result), encoding="utf-8")
         saved.append(str(path))
 
     return saved
@@ -251,7 +308,10 @@ def main():
 Examples:
   prisma-review --title "CRISPR gene therapy" --inclusion "Clinical trials" --exclusion "Reviews"
   prisma-review --interactive
-  prisma-review --title "ML drug discovery" --model google/gemini-2.5-pro --export md json bib
+  prisma-review --title "ML drug discovery" --model google/gemini-2.5-pro --export enhanced_md charting_csv appraisal_csv
+
+  # Enhanced formats with data charting:
+  prisma-review --title "Speech analysis in Parkinson's" --export enhanced_md charting narrative appraisal
 
   # Or from source:
   python main.py --title "CRISPR gene therapy" --interactive
@@ -275,6 +335,19 @@ Examples:
                         help="Exclusion criteria")
     parser.add_argument("--registration", type=str, default="",
                         help="Registration number (e.g., PROSPERO)")
+    # Section 1 required inputs (brief §1)
+    parser.add_argument("--grey-literature", nargs="*", default=[],
+                        metavar="SOURCE",
+                        help="Grey literature sources (e.g., arXiv medRxiv PROSPERO)")
+    parser.add_argument("--target-audience", type=str, default="academic journal",
+                        help="Target audience: academic journal | policymaker | industry | thesis")
+    parser.add_argument("--word-count", type=int, default=8000,
+                        help="Target word count for main document (6000–12000)")
+    parser.add_argument("--citation-style", type=str, default="APA 7",
+                        choices=["APA 7", "Vancouver", "Harvard", "IEEE", "Chicago"],
+                        help="Citation style for references")
+    parser.add_argument("--languages", nargs="+", default=["English"],
+                        help="Languages to include in search (default: English)")
 
     # Search settings
     parser.add_argument("--model", "-m", type=str, default="anthropic/claude-sonnet-4",
@@ -285,8 +358,8 @@ Examples:
                         help="Max results per query")
     parser.add_argument("--related-depth", type=int, default=1,
                         help="Related article search depth")
-    parser.add_argument("--hops", type=int, default=1,
-                        help="Multi-hop citation depth (0-4)")
+    parser.add_argument("--hops", type=int, default=10,
+                        help="Multi-hop citation depth (0-10)")
     parser.add_argument("--biorxiv-days", type=int, default=180,
                         help="bioRxiv lookback days")
     parser.add_argument("--date-start", type=str, default="",
@@ -303,10 +376,27 @@ Examples:
     parser.add_argument("--extract-data", action="store_true",
                         help="Enable per-study data extraction")
 
+    # PostgreSQL review-result cache
+    parser.add_argument("--pg-dsn", type=str, default="",
+                        help="PostgreSQL DSN for review result cache and article store "
+                             "(e.g. postgresql://user:pass@localhost/prisma). "
+                             "Can also be set via PRISMA_PG_DSN env var.")
+    parser.add_argument("--force-refresh", action="store_true",
+                        help="Bypass cache lookup and overwrite cached result on completion")
+    parser.add_argument("--cache-threshold", type=float, default=0.95,
+                        metavar="FLOAT",
+                        help="Similarity threshold for cache hits (0.0–1.0, default 0.95)")
+    parser.add_argument("--cache-ttl-days", type=int, default=30,
+                        metavar="DAYS",
+                        help="Cache entry TTL in days; 0 = never expire (default 30)")
+
     # Output
-    parser.add_argument("--export", "-e", nargs="+", default=["md"],
-                        choices=["md", "markdown", "json", "bib", "bibtex"],
-                        help="Export formats")
+    parser.add_argument("--export", "-e", nargs="+", default=["enhanced_md"],
+                        choices=["md", "markdown", "enhanced_md", "enhanced_markdown",
+                                "json", "bib", "bibtex", "charting", "charting_csv",
+                                "narrative", "narrative_csv", "appraisal", "appraisal_csv",
+                                "source_json"],
+                        help="Export formats (can specify multiple)")
 
     # Mode
     parser.add_argument("--interactive", "-i", action="store_true",

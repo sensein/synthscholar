@@ -38,7 +38,7 @@ from datetime import datetime
 
 from prisma_review_agent.models import ReviewProtocol, RoBTool
 from prisma_review_agent.pipeline import PRISMAReviewPipeline
-from prisma_review_agent.export import to_markdown, to_bibtex, to_json
+from prisma_review_agent.export import to_markdown, to_bibtex, to_json, to_turtle, to_jsonld, to_oxigraph_store
 
 ROB_TOOL_CHOICES = [t.value for t in RoBTool]
 
@@ -96,7 +96,7 @@ def build_protocol_interactive() -> ReviewProtocol:
     exclusion = input("Exclusion criteria: ").strip()
 
     print("\n--- Search settings ---")
-    hops = input("Citation hops (0-4) [1]: ").strip()
+    hops = input("Citation hops (0-10) [10]: ").strip()
     hops = int(hops) if hops.isdigit() else 1
     print("  Available RoB tools:")
     for i, tool in enumerate(RoBTool, 1):
@@ -141,6 +141,16 @@ def save_exports(result, formats: list[str]):
     if "bib" in formats or "bibtex" in formats:
         path = OUTPUT_DIR / f"{base}.bib"
         path.write_text(to_bibtex(result), encoding="utf-8")
+        saved.append(str(path))
+
+    if "ttl" in formats or "turtle" in formats:
+        path = OUTPUT_DIR / f"{base}.ttl"
+        path.write_text(to_turtle(result), encoding="utf-8")
+        saved.append(str(path))
+
+    if "jsonld" in formats or "json-ld" in formats:
+        path = OUTPUT_DIR / f"{base}.jsonld"
+        path.write_text(to_jsonld(result), encoding="utf-8")
         saved.append(str(path))
 
     return saved
@@ -230,6 +240,12 @@ async def run_review(args: argparse.Namespace):
         for p in saved:
             print(f"  {p}")
 
+    # Pyoxigraph RDF store
+    if args.rdf_store_path:
+        store = to_oxigraph_store(result)
+        store.save(args.rdf_store_path)
+        print(f"\nRDF store saved to: {args.rdf_store_path}")
+
     return result
 
 
@@ -270,7 +286,7 @@ Examples:
                         help="Max results per query")
     parser.add_argument("--related-depth", type=int, default=1,
                         help="Related article search depth")
-    parser.add_argument("--hops", type=int, default=1,
+    parser.add_argument("--hops", type=int, default=10,
                         help="Multi-hop citation depth (0-4)")
     parser.add_argument("--biorxiv-days", type=int, default=180,
                         help="bioRxiv lookback days")
@@ -290,8 +306,12 @@ Examples:
 
     # Output
     parser.add_argument("--export", "-e", nargs="+", default=["md"],
-                        choices=["md", "markdown", "json", "bib", "bibtex"],
-                        help="Export formats")
+                        choices=["md", "markdown", "json", "bib", "bibtex",
+                                 "ttl", "turtle", "jsonld", "json-ld"],
+                        help="Export formats (ttl/turtle = Turtle RDF, jsonld/json-ld = JSON-LD)")
+
+    parser.add_argument("--rdf-store-path", type=str, default=None,
+                        help="Persist pyoxigraph RDF store to this Turtle file path after export")
 
     # Mode
     parser.add_argument("--interactive", "-i", action="store_true",

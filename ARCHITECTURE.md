@@ -142,7 +142,7 @@ In parallel with related article expansion, the pipeline also performs citation 
 - **Backward (neighbor_score):** `LinkName=pubmed_pubmed_related` — articles similar to the seeds based on shared references and MeSH terms
 - **Forward (cited-by):** `LinkName=pubmed_pubmed_citedin` — articles that have cited the seeds
 
-The seeds for citation hopping are the top five PubMed PMIDs, and each hop fetches up to 15 articles per direction. Articles found via citation hopping are marked `source="hop_1"` and carry `hop_level` and `parent_id` fields for traceability. The number of citation hops is controlled by the `--hops` parameter (default: 1, maximum: 4).
+The seeds for citation hopping are the top five PubMed PMIDs, and each hop fetches up to 15 articles per direction. Articles found via citation hopping are marked `source="hop_1"` and carry `hop_level` and `parent_id` fields for traceability. The number of citation hops is controlled by the `--hops` parameter (default: 10, maximum: 10).
 
 ---
 
