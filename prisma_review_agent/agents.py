@@ -61,6 +61,8 @@ from .models import (
     DomainAppraisal,
     CriticalAppraisalResult,
     CONCERN_AGGREGATION_RULE,
+    # Feature 007
+    SynthesisDivergence,
 )
 
 
