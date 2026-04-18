@@ -17,6 +17,9 @@ from .ontology.rdf_store import SLRStore  # noqa: F401 — re-exported
 __all__ = [
     "to_markdown", "to_bibtex", "to_json", "to_turtle", "to_jsonld",
     "to_oxigraph_store", "to_rubric_markdown", "to_rubric_json",
+    # Feature 006
+    "to_charting_markdown", "to_charting_json",
+    "to_appraisal_markdown", "to_appraisal_json",
 ]
 
 
@@ -352,3 +355,217 @@ def to_rubric_json(result: PRISMAReviewResult) -> str:
         for rubric in rubrics_with_outputs
     ]
     return json.dumps(records, indent=2, ensure_ascii=False)
+
+
+# ──────────────────── Feature 006: Field-Level Export Functions ───────────────
+
+
+def _get_data_extraction(result: PRISMAReviewResult) -> list:
+    """Return data_extraction list from PrismaReview.methods, or empty list."""
+    pr = result.prisma_review
+    if pr and pr.methods and pr.methods.data_extraction:
+        return pr.methods.data_extraction
+    return []
+
+
+def _get_appraisal_results(result: PRISMAReviewResult) -> list:
+    """Return critical_appraisal_results from PrismaReview.methods, or empty list."""
+    pr = result.prisma_review
+    if pr and pr.methods and pr.methods.critical_appraisal_results:
+        return pr.methods.critical_appraisal_results
+    # Fall back to structured_appraisal_results on PRISMAReviewResult itself
+    return getattr(result, "structured_appraisal_results", []) or []
+
+
+def to_charting_markdown(result: PRISMAReviewResult) -> str:
+    """Export per-study field-level extraction results as structured Markdown.
+
+    One H2 per study, one H3 per section, with a field/answer/confidence table.
+    Falls back to a note when no field_answers are available.
+    """
+    extraction_reports = _get_data_extraction(result)
+    reports_with_fields = [r for r in extraction_reports if r.field_answers]
+
+    if not reports_with_fields:
+        return (
+            "# Data Charting: Field-Level Extraction\n\n"
+            "*Field-level extraction not available (no ChartingTemplate was applied).*\n"
+        )
+
+    lines = ["# Data Charting: Field-Level Extraction\n"]
+    for report in reports_with_fields:
+        title = ""
+        if result.prisma_review:
+            for rubric in result.data_charting_rubrics:
+                if rubric.source_id == report.source_id:
+                    title = rubric.title or ""
+                    break
+        heading = f"## {report.source_id}" + (f" — {title}" if title else "")
+        lines.append(heading + "\n")
+
+        for section_key in sorted(report.field_answers.keys()):
+            section_result = report.field_answers[section_key]
+            lines.append(f"### {section_result.section_title} (Section {section_key})\n")
+            lines.append("| Field | Answer | Confidence |")
+            lines.append("|-------|--------|------------|")
+            for fa in section_result.field_answers:
+                if fa.value is None:
+                    value_cell = "_[Human reviewer]_"
+                    conf_cell = "—"
+                else:
+                    value_cell = fa.value.replace("|", "\\|")
+                    conf_cell = fa.confidence
+                lines.append(f"| {fa.field_name} | {value_cell} | {conf_cell} |")
+            lines.append("")
+        lines.append("---\n")
+    return "\n".join(lines)
+
+
+def to_charting_json(result: PRISMAReviewResult) -> str:
+    """Export per-study field-level extraction results as JSON.
+
+    Returns a JSON array with one object per study, keyed by section_key.
+    """
+    extraction_reports = _get_data_extraction(result)
+
+    records = []
+    for report in extraction_reports:
+        title = ""
+        for rubric in result.data_charting_rubrics:
+            if rubric.source_id == report.source_id:
+                title = rubric.title or ""
+                break
+
+        charting: dict = {}
+        for section_key, section_result in report.field_answers.items():
+            fields_out = []
+            for fa in section_result.field_answers:
+                if fa.value is None:
+                    fields_out.append({
+                        "field_name": fa.field_name,
+                        "value": None,
+                        "reviewer_only": True,
+                    })
+                else:
+                    fields_out.append({
+                        "field_name": fa.field_name,
+                        "value": fa.value,
+                        "confidence": fa.confidence,
+                        "extraction_note": fa.extraction_note,
+                    })
+            charting[section_key] = {
+                "section_title": section_result.section_title,
+                "fields": fields_out,
+            }
+
+        records.append({
+            "source_id": report.source_id,
+            "title": title,
+            "charting": charting,
+        })
+
+    return json.dumps(records, indent=2, ensure_ascii=False)
+
+
+def to_appraisal_markdown(result: PRISMAReviewResult) -> str:
+    """Export critical appraisal results as structured Markdown.
+
+    One H2 per study, one H3 per domain, plus a cross-study summary table.
+    Falls back to a note when no appraisal results are available.
+    """
+    appraisal_results = _get_appraisal_results(result)
+
+    if not appraisal_results:
+        return (
+            "# Critical Appraisal Results\n\n"
+            "*No critical appraisal results available.*\n"
+        )
+
+    lines = ["# Critical Appraisal Results\n"]
+
+    # Per-study sections
+    for appraisal in appraisal_results:
+        title = ""
+        for rubric in result.data_charting_rubrics:
+            if rubric.source_id == appraisal.source_id:
+                title = rubric.title or ""
+                break
+        heading = f"## {appraisal.source_id}" + (f" — {title}" if title else "")
+        lines.append(heading + "\n")
+
+        for i, domain in enumerate(appraisal.domains, 1):
+            lines.append(f"### Domain {i}: {domain.domain_name}\n")
+            lines.append("| Item | Rating |")
+            lines.append("|------|--------|")
+            for item_rating in domain.item_ratings:
+                lines.append(f"| {item_rating.item_text} | {item_rating.rating} |")
+            lines.append("")
+            lines.append(f"**Overall Concern**: {domain.domain_concern}\n")
+
+        lines.append("---\n")
+
+    # Cross-study summary table
+    lines.append("## Cross-Study Appraisal Summary\n")
+
+    # Collect all domain names in order from first study
+    all_domains: list[str] = []
+    if appraisal_results:
+        all_domains = [d.domain_name for d in appraisal_results[0].domains]
+
+    if all_domains:
+        lines.append("| Domain | Low | Some | High | Total |")
+        lines.append("|--------|-----|------|------|-------|")
+        for domain_name in all_domains:
+            counts: dict[str, int] = {"Low": 0, "Some": 0, "High": 0}
+            for appraisal in appraisal_results:
+                for domain in appraisal.domains:
+                    if domain.domain_name == domain_name:
+                        counts[domain.domain_concern] = counts.get(domain.domain_concern, 0) + 1
+            total = sum(counts.values())
+            pct = lambda n: f"{n} ({n/total:.0%})" if total > 0 else str(n)
+            lines.append(
+                f"| {domain_name} | {pct(counts['Low'])} | {pct(counts['Some'])} | {pct(counts['High'])} | {total} |"
+            )
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def to_appraisal_json(result: PRISMAReviewResult) -> str:
+    """Export critical appraisal results as JSON.
+
+    Returns a JSON object with 'studies' (per-study appraisals) and
+    'summary' (aggregated concern counts per domain).
+    """
+    appraisal_results = _get_appraisal_results(result)
+
+    studies = []
+    summary: dict[str, dict[str, int]] = {}
+
+    for appraisal in appraisal_results:
+        appraisal_data = []
+        for domain in appraisal.domains:
+            domain_entry = {
+                "domain_name": domain.domain_name,
+                "domain_concern": domain.domain_concern,
+                "items": [
+                    {"item_text": ir.item_text, "rating": ir.rating}
+                    for ir in domain.item_ratings
+                ],
+            }
+            appraisal_data.append(domain_entry)
+
+            # Accumulate summary counts
+            if domain.domain_name not in summary:
+                summary[domain.domain_name] = {"Low": 0, "Some": 0, "High": 0, "total": 0}
+            summary[domain.domain_name][domain.domain_concern] = (
+                summary[domain.domain_name].get(domain.domain_concern, 0) + 1
+            )
+            summary[domain.domain_name]["total"] += 1
+
+        studies.append({
+            "source_id": appraisal.source_id,
+            "appraisal": appraisal_data,
+        })
+
+    return json.dumps({"studies": studies, "summary": summary}, indent=2, ensure_ascii=False)

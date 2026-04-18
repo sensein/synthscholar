@@ -363,6 +363,20 @@ class ReviewProtocol(BaseModel):
             "Takes precedence over section_output_formats for covered sections."
         ),
     )
+    charting_template: Optional[ChartingTemplate] = Field(
+        default=None,
+        description=(
+            "Field-level extraction constraints. When None, defaults to default_charting_template() "
+            "inside the pipeline. Provide a ChartingTemplate instance to override."
+        ),
+    )
+    critical_appraisal_config: Optional[CriticalAppraisalConfig] = Field(
+        default=None,
+        description=(
+            "Configurable critical appraisal instrument. When None, defaults to "
+            "default_appraisal_config() inside the pipeline."
+        ),
+    )
 
     @model_validator(mode="after")
     def _validate_section_format_values(self) -> "ReviewProtocol":
@@ -376,6 +390,14 @@ class ReviewProtocol(BaseModel):
                 invalid.append(f"rubric_section_config output_format '{cfg.output_format}'")
         if invalid:
             raise ValueError(f"Invalid output format values: {', '.join(invalid)}")
+        if self.charting_template is not None and not isinstance(
+            self.charting_template, ChartingTemplate
+        ):
+            raise ValueError("charting_template must be a ChartingTemplate instance")
+        if self.critical_appraisal_config is not None and not isinstance(
+            self.critical_appraisal_config, CriticalAppraisalConfig
+        ):
+            raise ValueError("critical_appraisal_config must be a CriticalAppraisalConfig instance")
         return self
 
     @property
@@ -448,6 +470,8 @@ class PRISMAReviewResult(BaseModel):
     introduction_text: str = ""
     conclusions_text: str = ""
     quality_checklist: dict[str, bool] = Field(default_factory=dict)
+    # Feature 006: structured appraisal results populated during pipeline run
+    structured_appraisal_results: list[CriticalAppraisalResult] = Field(default_factory=list)
 
 
 # ── Forward reference resolution ──
@@ -695,6 +719,7 @@ class Methods(BaseModel):
     data_extraction_schema: list[DataExtractionSchema]
     data_extraction: list[StudyDataExtractionReport] = Field(default_factory=list)
     quality_assessment: str
+    critical_appraisal_results: list[CriticalAppraisalResult] = Field(default_factory=list)
 
 
 class SourceMetadata(BaseModel):
@@ -839,10 +864,161 @@ class RubricSectionConfig(BaseModel):
     output_format: SECTION_FORMAT = "descriptive"
 
 
+# ────────────────── Feature 006: Field-Level Appraisal Output Schema ──────────
+
+ANSWER_TYPE = Literal["enumerated", "free_text", "numeric", "yes_no_extended"]
+
+_YES_NO_EXTENDED_VALID: set[tuple[str, ...]] = {
+    ("Yes", "No", "Not Reported"),
+    ("Yes", "No", "N/A"),
+}
+
+
+class FieldDefinition(BaseModel):
+    """Declares extraction constraints for a single field within a charting section."""
+    field_name: str
+    description: str
+    answer_type: ANSWER_TYPE
+    options: Optional[list[str]] = None
+    reviewer_only: bool = False
+
+    @model_validator(mode="after")
+    def _validate_options(self) -> "FieldDefinition":
+        if self.answer_type in ("enumerated", "yes_no_extended"):
+            if not self.options:
+                raise ValueError(
+                    f"Field '{self.field_name}': options must be non-empty "
+                    f"when answer_type is '{self.answer_type}'"
+                )
+        if self.answer_type == "yes_no_extended" and self.options:
+            if tuple(self.options) not in _YES_NO_EXTENDED_VALID:
+                raise ValueError(
+                    f"Field '{self.field_name}': yes_no_extended options must be "
+                    f"['Yes','No','Not Reported'] or ['Yes','No','N/A'], "
+                    f"got {self.options}"
+                )
+        return self
+
+
+class ChartingSection(BaseModel):
+    """One section of a ChartingTemplate, containing ordered field definitions."""
+    section_key: str
+    section_title: str
+    fields: list[FieldDefinition] = Field(default_factory=list)
+
+
+class ChartingTemplate(BaseModel):
+    """Caller-supplied or factory-generated collection of charting sections."""
+    sections: list[ChartingSection] = Field(default_factory=list)
+
+    def override_field(self, section_key: str, field_name: str, **kwargs) -> "ChartingTemplate":
+        """Return a new template with one field's properties updated (non-mutating)."""
+        new_sections = []
+        for section in self.sections:
+            if section.section_key == section_key:
+                new_fields = []
+                for field in section.fields:
+                    if field.field_name == field_name:
+                        new_fields.append(field.model_copy(update=kwargs))
+                    else:
+                        new_fields.append(field)
+                new_sections.append(section.model_copy(update={"fields": new_fields}))
+            else:
+                new_sections.append(section)
+        return ChartingTemplate(sections=new_sections)
+
+    def add_section(
+        self,
+        section_key: str,
+        section_title: str,
+        fields: list[FieldDefinition],
+    ) -> "ChartingTemplate":
+        """Return a new template with an appended section (non-mutating)."""
+        existing_keys = {s.section_key for s in self.sections}
+        if section_key in existing_keys:
+            raise ValueError(f"Section key '{section_key}' already exists in this template")
+        new_section = ChartingSection(
+            section_key=section_key, section_title=section_title, fields=fields
+        )
+        return ChartingTemplate(sections=self.sections + [new_section])
+
+
+class FieldAnswer(BaseModel):
+    """A single extracted field value from an article."""
+    field_name: str
+    value: Optional[str] = None
+    confidence: Literal["high", "medium", "low"] = "medium"
+    extraction_note: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _require_note_for_low_confidence(self) -> "FieldAnswer":
+        if self.confidence == "low" and not self.extraction_note:
+            raise ValueError(
+                f"FieldAnswer '{self.field_name}': extraction_note is required when confidence='low'"
+            )
+        return self
+
+
+class SectionExtractionResult(BaseModel):
+    """Per-section field answers assembled from one article's charting output."""
+    section_key: str
+    section_title: str
+    field_answers: list[FieldAnswer] = Field(default_factory=list)
+
+
+CONCERN_AGGREGATION_RULE = Literal["majority_yes", "strict", "lenient"]
+
+
+class AppraisalItemSpec(BaseModel):
+    """Declares constraints for a single appraisal checklist item."""
+    item_text: str
+    allowed_ratings: list[str]
+
+
+class AppraisalDomainSpec(BaseModel):
+    """One domain in a configurable critical appraisal instrument."""
+    domain_name: str
+    items: list[AppraisalItemSpec]
+    concern_aggregation_rule: CONCERN_AGGREGATION_RULE = "majority_yes"
+
+    @model_validator(mode="after")
+    def _validate_items_non_empty(self) -> "AppraisalDomainSpec":
+        if not self.items:
+            raise ValueError(
+                f"AppraisalDomainSpec '{self.domain_name}': items list must not be empty"
+            )
+        return self
+
+
+class CriticalAppraisalConfig(BaseModel):
+    """Complete configurable critical appraisal instrument."""
+    domains: list[AppraisalDomainSpec] = Field(default_factory=list)
+
+
+class ItemRating(BaseModel):
+    """A single appraisal item rating for one study."""
+    item_text: str
+    rating: str
+
+
+class DomainAppraisal(BaseModel):
+    """Domain-level appraisal result for one study."""
+    domain_name: str
+    item_ratings: list[ItemRating] = Field(default_factory=list)
+    domain_concern: Literal["Low", "Some", "High"]
+
+
+class CriticalAppraisalResult(BaseModel):
+    """Per-study container for all domain appraisal results."""
+    source_id: str
+    domains: list[DomainAppraisal] = Field(default_factory=list)
+
+
 class StudyDataExtractionReport(BaseModel):
     """Per-study container in PrismaReview.methods.data_extraction."""
     source_id: str
     sections: dict[str, RubricSectionOutput] = Field(default_factory=dict)
+    field_answers: dict[str, SectionExtractionResult] = Field(default_factory=dict)
 
 
 class PrismaReview(BaseModel):
