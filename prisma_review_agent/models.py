@@ -378,6 +378,17 @@ class ReviewProtocol(BaseModel):
             "default_appraisal_config() inside the pipeline."
         ),
     )
+    # Iterative processing settings (feature 010)
+    synthesis_batch_size: int = Field(
+        default=20,
+        ge=1,
+        description="Maximum number of articles processed per synthesis chunk.",
+    )
+    max_batch_retries: int = Field(
+        default=3,
+        ge=0,
+        description="Maximum retry attempts for a failed batch before marking the review failed.",
+    )
 
     @model_validator(mode="after")
     def _validate_section_format_values(self) -> "ReviewProtocol":

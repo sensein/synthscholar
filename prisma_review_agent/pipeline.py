@@ -54,16 +54,23 @@ from .models import (
     FieldAnswer,
     CriticalAppraisalResult,
     CompareReviewResult,
+    DataChartingRubric,
+    CriticalAppraisalRubric,
+    PRISMANarrativeRow,
+    GroundingValidationResult,
+    RiskOfBiasResult,
 )
 from .clients import Cache, PubMedClient, BioRxivClient
 from .evidence import extract_evidence
 from .agents import (
     AgentDeps,
+    build_model,
     run_search_strategy,
     run_screening,
     run_risk_of_bias,
     run_data_extraction,
     run_synthesis,
+    run_synthesis_merge_agent,
     run_grade,
     run_bias_summary,
     run_limitations,
@@ -89,12 +96,102 @@ try:
     from .cache.store import CacheStore
     from .cache.article_store import ArticleStore
     from .cache.skill import cache_lookup, cache_store
-    from .cache.models import CacheUnavailableError, CacheSchemaError
+    from .cache.models import (
+        CacheUnavailableError,
+        CacheSchemaError,
+        PipelineCheckpoint,
+        BatchMaxRetriesError,
+    )
     _CACHE_AVAILABLE = True
 except ImportError:
     _CACHE_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
+
+# ── Stage-name constants ──────────────────────────────────────────────────────
+STAGE_TITLE_ABSTRACT  = "title_abstract_screening"
+STAGE_FULL_TEXT       = "full_text_eligibility"
+STAGE_EXTRACTION      = "evidence_extraction"
+STAGE_CHARTING        = "data_charting"
+STAGE_ROB             = "risk_of_bias"
+STAGE_APPRAISAL       = "critical_appraisal"
+STAGE_NARRATIVE       = "narrative_synthesis"
+STAGE_SYNTHESIS       = "synthesis"
+STAGE_SYNTHESIS_MERGE = "synthesis_merge"
+STAGE_ASSEMBLY        = "assembly"
+
+
+# ── DB checkpoint helpers ─────────────────────────────────────────────────────
+
+async def _load_or_run_batch(
+    store: "CacheStore | None",
+    review_id: str,
+    stage: str,
+    batch_index: int,
+    run_fn: "Callable[[], Any]",
+    max_retries: int = 3,
+) -> dict:
+    """Load a completed batch from DB or execute and persist it.
+
+    When store is None (pg_dsn not configured) calls run_fn directly and
+    returns the result without touching the database — zero behaviour change
+    for callers without PostgreSQL configured.
+
+    Raises BatchMaxRetriesError when retries are exhausted.
+    """
+    import asyncio as _asyncio
+
+    if store is None:
+        result = run_fn()
+        if _asyncio.iscoroutine(result):
+            result = await result
+        return result if isinstance(result, dict) else {"value": result}
+
+    existing = await store.load_checkpoint(review_id, stage, batch_index)
+    if existing and existing.status == "complete":
+        return existing.result_json
+    if existing and existing.status == "failed" and existing.retries >= max_retries:
+        raise BatchMaxRetriesError(stage, batch_index, existing.retries)
+
+    retries = existing.retries if existing else 0
+    ckpt = PipelineCheckpoint(
+        review_id=review_id,
+        stage_name=stage,
+        batch_index=batch_index,
+        status="in_progress",
+        retries=retries,
+    )
+    ckpt = await store.save_checkpoint(ckpt)
+    logger.info(
+        "batch_start stage=%s batch=%d review=%s", stage, batch_index, review_id
+    )
+
+    import time
+    t0 = time.monotonic()
+    try:
+        result = run_fn()
+        if _asyncio.iscoroutine(result):
+            result = await result
+        payload = result if isinstance(result, dict) else {"value": result}
+        ckpt.status = "complete"
+        ckpt.result_json = payload
+        ckpt.error_message = ""
+        await store.save_checkpoint(ckpt)
+        logger.info(
+            "batch_complete stage=%s batch=%d elapsed=%.1fs",
+            stage, batch_index, time.monotonic() - t0,
+        )
+        return payload
+    except Exception as exc:
+        ckpt.retries += 1
+        ckpt.status = "failed"
+        ckpt.error_message = str(exc)[:500]
+        await store.save_checkpoint(ckpt)
+        logger.warning(
+            "batch_failed stage=%s batch=%d attempt=%d error=%s",
+            stage, batch_index, ckpt.retries, ckpt.error_message,
+        )
+        raise
 
 
 @dataclass
@@ -132,6 +229,7 @@ class PRISMAReviewPipeline:
             api_key=api_key,
             model_name=model_name,
         )
+        self.deps.model = build_model(self.deps.api_key, self.deps.model_name)
         self._log: list[str] = []
 
     def log(self, msg: str):
@@ -149,6 +247,8 @@ class PRISMAReviewPipeline:
         max_plan_iterations: int = 3,         # new — max re-generation attempts before MaxIterationsReachedError
         output_synthesis_style: str = "paragraph",  # new — controls PrismaReview results rendering style: "paragraph" | "question_answer" | "bullet_list" | "table"
         assemble_timeout: float = 3600.0,     # max seconds for the two-wave assembly gather; raises asyncio.TimeoutError on breach
+        checkpoint: "dict | None" = None,
+        on_checkpoint: "Optional[Callable]" = None,
     ) -> PRISMAReviewResult:
         if not self.deps.api_key:
             raise ValueError(
@@ -160,6 +260,31 @@ class PRISMAReviewPipeline:
         all_articles: dict[str, Article] = {}
         seen_pmids: set[str] = set()
 
+        _ckpt: dict = checkpoint or {}
+        _ckpt_step: int = _ckpt.get("last_completed_step", 0)
+
+        async def _save_ckpt(step: int, extra: dict) -> None:
+            nonlocal _ckpt, _ckpt_step
+            if on_checkpoint:
+                merged = {**_ckpt, **extra, "last_completed_step": step}
+                import inspect
+                result = on_checkpoint(merged)
+                if inspect.isawaitable(result):
+                    await result
+                _ckpt = merged
+                _ckpt_step = step
+
+        async def _save_ckpt_partial(extra: dict) -> None:
+            """Save intermediate checkpoint without advancing _ckpt_step or last_completed_step."""
+            nonlocal _ckpt
+            if on_checkpoint:
+                import inspect
+                merged = {**_ckpt, **extra}
+                result = on_checkpoint(merged)
+                if inspect.isawaitable(result):
+                    await result
+                _ckpt = merged
+
         def up(msg: str):
             self.log(msg)
             if progress_callback:
@@ -170,12 +295,33 @@ class PRISMAReviewPipeline:
         art_store: Optional[ArticleStore] = None
         criteria_dict = proto.model_dump()
 
+        # Track which pipeline stages are already complete in DB (feature 010 resume)
+        _completed_stages: set[str] = set()
+
         if _CACHE_AVAILABLE and proto.pg_dsn:
             try:
                 pg_store = CacheStore(dsn=proto.pg_dsn)
                 await pg_store.connect()
                 art_store = ArticleStore(dsn=proto.pg_dsn)
                 await art_store.connect()
+
+                # T036: force_refresh clears all checkpoints before querying
+                if proto.force_refresh and proto.review_id:
+                    up("Force-refresh: clearing pipeline checkpoints...")
+                    try:
+                        await pg_store.clear_checkpoints(proto.review_id)
+                    except Exception as exc:
+                        logger.warning("Could not clear checkpoints: %s", exc)
+
+                # T033: load completed stages for this review
+                if proto.review_id:
+                    try:
+                        _completed_stages = await pg_store.load_completed_stages(proto.review_id)
+                        if _completed_stages:
+                            up(f"Resume: {len(_completed_stages)} stage(s) already complete — "
+                               f"{', '.join(sorted(_completed_stages))}")
+                    except Exception as exc:
+                        logger.warning("Could not load completed stages: %s", exc)
 
                 if not proto.force_refresh:
                     up("Checking review cache...")
@@ -333,16 +479,27 @@ class PRISMAReviewPipeline:
         up(f"Total identified: {flow.total_identified}")
 
         # ── 6. Deduplication ──
-        up("Deduplicating...")
-        unique_map: dict[str, Article] = {}
-        for a in all_articles.values():
-            key = a.doi.lower().strip() if a.doi else a.pmid
-            if key not in unique_map:
-                unique_map[key] = a
-        deduped = list(unique_map.values())
-        flow.duplicates_removed = flow.total_identified - len(deduped)
-        flow.after_dedup = len(deduped)
-        up(f"After dedup: {flow.after_dedup} (removed {flow.duplicates_removed})")
+        if _ckpt_step >= 6:
+            deduped = [Article(**a) for a in _ckpt.get("deduped_articles", [])]
+            all_search_queries = _ckpt.get("search_queries", all_search_queries)
+            flow = PRISMAFlowCounts(**_ckpt["flow"]) if "flow" in _ckpt else flow
+            up("Loaded dedup from checkpoint (step 6)")
+        else:
+            up("Deduplicating...")
+            unique_map: dict[str, Article] = {}
+            for a in all_articles.values():
+                key = a.doi.lower().strip() if a.doi else a.pmid
+                if key not in unique_map:
+                    unique_map[key] = a
+            deduped = list(unique_map.values())
+            flow.duplicates_removed = flow.total_identified - len(deduped)
+            flow.after_dedup = len(deduped)
+            up(f"After dedup: {flow.after_dedup} (removed {flow.duplicates_removed})")
+            await _save_ckpt(6, {
+                "deduped_articles": [a.model_dump() for a in deduped],
+                "search_queries": all_search_queries,
+                "flow": flow.model_dump(),
+            })
 
         if not deduped:
             return PRISMAReviewResult(
@@ -353,56 +510,85 @@ class PRISMAReviewPipeline:
             )
 
         # ── 7. Title/abstract screening (LLM agent, batches of 15) ──
-        up(f"Screening {len(deduped)} articles (title/abstract)...")
-        flow.screened_title_abstract = len(deduped)
         ta_included: list[Article] = []
-        ta_excluded: list[Article] = []
+        if _ckpt_step >= 7:
+            ta_included = [Article(**a) for a in _ckpt.get("ta_included", [])]
+            all_screening = [ScreeningLogEntry(**e) for e in _ckpt.get("screening_log", [])]
+            ta_excluded: list[Article] = []  # not persisted in checkpoint
+            up("Loaded T/A screening from checkpoint (step 7)")
+        else:
+            # Resume from intermediate checkpoint if available (server restart mid-screening)
+            batch_resume = _ckpt.get("ta_screening_batch_offset", 0)
+            ta_excluded: list[Article] = []
+            if batch_resume > 0:
+                ta_included = [Article(**a) for a in _ckpt.get("ta_included_partial", [])]
+                all_screening = [ScreeningLogEntry(**e) for e in _ckpt.get("screening_log_partial", [])]
+                up(f"Resuming T/A screening from article {batch_resume} / {len(deduped)}")
+            else:
+                up(f"Screening {len(deduped)} articles (title/abstract)...")
+                flow.screened_title_abstract = len(deduped)
 
-        for batch_start in range(0, len(deduped), 15):
-            batch = deduped[batch_start:batch_start + 15]
-            try:
-                batch_result = await run_screening(batch, self.deps, "title_abstract")
-                for dec in batch_result.decisions:
-                    if 0 <= dec.index < len(batch):
-                        art = batch[dec.index]
-                        art.quality_score = dec.relevance_score
-                        all_screening.append(ScreeningLogEntry(
-                            pmid=art.pmid, title=art.title,
-                            decision=dec.decision,
-                            reason=dec.reason,
-                            stage=ScreeningStage.TITLE_ABSTRACT,
-                        ))
-                        if dec.decision == ScreeningDecisionType.INCLUDE:
-                            art.inclusion_status = InclusionStatus.INCLUDED
+            for batch_start in range(batch_resume, len(deduped), 15):
+                batch = deduped[batch_start:batch_start + 15]
+                try:
+                    batch_result = await run_screening(batch, self.deps, "title_abstract")
+                    for dec in batch_result.decisions:
+                        if 0 <= dec.index < len(batch):
+                            art = batch[dec.index]
+                            art.quality_score = dec.relevance_score
+                            all_screening.append(ScreeningLogEntry(
+                                pmid=art.pmid, title=art.title,
+                                decision=dec.decision,
+                                reason=dec.reason,
+                                stage=ScreeningStage.TITLE_ABSTRACT,
+                            ))
+                            if dec.decision == ScreeningDecisionType.INCLUDE:
+                                art.inclusion_status = InclusionStatus.INCLUDED
+                                ta_included.append(art)
+                            else:
+                                art.inclusion_status = InclusionStatus.EXCLUDED
+                                art.exclusion_reason = dec.reason
+                                ta_excluded.append(art)
+                    # Auto-include any missed articles
+                    covered = {s.pmid for s in all_screening if s.stage == ScreeningStage.TITLE_ABSTRACT}
+                    for art in batch:
+                        if art.pmid not in covered:
                             ta_included.append(art)
-                        else:
-                            art.inclusion_status = InclusionStatus.EXCLUDED
-                            art.exclusion_reason = dec.reason
-                            ta_excluded.append(art)
-                # Auto-include any missed articles
-                covered = {s.pmid for s in all_screening if s.stage == ScreeningStage.TITLE_ABSTRACT}
-                for art in batch:
-                    if art.pmid not in covered:
+                            all_screening.append(ScreeningLogEntry(
+                                pmid=art.pmid, title=art.title,
+                                decision=ScreeningDecisionType.INCLUDE,
+                                reason="Not evaluated — auto-included",
+                                stage=ScreeningStage.TITLE_ABSTRACT,
+                            ))
+                except Exception as e:
+                    up(f"  Screening batch failed ({e}), auto-including {len(batch)}")
+                    for art in batch:
                         ta_included.append(art)
                         all_screening.append(ScreeningLogEntry(
                             pmid=art.pmid, title=art.title,
                             decision=ScreeningDecisionType.INCLUDE,
-                            reason="Not evaluated — auto-included",
+                            reason=f"Auto-included (error: {str(e)[:50]})",
                             stage=ScreeningStage.TITLE_ABSTRACT,
                         ))
-            except Exception as e:
-                up(f"  Screening batch failed ({e}), auto-including {len(batch)}")
-                for art in batch:
-                    ta_included.append(art)
-                    all_screening.append(ScreeningLogEntry(
-                        pmid=art.pmid, title=art.title,
-                        decision=ScreeningDecisionType.INCLUDE,
-                        reason=f"Auto-included (error: {str(e)[:50]})",
-                        stage=ScreeningStage.TITLE_ABSTRACT,
-                    ))
 
-        flow.excluded_title_abstract = len(ta_excluded)
-        up(f"Screening: {len(ta_included)} included, {len(ta_excluded)} excluded")
+                # Save intermediate checkpoint every 25 batches (~375 articles)
+                current_batch_num = (batch_start // 15) + 1
+                if current_batch_num % 25 == 0:
+                    next_offset = batch_start + 15
+                    await _save_ckpt_partial({
+                        "ta_screening_batch_offset": next_offset,
+                        "ta_included_partial": [a.model_dump() for a in ta_included],
+                        "screening_log_partial": [e.model_dump() for e in all_screening],
+                    })
+                    up(f"  Saved T/A screening progress ({current_batch_num} batches done)")
+
+            flow.excluded_title_abstract = len(ta_excluded)
+            up(f"Screening: {len(ta_included)} included, {len(ta_excluded)} excluded")
+            # Final step-7 checkpoint: ta_screening_batch_offset intentionally absent
+            await _save_ckpt(7, {
+                "ta_included": [a.model_dump() for a in ta_included],
+                "screening_log": [e.model_dump() for e in all_screening],
+            })
 
         if not ta_included:
             return PRISMAReviewResult(
@@ -455,50 +641,62 @@ class PRISMAReviewPipeline:
         )
 
         # ── 9. Full-text eligibility screening ──
-        ft_articles = [a for a in ta_included if a.full_text]
-        no_ft = [a for a in ta_included if not a.full_text]
-        ft_included = list(no_ft)
-        ft_excluded: list[Article] = []
+        ft_included: list[Article] = []
+        if _ckpt_step >= 9:
+            ft_included = [Article(**a) for a in _ckpt.get("ft_included", [])]
+            all_screening = [ScreeningLogEntry(**e) for e in _ckpt.get("screening_log", [])]
+            flow = PRISMAFlowCounts(**_ckpt["flow"]) if "flow" in _ckpt else flow
+            up("Loaded FT screening from checkpoint (step 9)")
+        else:
+            ft_articles = [a for a in ta_included if a.full_text]
+            no_ft = [a for a in ta_included if not a.full_text]
+            ft_included = list(no_ft)
+            ft_excluded: list[Article] = []
 
-        if ft_articles:
-            up(f"Full-text eligibility screening ({len(ft_articles)} articles)...")
-            for batch_start in range(0, len(ft_articles), 10):
-                batch = ft_articles[batch_start:batch_start + 10]
-                try:
-                    batch_result = await run_screening(batch, self.deps, "full_text")
-                    for dec in batch_result.decisions:
-                        if 0 <= dec.index < len(batch):
-                            art = batch[dec.index]
-                            all_screening.append(ScreeningLogEntry(
-                                pmid=art.pmid, title=art.title,
-                                decision=dec.decision,
-                                reason=dec.reason,
-                                stage=ScreeningStage.FULL_TEXT,
-                            ))
-                            if dec.decision == ScreeningDecisionType.INCLUDE:
-                                ft_included.append(art)
-                            else:
-                                art.inclusion_status = InclusionStatus.EXCLUDED
-                                art.exclusion_reason = dec.reason
-                                ft_excluded.append(art)
-                except Exception as e:
-                    up(f"  FT screening batch failed ({e}), auto-including")
-                    ft_included.extend(batch)
+            if ft_articles:
+                up(f"Full-text eligibility screening ({len(ft_articles)} articles)...")
+                for batch_start in range(0, len(ft_articles), 10):
+                    batch = ft_articles[batch_start:batch_start + 10]
+                    try:
+                        batch_result = await run_screening(batch, self.deps, "full_text")
+                        for dec in batch_result.decisions:
+                            if 0 <= dec.index < len(batch):
+                                art = batch[dec.index]
+                                all_screening.append(ScreeningLogEntry(
+                                    pmid=art.pmid, title=art.title,
+                                    decision=dec.decision,
+                                    reason=dec.reason,
+                                    stage=ScreeningStage.FULL_TEXT,
+                                ))
+                                if dec.decision == ScreeningDecisionType.INCLUDE:
+                                    ft_included.append(art)
+                                else:
+                                    art.inclusion_status = InclusionStatus.EXCLUDED
+                                    art.exclusion_reason = dec.reason
+                                    ft_excluded.append(art)
+                    except Exception as e:
+                        up(f"  FT screening batch failed ({e}), auto-including")
+                        ft_included.extend(batch)
 
-        flow.assessed_eligibility = len(ta_included)
-        flow.excluded_eligibility = len(ft_excluded)
-        flow.included_synthesis = len(ft_included)
+            flow.assessed_eligibility = len(ta_included)
+            flow.excluded_eligibility = len(ft_excluded)
+            flow.included_synthesis = len(ft_included)
 
-        # Tally exclusion reasons
-        reason_counts: dict[str, int] = defaultdict(int)
-        for a in ta_excluded + ft_excluded:
-            r = a.exclusion_reason[:60] if a.exclusion_reason else "Unspecified"
-            reason_counts[r] += 1
-        flow.excluded_reasons = dict(
-            sorted(reason_counts.items(), key=lambda x: -x[1])[:8]
-        )
+            # Tally exclusion reasons (ta_excluded may be empty if loaded from step-7 ckpt)
+            reason_counts: dict[str, int] = defaultdict(int)
+            for a in ta_excluded + ft_excluded:
+                r = a.exclusion_reason[:60] if a.exclusion_reason else "Unspecified"
+                reason_counts[r] += 1
+            flow.excluded_reasons = dict(
+                sorted(reason_counts.items(), key=lambda x: -x[1])[:8]
+            )
 
-        up(f"Final included: {flow.included_synthesis} articles")
+            up(f"Final included: {flow.included_synthesis} articles")
+            await _save_ckpt(9, {
+                "ft_included": [a.model_dump() for a in ft_included],
+                "screening_log": [e.model_dump() for e in all_screening],
+                "flow": flow.model_dump(),
+            })
 
         if not ft_included:
             return PRISMAReviewResult(
@@ -510,9 +708,15 @@ class PRISMAReviewPipeline:
             )
 
         # ── 10. Evidence span extraction (no LLM) ──
-        up("Extracting evidence spans...")
-        evidence = await extract_evidence(ft_included, self.deps)
-        up(f"Extracted {len(evidence)} evidence spans")
+        evidence: list[EvidenceSpan] = []
+        if _ckpt_step >= 10:
+            evidence = [EvidenceSpan(**e) for e in _ckpt.get("evidence", [])]
+            up("Loaded evidence from checkpoint (step 10)")
+        else:
+            up("Extracting evidence spans...")
+            evidence = await extract_evidence(ft_included, self.deps)
+            up(f"Extracted {len(evidence)} evidence spans")
+            await _save_ckpt(10, {"evidence": [e.model_dump() for e in evidence]})
 
         # ── 11. Per-study data extraction (LLM agent) ──
         if data_items:
@@ -527,15 +731,37 @@ class PRISMAReviewPipeline:
                     up(f"  Data extraction failed for {art.pmid}: {e}")
 
         # ── 12. Per-study risk of bias (LLM agent) ──
-        up(f"Assessing risk of bias ({proto.rob_tool.value})...")
-        for i, art in enumerate(ft_included):
-            up(f"  [{i+1}/{len(ft_included)}] {art.title[:50]}...")
-            try:
-                art.risk_of_bias = await run_risk_of_bias(art, self.deps)
-            except Exception as e:
-                up(f"  RoB failed for {art.pmid}: {e}")
+        if STAGE_ROB in _completed_stages:
+            if pg_store and proto.review_id:
+                rob_ckpts = await pg_store.load_checkpoints(proto.review_id, STAGE_ROB)
+                rob_map = {
+                    c.batch_index: c.result_json.get("rob")
+                    for c in rob_ckpts if c.status == "complete" and "rob" in c.result_json
+                }
+                for i, art in enumerate(ft_included):
+                    if i in rob_map and rob_map[i]:
+                        art.risk_of_bias = RiskOfBiasResult(**rob_map[i])
+            up(f"Resume: loaded RoB results from DB")
+            logger.info("stage_resumed stage=%s", STAGE_ROB)
+        else:
+            up(f"Assessing risk of bias ({proto.rob_tool.value})...")
+            for i, art in enumerate(ft_included):
+                up(f"  [{i+1}/{len(ft_included)}] {art.title[:50]}...")
+                try:
+                    async def _do_rob(_a=art) -> dict:
+                        rob = await run_risk_of_bias(_a, self.deps)
+                        return {"rob": rob.model_dump()}
 
-        # ── 13. Grounded synthesis (LLM agent) ──
+                    payload = await _load_or_run_batch(
+                        pg_store, proto.review_id or "", STAGE_ROB, i,
+                        _do_rob, proto.max_batch_retries,
+                    )
+                    if "rob" in payload:
+                        art.risk_of_bias = RiskOfBiasResult(**payload["rob"])
+                except Exception as e:
+                    up(f"  RoB failed for {art.pmid}: {e}")
+
+        # ── Setup for charting and synthesis ──
         flow_text = (
             f"Identified: {flow.total_identified} | "
             f"After dedup: {flow.after_dedup} | "
@@ -545,111 +771,267 @@ class PRISMAReviewPipeline:
             f"Excluded (eligibility): {flow.excluded_eligibility} | "
             f"Included: {flow.included_synthesis}"
         )
-        up(f"Synthesizing {len(ft_included)} articles...")
-        synthesis = await run_synthesis(ft_included, evidence, flow_text, self.deps)
-
-        # ── 14. Overall bias assessment + GRADE (LLM agents, parallel) ──
-        up("Assessing overall bias and GRADE...")
-        bias_task = run_bias_summary(ft_included, self.deps)
-
-        outcome_text = proto.pico_outcome or "Primary outcome"
-        outcomes = [o.strip() for o in outcome_text.split(",") if o.strip()]
-        grade_tasks = {
-            outcome: run_grade(outcome, ft_included, self.deps)
-            for outcome in outcomes[:3]
-        }
-
-        limitations_task = run_limitations(flow_text, ft_included, self.deps)
-
-        # Run bias, GRADE, and limitations concurrently
-        bias_result, limitations_result, *grade_results = await asyncio.gather(
-            bias_task,
-            limitations_task,
-            *grade_tasks.values(),
-            return_exceptions=True,
-        )
-
-        bias_text = bias_result if isinstance(bias_result, str) else ""
-        limitations_text = limitations_result if isinstance(limitations_result, str) else ""
-        grade_assessments: dict[str, GRADEAssessment] = {}
-        for outcome, result in zip(grade_tasks.keys(), grade_results):
-            if isinstance(result, GRADEAssessment):
-                grade_assessments[outcome] = result
-
-        # ── Steps 13–18: Charting, Appraisal, Narrative, Grounding, Document sections ──
-
         charting_questions = list(proto.charting_questions) if proto.charting_questions else None
         appraisal_domains = list(proto.appraisal_domains) if proto.appraisal_domains else None
-
-        # Feature 006: resolve template and config (None → factory default applied per-call)
         charting_template = proto.charting_template or default_charting_template()
         appraisal_config = proto.critical_appraisal_config or default_appraisal_config()
-
-        data_charting_rubrics = []
-        critical_appraisals = []
-        critical_appraisal_results: list[CriticalAppraisalResult] = []
-        narrative_rows = []
-
         _resolved_cfg = _resolve_section_config(self.protocol)
 
-        for article in ft_included:
-            try:
-                up(f"Charting article {article.pmid}…")
-                rubric = await run_data_charting(
-                    article, self.deps, charting_questions,
-                    resolved_section_config=_resolved_cfg,
-                    charting_template=charting_template,
+        # ── 13. Data charting (per-article) ──
+        data_charting_rubrics = []
+        if _ckpt_step >= 13:
+            data_charting_rubrics = [DataChartingRubric(**r) for r in _ckpt.get("data_charting_rubrics", [])]
+            _ckpt_ft = _ckpt.get("ft_included")
+            if _ckpt_ft:
+                ft_included = [Article(**a) for a in _ckpt_ft]
+            up("Loaded data charting from checkpoint (step 13)")
+        elif STAGE_CHARTING in _completed_stages:
+            # Load all charting results from DB checkpoints
+            if pg_store and proto.review_id:
+                db_ckpts = await pg_store.load_checkpoints(proto.review_id, STAGE_CHARTING)
+                data_charting_rubrics = [
+                    DataChartingRubric(**c.result_json["rubric"])
+                    for c in db_ckpts if c.status == "complete" and "rubric" in c.result_json
+                ]
+                up(f"Resume: loaded {len(data_charting_rubrics)} charting results from DB")
+            logger.info("stage_resumed stage=%s skipped_batches=%d", STAGE_CHARTING, len(data_charting_rubrics))
+        else:
+            for idx, article in enumerate(ft_included):
+                try:
+                    up(f"Charting article {article.pmid}…")
+
+                    async def _do_charting(_art=article) -> dict:
+                        rubric = await run_data_charting(
+                            _art, self.deps, charting_questions,
+                            resolved_section_config=_resolved_cfg,
+                            charting_template=charting_template,
+                        )
+                        return {"rubric": rubric.model_dump()}
+
+                    payload = await _load_or_run_batch(
+                        pg_store, proto.review_id or "", STAGE_CHARTING, idx,
+                        _do_charting, proto.max_batch_retries,
+                    )
+                    data_charting_rubrics.append(DataChartingRubric(**payload["rubric"]))
+                except Exception as exc:
+                    logger.warning("Charting failed for %s: %s", article.pmid, exc)
+            await _save_ckpt(13, {
+                "data_charting_rubrics": [r.model_dump() for r in data_charting_rubrics],
+                "ft_included": [a.model_dump() for a in ft_included],
+            })
+
+        # ── 14. Critical appraisal (per-article) ──
+        critical_appraisals = []
+        critical_appraisal_results: list[CriticalAppraisalResult] = []
+        if _ckpt_step >= 14:
+            critical_appraisals = [CriticalAppraisalRubric(**r) for r in _ckpt.get("critical_appraisals", [])]
+            up("Loaded critical appraisals from checkpoint (step 14)")
+        elif STAGE_APPRAISAL in _completed_stages:
+            if pg_store and proto.review_id:
+                db_ckpts = await pg_store.load_checkpoints(proto.review_id, STAGE_APPRAISAL)
+                critical_appraisals = [
+                    CriticalAppraisalRubric(**c.result_json["appraisal"])
+                    for c in db_ckpts if c.status == "complete" and "appraisal" in c.result_json
+                ]
+                up(f"Resume: loaded {len(critical_appraisals)} appraisal results from DB")
+            logger.info("stage_resumed stage=%s", STAGE_APPRAISAL)
+        else:
+            for idx, (article, rubric) in enumerate(zip(ft_included, data_charting_rubrics)):
+                try:
+                    async def _do_appraisal(_art=article, _rub=rubric) -> dict:
+                        ap_rubric, ap_result = await run_critical_appraisal(
+                            _art, _rub, self.deps, appraisal_domains,
+                            appraisal_config=appraisal_config,
+                        )
+                        return {"appraisal": ap_rubric.model_dump(), "result": ap_result.model_dump()}
+
+                    payload = await _load_or_run_batch(
+                        pg_store, proto.review_id or "", STAGE_APPRAISAL, idx,
+                        _do_appraisal, proto.max_batch_retries,
+                    )
+                    critical_appraisals.append(CriticalAppraisalRubric(**payload["appraisal"]))
+                    if "result" in payload:
+                        critical_appraisal_results.append(CriticalAppraisalResult(**payload["result"]))
+                except Exception as exc:
+                    logger.warning("Appraisal failed for %s: %s", article.pmid, exc)
+            await _save_ckpt(14, {
+                "critical_appraisals": [r.model_dump() for r in critical_appraisals],
+            })
+
+        # ── 15. Narrative rows (per-article) ──
+        narrative_rows = []
+        if _ckpt_step >= 15:
+            narrative_rows = [PRISMANarrativeRow(**r) for r in _ckpt.get("narrative_rows", [])]
+            up("Loaded narrative rows from checkpoint (step 15)")
+        elif STAGE_NARRATIVE in _completed_stages:
+            if pg_store and proto.review_id:
+                db_ckpts = await pg_store.load_checkpoints(proto.review_id, STAGE_NARRATIVE)
+                narrative_rows = [
+                    PRISMANarrativeRow(**c.result_json["row"])
+                    for c in db_ckpts if c.status == "complete" and "row" in c.result_json
+                ]
+                up(f"Resume: loaded {len(narrative_rows)} narrative rows from DB")
+            logger.info("stage_resumed stage=%s", STAGE_NARRATIVE)
+        else:
+            for idx, (rubric, appraisal_rubric) in enumerate(
+                zip(data_charting_rubrics, critical_appraisals)
+            ):
+                try:
+                    async def _do_narrative(_rub=rubric, _ap=appraisal_rubric) -> dict:
+                        row = await run_narrative_row(_rub, _ap, self.deps)
+                        return {"row": row.model_dump()}
+
+                    payload = await _load_or_run_batch(
+                        pg_store, proto.review_id or "", STAGE_NARRATIVE, idx,
+                        _do_narrative, proto.max_batch_retries,
+                    )
+                    narrative_rows.append(PRISMANarrativeRow(**payload["row"]))
+                except Exception as exc:
+                    logger.warning("Narrative row failed: %s", exc)
+            await _save_ckpt(15, {
+                "narrative_rows": [r.model_dump() for r in narrative_rows],
+            })
+
+        # ── 16. Grounded synthesis (LLM agent, chunked for large reviews) ──
+        synthesis = ""
+        if _ckpt_step >= 16:
+            synthesis = _ckpt.get("synthesis_text", "")
+            up("Loaded synthesis from checkpoint (step 16)")
+        elif STAGE_SYNTHESIS in _completed_stages and STAGE_SYNTHESIS_MERGE in _completed_stages:
+            if pg_store and proto.review_id:
+                merge_ckpts = await pg_store.load_checkpoints(proto.review_id, STAGE_SYNTHESIS_MERGE)
+                if merge_ckpts and merge_ckpts[0].status == "complete":
+                    synthesis = merge_ckpts[0].result_json.get("synthesis_text", "")
+                    up("Resume: loaded merged synthesis from DB")
+            logger.info("stage_resumed stage=%s+%s", STAGE_SYNTHESIS, STAGE_SYNTHESIS_MERGE)
+        else:
+            batch_size = proto.synthesis_batch_size
+            batches = [ft_included[i:i + batch_size] for i in range(0, len(ft_included), batch_size)]
+            up(f"Synthesizing {len(ft_included)} articles in {len(batches)} chunk(s) "
+               f"(batch_size={batch_size})...")
+            partial_syntheses: list[str] = []
+            for idx, batch in enumerate(batches):
+                async def _do_synthesis(_b=batch) -> dict:
+                    text = await run_synthesis(_b, evidence, flow_text, self.deps)
+                    return {"synthesis_text": text}
+
+                payload = await _load_or_run_batch(
+                    pg_store, proto.review_id or "", STAGE_SYNTHESIS, idx,
+                    _do_synthesis, proto.max_batch_retries,
                 )
-                data_charting_rubrics.append(rubric)
+                partial_syntheses.append(payload.get("synthesis_text", ""))
+                up(f"  Synthesis chunk {idx + 1}/{len(batches)} done")
 
-                appraisal_rubric, appraisal_result = await run_critical_appraisal(
-                    article, rubric, self.deps, appraisal_domains,
-                    appraisal_config=appraisal_config,
+            # Merge partial syntheses (skip merge agent when only one chunk)
+            if len(partial_syntheses) == 1:
+                synthesis = partial_syntheses[0]
+            else:
+                logger.info("synthesis_merge_start partial_count=%d", len(partial_syntheses))
+                up(f"Merging {len(partial_syntheses)} synthesis chunks...")
+
+                async def _do_merge() -> dict:
+                    merged = await run_synthesis_merge_agent(partial_syntheses, self.deps)
+                    return {"synthesis_text": merged}
+
+                merge_payload = await _load_or_run_batch(
+                    pg_store, proto.review_id or "", STAGE_SYNTHESIS_MERGE, 0,
+                    _do_merge, proto.max_batch_retries,
                 )
-                critical_appraisals.append(appraisal_rubric)
-                critical_appraisal_results.append(appraisal_result)
+                synthesis = merge_payload.get("synthesis_text", "\n\n".join(partial_syntheses))
+                logger.info("synthesis_merge_complete")
 
-                row = await run_narrative_row(rubric, appraisal_rubric, self.deps)
-                narrative_rows.append(row)
-            except Exception as exc:
-                logger.warning("Charting/appraisal failed for %s: %s", article.pmid, exc)
+            await _save_ckpt(16, {"synthesis_text": synthesis})
 
-        # Grounding validation
+        # ── 17. Grounding validation ──
         grounding_validation = None
-        try:
-            up("Validating grounding of synthesis text…")
-            corpus: dict[str, str] = {
-                a.pmid: (a.abstract or "") + " " + (a.full_text or "")
-                for a in ft_included
-            }
-            citation_map = {a.pmid: f"{a.authors} ({a.year})" for a in ft_included}
-            grounding_validation = await run_grounding_validation(
-                synthesis, corpus, citation_map, self.deps
-            )
-            up(
-                f"Grounding validation: {grounding_validation.overall_verdict} "
-                f"({grounding_validation.grounding_rate:.1%} supported)"
-            )
-        except Exception as exc:
-            logger.warning("Grounding validation failed: %s", exc)
+        if _ckpt_step >= 17:
+            gv_data = _ckpt.get("grounding_validation")
+            grounding_validation = GroundingValidationResult(**gv_data) if gv_data else None
+            up("Loaded grounding validation from checkpoint (step 17)")
+        else:
+            try:
+                up("Validating grounding of synthesis text…")
+                corpus: dict[str, str] = {
+                    a.pmid: (a.abstract or "") + " " + (a.full_text or "")
+                    for a in ft_included
+                }
+                citation_map = {a.pmid: f"{a.authors} ({a.year})" for a in ft_included}
+                grounding_validation = await run_grounding_validation(
+                    synthesis, corpus, citation_map, self.deps
+                )
+                up(
+                    f"Grounding validation: {grounding_validation.overall_verdict} "
+                    f"({grounding_validation.grounding_rate:.1%} supported)"
+                )
+            except Exception as exc:
+                logger.warning("Grounding validation failed: %s", exc)
+            await _save_ckpt(17, {
+                "grounding_validation": grounding_validation.model_dump() if grounding_validation else None,
+            })
 
-        # Introduction, Conclusions, Abstract (parallel)
-        grade_summary = "; ".join(
-            f"{k}: {v.overall_certainty.value}" for k, v in grade_assessments.items()
-        )
-        flow_text = (
-            f"{flow.total_identified} identified, {flow.included_synthesis} included"
-        )
-        try:
-            up("Generating document sections…")
-            introduction_text, conclusions_text, structured_abstract = await asyncio.gather(
-                run_introduction(self.deps),
-                run_conclusions(synthesis, grade_summary, self.deps),
-                run_abstract(flow_text, synthesis, self.deps),
+        # ── 18. Assembly (bias, GRADE, limitations, introduction, conclusions, abstract) ──
+        bias_text = ""
+        limitations_text = ""
+        grade_assessments: dict[str, GRADEAssessment] = {}
+        introduction_text = ""
+        conclusions_text = ""
+        structured_abstract = ""
+        if _ckpt_step >= 18:
+            bias_text = _ckpt.get("bias_text", "")
+            limitations_text = _ckpt.get("limitations", "")
+            grade_assessments = {
+                k: GRADEAssessment(**v) for k, v in _ckpt.get("grade_assessments", {}).items()
+            }
+            introduction_text = _ckpt.get("introduction_text", "")
+            conclusions_text = _ckpt.get("conclusions_text", "")
+            structured_abstract = _ckpt.get("structured_abstract", "")
+            up("Loaded assembly from checkpoint (step 18)")
+        else:
+            up("Assessing overall bias and GRADE...")
+            bias_task = run_bias_summary(ft_included, self.deps)
+            outcome_text = proto.pico_outcome or "Primary outcome"
+            outcomes = [o.strip() for o in outcome_text.split(",") if o.strip()]
+            grade_tasks = {
+                outcome: run_grade(outcome, ft_included, self.deps)
+                for outcome in outcomes[:3]
+            }
+            limitations_task = run_limitations(flow_text, ft_included, self.deps)
+
+            bias_result, limitations_result, *grade_results = await asyncio.gather(
+                bias_task,
+                limitations_task,
+                *grade_tasks.values(),
+                return_exceptions=True,
             )
-        except Exception as exc:
-            logger.warning("Document section generation failed: %s", exc)
-            introduction_text = conclusions_text = structured_abstract = ""
+            bias_text = bias_result if isinstance(bias_result, str) else ""
+            limitations_text = limitations_result if isinstance(limitations_result, str) else ""
+            for outcome, result in zip(grade_tasks.keys(), grade_results):
+                if isinstance(result, GRADEAssessment):
+                    grade_assessments[outcome] = result
+
+            grade_summary = "; ".join(
+                f"{k}: {v.overall_certainty.value}" for k, v in grade_assessments.items()
+            )
+            flow_text_short = f"{flow.total_identified} identified, {flow.included_synthesis} included"
+            try:
+                up("Generating document sections…")
+                introduction_text, conclusions_text, structured_abstract = await asyncio.gather(
+                    run_introduction(self.deps),
+                    run_conclusions(synthesis, grade_summary, self.deps),
+                    run_abstract(flow_text_short, synthesis, self.deps),
+                )
+            except Exception as exc:
+                logger.warning("Document section generation failed: %s", exc)
+                introduction_text = conclusions_text = structured_abstract = ""
+
+            await _save_ckpt(18, {
+                "bias_text": bias_text,
+                "limitations": limitations_text,
+                "grade_assessments": {k: v.model_dump() for k, v in grade_assessments.items()},
+                "introduction_text": introduction_text,
+                "conclusions_text": conclusions_text,
+                "structured_abstract": structured_abstract,
+            })
 
         up("Review complete!")
 

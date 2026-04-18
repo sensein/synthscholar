@@ -7,6 +7,9 @@ from .models import (
     CacheSchemaError,
     SimilarityConfig,
     StoredArticle,
+    PipelineCheckpoint,
+    CheckpointStatus,
+    BatchMaxRetriesError,
 )
 from .store import CacheStore
 from .article_store import ArticleStore
@@ -20,6 +23,9 @@ __all__ = [
     "CacheSchemaError",
     "SimilarityConfig",
     "StoredArticle",
+    "PipelineCheckpoint",
+    "CheckpointStatus",
+    "BatchMaxRetriesError",
     "CacheStore",
     "ArticleStore",
     "cache_agent",
