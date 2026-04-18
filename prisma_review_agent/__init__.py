@@ -77,6 +77,8 @@ from prisma_review_agent.export import (
     # Feature 007
     to_compare_markdown, to_compare_json,
     to_compare_charting_markdown, to_compare_charting_json,
+    # Narrative summary
+    to_narrative_summary_markdown, to_narrative_summary_json,
 )
 
 __version__ = "0.2.0"
@@ -160,4 +162,6 @@ __all__ = [
     "to_compare_json",
     "to_compare_charting_markdown",
     "to_compare_charting_json",
+    "to_narrative_summary_markdown",
+    "to_narrative_summary_json",
 ]
