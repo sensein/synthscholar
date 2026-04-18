@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 import json
 
-from .models import PRISMAReviewResult
+from .models import PRISMAReviewResult, CompareReviewResult
 from .ontology.rdf_export import to_turtle, to_jsonld  # noqa: F401 — re-exported
 from .ontology.rdf_store import SLRStore  # noqa: F401 — re-exported
 
@@ -20,6 +20,9 @@ __all__ = [
     # Feature 006
     "to_charting_markdown", "to_charting_json",
     "to_appraisal_markdown", "to_appraisal_json",
+    # Feature 007
+    "to_compare_markdown", "to_compare_json",
+    "to_compare_charting_markdown", "to_compare_charting_json",
 ]
 
 
@@ -569,3 +572,133 @@ def to_appraisal_json(result: PRISMAReviewResult) -> str:
         })
 
     return json.dumps({"studies": studies, "summary": summary}, indent=2, ensure_ascii=False)
+
+
+# ─── Feature 007: Multi-Model Compare Exports ─────────────────────────────────
+
+def to_compare_markdown(result: CompareReviewResult) -> str:
+    """Export a multi-model compare result as a PRISMA 2020 structured Markdown document."""
+    title = result.protocol.title or "PRISMA Review"
+    lines: list[str] = []
+
+    lines.append(f"# {title} — Multi-Model Compare Report\n")
+    lines.append(f"**Compare tag**: `multi-model-compare`  ")
+    lines.append(f"**Timestamp**: {result.timestamp}  ")
+    lines.append(f"**Models**: {', '.join(result.compare_models)}\n")
+
+    # Run Summary table
+    lines.append("## Run Summary\n")
+    lines.append("| Model | Status | Included Articles | Evidence Spans |")
+    lines.append("|---|---|---|---|")
+    for run in result.model_results:
+        if run.succeeded and run.result is not None:
+            n_included = len(run.result.included_articles)
+            n_evidence = len(run.result.evidence_spans) if run.result.evidence_spans else 0
+            lines.append(f"| {run.model_name} | ✓ Success | {n_included} | {n_evidence} |")
+        else:
+            lines.append(f"| {run.model_name} | ⚠ Failed | — | — |")
+    lines.append("")
+
+    # Per-model full reports
+    for run in result.model_results:
+        lines.append(f"## Model: {run.model_name}\n")
+        if run.succeeded and run.result is not None:
+            lines.append(to_markdown(run.result))
+        else:
+            lines.append(f"### ⚠ Run Failed\n")
+            lines.append(f"**Error**: {run.error or 'Unknown error'}\n")
+        lines.append("")
+
+    # Merged section
+    lines.append("## Merged — Consensus & Divergences\n")
+    lines.append("### Consensus Synthesis\n")
+    lines.append(result.merged.consensus_synthesis or "_No consensus synthesis available._")
+    lines.append("")
+
+    if result.merged.synthesis_divergences:
+        lines.append("### Synthesis Divergences\n")
+        model_cols = result.merged.models_included
+        header = "| Topic | " + " | ".join(model_cols) + " |"
+        sep = "|---|" + "|---|" * len(model_cols)
+        lines.append(header)
+        lines.append(sep)
+        for div in result.merged.synthesis_divergences:
+            positions = " | ".join(div.positions.get(m, "—") for m in model_cols)
+            lines.append(f"| {div.topic} | {positions} |")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def to_compare_json(result: CompareReviewResult) -> str:
+    """Export a multi-model compare result as JSON matching the contracts/compare_mode.md schema."""
+    return result.model_dump_json(indent=2)
+
+
+def to_compare_charting_markdown(result: CompareReviewResult) -> str:
+    """Export per-field charting comparison as Markdown with agree/differ indicators."""
+    title = result.protocol.title or "PRISMA Review"
+    lines: list[str] = []
+    lines.append(f"# {title} — Charting Comparison\n")
+
+    model_names = result.compare_models
+    fa_map = result.merged.field_agreement
+
+    if not fa_map:
+        lines.append("_No field agreement data available (requires structured charting output)._\n")
+        return "\n".join(lines)
+
+    # Group FieldAgreement entries by (source_id, section_key)
+    from collections import defaultdict
+    by_study: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
+    for fa in fa_map.values():
+        by_study[fa.source_id][fa.section_key].append(fa)
+
+    for source_id, sections in sorted(by_study.items()):
+        lines.append(f"## Study: {source_id}\n")
+        for section_key, field_list in sorted(sections.items()):
+            lines.append(f"### {section_key}\n")
+            header = "| Field | " + " | ".join(model_names) + " | Agreement |"
+            sep = "|---|" + "|---|" * len(model_names) + "---|"
+            lines.append(header)
+            lines.append(sep)
+            for fa in field_list:
+                values = " | ".join(fa.values.get(m, "—") for m in model_names)
+                agreement = "✓ Agree" if fa.agreed else "⚠ Differ"
+                lines.append(f"| {fa.field_name} | {values} | {agreement} |")
+            lines.append("")
+
+    return "\n".join(lines)
+
+
+def to_compare_charting_json(result: CompareReviewResult) -> str:
+    """Export per-field charting comparison as a JSON array per study."""
+    fa_map = result.merged.field_agreement
+    model_names = result.compare_models
+
+    if not fa_map:
+        return json.dumps([], indent=2, ensure_ascii=False)
+
+    from collections import defaultdict
+    # {source_id: {section_key: [field_entry]}}
+    by_study: dict[str, dict[str, list[dict]]] = defaultdict(lambda: defaultdict(list))
+    for fa in fa_map.values():
+        by_study[fa.source_id][fa.section_key].append({
+            "field_name": fa.field_name,
+            "answer_type": fa.answer_type,
+            "reviewer_only": False,
+            "values": {m: fa.values.get(m, "") for m in model_names},
+            "agreed": fa.agreed,
+        })
+
+    output = []
+    for source_id, sections in sorted(by_study.items()):
+        charting: dict[str, dict] = {}
+        for section_key, fields in sorted(sections.items()):
+            charting[section_key] = {
+                "section_title": section_key,
+                "fields": fields,
+            }
+        output.append({"source_id": source_id, "charting": charting})
+
+    return json.dumps(output, indent=2, ensure_ascii=False)

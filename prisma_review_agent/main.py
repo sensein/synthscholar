@@ -38,7 +38,10 @@ from datetime import datetime
 
 from prisma_review_agent.models import ReviewProtocol, RoBTool, ReviewPlan, PlanRejectedError, MaxIterationsReachedError
 from prisma_review_agent.pipeline import PRISMAReviewPipeline
-from prisma_review_agent.export import to_markdown, to_bibtex, to_json, to_turtle, to_jsonld, to_oxigraph_store
+from prisma_review_agent.export import (
+    to_markdown, to_bibtex, to_json, to_turtle, to_jsonld, to_oxigraph_store,
+    to_compare_markdown, to_compare_json,
+)
 
 ROB_TOOL_CHOICES = [t.value for t in RoBTool]
 
@@ -225,6 +228,14 @@ async def run_review(args: argparse.Namespace):
     )
 
     cb = None if args.auto else _cli_confirm
+
+    compare_models = getattr(args, "compare_models", None)
+    if compare_models:
+        if len(compare_models) < 2:
+            print("ERROR: Compare mode requires at least 2 models.")
+            sys.exit(1)
+        return await _run_compare_mode(pipeline, compare_models, args, data_items, cb)
+
     try:
         result = await pipeline.run(
             data_items=data_items,
@@ -286,6 +297,71 @@ async def run_review(args: argparse.Namespace):
         print(f"\nRDF store saved to: {args.rdf_store_path}")
 
     return result
+
+
+async def _run_compare_mode(pipeline, compare_models, args, data_items, cb):
+    """Run compare mode and write output files."""
+    slug = (args.title or "review")[:40].replace(" ", "_").lower()
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    OUTPUT_DIR.mkdir(exist_ok=True)
+
+    print("\n" + "=" * 60)
+    print(f"  Compare Mode: {len(compare_models)} models")
+    for m in compare_models:
+        print(f"    - {m}")
+    print("=" * 60 + "\n")
+
+    try:
+        compare_result = await pipeline.run_compare(
+            compare_models,
+            data_items=data_items,
+            auto_confirm=args.auto,
+            confirm_callback=cb,
+            max_plan_iterations=args.max_plan_iterations,
+        )
+    except PlanRejectedError as e:
+        print(f"\nPlan rejected after {e.iterations} iteration(s).")
+        sys.exit(1)
+    except MaxIterationsReachedError as e:
+        print(f"\nMaximum re-generation limit ({e.max_allowed}) reached. Aborting.")
+        sys.exit(1)
+
+    saved = []
+
+    # Merged compare report
+    md_path = OUTPUT_DIR / f"{slug}_compare.md"
+    md_path.write_text(to_compare_markdown(compare_result), encoding="utf-8")
+    saved.append(str(md_path))
+
+    json_path = OUTPUT_DIR / f"{slug}_compare.json"
+    json_path.write_text(to_compare_json(compare_result), encoding="utf-8")
+    saved.append(str(json_path))
+
+    # Per-model reports (succeeded only)
+    for run in compare_result.model_results:
+        if run.succeeded and run.result is not None:
+            model_short = run.model_name.split("/")[-1]
+            per_path = OUTPUT_DIR / f"{slug}_{model_short}.md"
+            per_path.write_text(to_markdown(run.result), encoding="utf-8")
+            saved.append(str(per_path))
+
+    print("\n" + "=" * 60)
+    print("  Compare Summary")
+    print("=" * 60)
+    for run in compare_result.model_results:
+        status = "✓" if run.succeeded else "✗"
+        n = len(run.result.included_articles) if run.succeeded and run.result else 0
+        print(f"  {status} {run.model_name}: {n} included")
+    agreed = sum(1 for fa in compare_result.merged.field_agreement.values() if fa.agreed)
+    total = len(compare_result.merged.field_agreement)
+    if total:
+        print(f"  Field agreement: {agreed}/{total}")
+    print("=" * 60)
+    print(f"\nExported to:")
+    for p in saved:
+        print(f"  {p}")
+
+    return compare_result
 
 
 def main():
@@ -361,6 +437,8 @@ Examples:
                         help="Skip plan confirmation and run pipeline end-to-end without prompts")
     parser.add_argument("--max-plan-iterations", type=int, default=3,
                         help="Maximum plan re-generation attempts before aborting (default 3)")
+    parser.add_argument("--compare-models", nargs="+", metavar="MODEL", default=None,
+                        help="Run in compare mode with 2–5 model IDs (e.g. anthropic/claude-sonnet-4 openai/gpt-4o)")
 
     args = parser.parse_args()
     asyncio.run(run_review(args))
