@@ -229,13 +229,48 @@ async def run_review(args: argparse.Namespace):
 
     cb = None if args.auto else _cli_confirm
 
-    compare_models = getattr(args, "compare_models", None)
-    if compare_models:
-        if len(compare_models) < 2:
+    # ── Compare mode ──
+    if getattr(args, "compare_models", None):
+        if len(args.compare_models) < 2:
             print("ERROR: Compare mode requires at least 2 models.")
             sys.exit(1)
-        return await _run_compare_mode(pipeline, compare_models, args, data_items, cb)
+        print(f"  Compare mode: {', '.join(args.compare_models)}")
+        try:
+            compare_result = await pipeline.run_compare(
+                args.compare_models,
+                data_items=data_items,
+                auto_confirm=args.auto,
+                confirm_callback=cb,
+                max_plan_iterations=args.max_plan_iterations,
+            )
+        except Exception as e:
+            print(f"\nCompare run failed: {e}")
+            sys.exit(1)
 
+        OUTPUT_DIR.mkdir(exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        slug = (compare_result.protocol.title or "review")[:40].replace(" ", "_").lower()
+        base = f"{slug}_{ts}"
+
+        compare_md_path = OUTPUT_DIR / f"{base}_compare.md"
+        compare_md_path.write_text(to_compare_markdown(compare_result), encoding="utf-8")
+        print(f"\nCompare report: {compare_md_path}")
+
+        compare_json_path = OUTPUT_DIR / f"{base}_compare.json"
+        compare_json_path.write_text(to_compare_json(compare_result), encoding="utf-8")
+        print(f"Compare JSON:   {compare_json_path}")
+
+        for run in compare_result.model_results:
+            if run.succeeded and run.result:
+                model_short = run.model_name.rsplit("/", 1)[-1]
+                model_path = OUTPUT_DIR / f"{base}_{model_short}.md"
+                model_path.write_text(to_markdown(run.result), encoding="utf-8")
+                print(f"Model report ({run.model_name}): {model_path}")
+
+        print("\nCompare run complete.")
+        return compare_result
+
+    # ── Single-model mode ──
     try:
         result = await pipeline.run(
             data_items=data_items,
@@ -438,7 +473,7 @@ Examples:
     parser.add_argument("--max-plan-iterations", type=int, default=3,
                         help="Maximum plan re-generation attempts before aborting (default 3)")
     parser.add_argument("--compare-models", nargs="+", metavar="MODEL", default=None,
-                        help="Run in compare mode with 2–5 model IDs (e.g. anthropic/claude-sonnet-4 openai/gpt-4o)")
+                        help="Run compare mode with 2+ models, e.g. anthropic/claude-sonnet-4 openai/gpt-4o")
 
     args = parser.parse_args()
     asyncio.run(run_review(args))

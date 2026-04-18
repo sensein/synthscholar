@@ -76,10 +76,13 @@ class CacheStore:
 
     # ── Lookup ────────────────────────────────────────────────────────────────
 
-    async def lookup_exact(self, fingerprint: str) -> CacheEntry | None:
+    async def lookup_exact(
+        self, fingerprint: str, owner_review_id: str = ""
+    ) -> CacheEntry | None:
         """Return the cached entry for an exact fingerprint match, or None.
 
-        Returns None if no entry exists or if the entry has expired.
+        Only returns entries that are shared (is_shared=TRUE) or owned by
+        owner_review_id.  Returns None if no entry exists or entry has expired.
         """
         assert self._pool
         async with self._pool.connection() as conn:
@@ -87,11 +90,13 @@ class CacheStore:
             row = await conn.fetchrow(
                 """
                 SELECT id, criteria_fingerprint, criteria_json, model_name,
-                       result_json, created_at, expires_at
+                       result_json, created_at, expires_at, review_id, is_shared
                 FROM review_cache
                 WHERE criteria_fingerprint = %s
+                  AND (is_shared = TRUE OR review_id = %s)
                 """,
                 fingerprint,
+                owner_review_id,
             )
         if not row:
             return None
@@ -106,10 +111,13 @@ class CacheStore:
         incoming_criteria: dict[str, Any],
         model_name: str,
         config: SimilarityConfig,
+        owner_review_id: str = "",
     ) -> CacheLookupResult:
         """Scan all live entries for the same model and return the best similarity match.
 
-        Returns a cache hit only if the best score meets or exceeds ``config.threshold``.
+        Only considers entries that are shared (is_shared=TRUE) or owned by
+        owner_review_id.  Returns a cache hit only if the best score meets or
+        exceeds ``config.threshold``.
         """
         assert self._pool
         async with self._pool.connection() as conn:
@@ -117,12 +125,14 @@ class CacheStore:
             rows = await conn.fetch(
                 """
                 SELECT id, criteria_fingerprint, criteria_json, model_name,
-                       result_json, created_at, expires_at
+                       result_json, created_at, expires_at, review_id, is_shared
                 FROM review_cache
                 WHERE model_name = %s
                   AND (expires_at IS NULL OR expires_at > NOW())
+                  AND (is_shared = TRUE OR review_id = %s)
                 """,
                 model_name,
+                owner_review_id,
             )
 
         best_score = 0.0
@@ -154,16 +164,20 @@ class CacheStore:
         result_json: dict[str, Any],
         config: SimilarityConfig,
         fingerprint: str | None = None,
+        review_id: str = "",
+        is_shared: bool = True,
     ) -> bool:
         """Persist a completed review result.
 
         Uses an advisory lock on the fingerprint to prevent duplicate inserts
         under concurrent identical requests.  Returns True if stored, False if
         a race condition detected an existing entry (safe to ignore).
+
+        review_id: source review that generated this result (for owner bypass).
+        is_shared: when False, only the owner (by review_id) can read this entry.
         """
         assert self._pool
         if fingerprint is None:
-            from prisma_review_agent.models import ReviewProtocol
             fingerprint = compute_fingerprint(criteria_json, model_name)
 
         expires_at: datetime | None = None
@@ -182,29 +196,48 @@ class CacheStore:
                     fingerprint,
                 )
                 if exists:
-                    # Update existing entry (force-refresh case)
                     await conn.execute(
                         """
                         UPDATE review_cache
-                        SET result_json = %s, created_at = NOW(), expires_at = %s
+                        SET result_json = %s, created_at = NOW(), expires_at = %s,
+                            review_id = %s, is_shared = %s
                         WHERE criteria_fingerprint = %s
                         """,
-                        json.dumps(result_json), expires_at, fingerprint,
+                        json.dumps(result_json), expires_at,
+                        review_id, is_shared, fingerprint,
                     )
                 else:
                     await conn.execute(
                         """
                         INSERT INTO review_cache
-                            (criteria_fingerprint, criteria_json, model_name, result_json, expires_at)
-                        VALUES (%s, %s, %s, %s, %s)
+                            (criteria_fingerprint, criteria_json, model_name,
+                             result_json, expires_at, review_id, is_shared)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
                         """,
                         fingerprint,
                         json.dumps(criteria_json),
                         model_name,
                         json.dumps(result_json),
                         expires_at,
+                        review_id,
+                        is_shared,
                     )
         return True
+
+    async def set_sharing(self, review_id: str, is_shared: bool) -> int:
+        """Update is_shared for all cache entries owned by review_id.
+
+        Call this when share_to_cache is toggled on a review.
+        Returns the number of rows updated (0 if no entries exist yet).
+        """
+        assert self._pool
+        async with self._pool.connection() as conn:
+            result = await conn.execute(
+                "UPDATE review_cache SET is_shared = %s WHERE review_id = %s",
+                is_shared,
+                review_id,
+            )
+        return result.pgresult.command_tuples or 0
 
     # ── Admin ─────────────────────────────────────────────────────────────────
 
@@ -245,6 +278,8 @@ def _row_to_entry(row: dict[str, Any]) -> CacheEntry:
         result_json=row["result_json"],
         created_at=row["created_at"],
         expires_at=row.get("expires_at"),
+        review_id=row.get("review_id", ""),
+        is_shared=row.get("is_shared", True),
     )
 
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from pydantic import BaseModel
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openrouter import OpenRouterProvider
@@ -25,6 +26,7 @@ from .models import (
     RoBDomainAssessment,
     RoBJudgment,
     StudyDataExtraction,
+    SynthesisDivergence,
     GRADEAssessment,
     GRADECertainty,
     Article,
@@ -1423,10 +1425,18 @@ async def run_thematic_synthesis(
             )
         rubric_block = "\n".join(rubric_summaries)
 
+    # Build pmid→source_id map using the same formula as run_extract_study(), so
+    # the evidence block uses consistent IDs that the LLM can cross-reference with
+    # the charting rubric summaries above. Without this, the LLM sees PMID:XXX in
+    # evidence spans but R-XXX in rubric summaries and produces orphaned IDs.
+    pmid_to_source_id = {
+        a.pmid: (f"M-{a.pmid[-3:]}" if a.pmid.startswith("biorxiv_") else f"R-{a.pmid[-3:]}")
+        for a in articles
+    }
     evidence_block = ""
     if evidence_spans:
         evidence_block = "\n".join(
-            f"- PMID:{e.paper_pmid}: {e.text[:150]}"
+            f"- {pmid_to_source_id.get(e.paper_pmid, f'PMID:{e.paper_pmid}')}: {e.text[:150]}"
             for e in evidence_spans[:15]
         )
 
@@ -1839,30 +1849,33 @@ def default_appraisal_config() -> CriticalAppraisalConfig:
     )
 
 
-# ─── Feature 007: Consensus Synthesis Agent ───────────────────────────────────
-
-from pydantic import BaseModel as _BaseModel
+# ────────────────── Feature 007: Consensus Synthesis Agent ─────────────
 
 
-class ConsensusSynthesisOutput(_BaseModel):
-    """Typed output for the consensus synthesis agent."""
+class ConsensusSynthesisOutput(BaseModel):
+    """Typed output from the consensus synthesis agent."""
     consensus_text: str
     divergences: list[SynthesisDivergence]
 
 
-_consensus_synthesis_agent: Agent[AgentDeps, ConsensusSynthesisOutput] = Agent(
-    model=None,  # set dynamically via deps at call time
+consensus_synthesis_agent = Agent(
     output_type=ConsensusSynthesisOutput,
-    system_prompt=(
-        "You are a systematic review methodologist synthesising findings from multiple AI models "
-        "that independently reviewed the same body of literature. "
-        "Given each model's synthesis text, you must:\n"
-        "1. Identify the core findings that all models agree on and write a unified consensus_text.\n"
-        "2. For each substantive divergence (where models clearly differ in interpretation, "
-        "   emphasis, or conclusion), produce a SynthesisDivergence entry with a brief topic label "
-        "   and each model's position. Only include genuine divergences — do not fabricate them.\n"
-        "Return a ConsensusSynthesisOutput with consensus_text and divergences list."
-    ),
+    deps_type=AgentDeps,
+    system_prompt="""\
+You are a systematic review expert synthesising findings from multiple AI models.
+Given per-model synthesis texts for the same review protocol, identify:
+1. Claims present across ALL models (agreed findings) — summarise in flowing prose.
+2. Significant divergences where models reach materially different conclusions — list each as a topic with per-model positions.
+
+Rules:
+- Be specific: quote or closely paraphrase when noting divergences.
+- Only include divergences that would change a reviewer's interpretation of the evidence.
+- consensus_text should read as coherent prose, not a list.
+- divergences list may be empty if models substantially agree.
+""",
+    retries=2,
+    name="consensus_synthesis",
+    defer_model_check=True,
 )
 
 
@@ -1870,26 +1883,17 @@ async def run_consensus_synthesis(
     syntheses: dict[str, str],
     deps: AgentDeps,
 ) -> ConsensusSynthesisOutput:
-    """Run the consensus synthesis agent over multiple model synthesis texts.
-
-    Args:
-        syntheses: mapping of {model_name: synthesis_text} for each succeeded run.
-        deps: AgentDeps selecting which model runs the consensus agent.
-    """
-    model = build_model(deps.api_key, deps.model_name)
-    prompt_parts = ["Below are synthesis texts from different AI models reviewing the same studies.\n"]
+    """Generate consensus synthesis from {model_name: synthesis_text} dict."""
+    lines = ["## Per-Model Synthesis Texts\n"]
     for model_name, text in syntheses.items():
-        prompt_parts.append(f"=== {model_name} ===\n{text}\n")
-    prompt_parts.append(
-        "\nIdentify consensus findings and any substantive divergences. "
-        "Return a ConsensusSynthesisOutput."
+        lines.append(f"### {model_name}\n{text[:3000]}\n")
+    lines.append(
+        "\n## Task\n"
+        "Synthesise the above into agreed findings (consensus_text) and "
+        "list material divergences (divergences)."
     )
-    user_prompt = "\n".join(prompt_parts)
-
-    result = await _consensus_synthesis_agent.run(
-        user_prompt,
-        model=model,
-        deps=deps,
-    )
+    prompt = "\n".join(lines)
+    model = build_model(deps.api_key, deps.model_name)
+    result = await consensus_synthesis_agent.run(prompt, deps=deps, model=model)
     return result.output
 

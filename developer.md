@@ -6,6 +6,9 @@
 - [Repository Layout](#repository-layout)
 - [Module Responsibilities](#module-responsibilities)
 - [Data Models](#data-models)
+  - [Core Model Relationships](#core-model-relationships)
+  - [Feature 006 — Field-Level Charting & Appraisal Models](#feature-006--field-level-charting--appraisal-models)
+  - [Feature 007 — Multi-Model Compare Models](#feature-007--multi-model-compare-models)
 - [Pipeline Flow — Step by Step](#pipeline-flow--step-by-step)
 - [Agent Architecture](#agent-architecture)
 - [HTTP Clients & Caching](#http-clients--caching)
@@ -27,10 +30,13 @@ A **PostgreSQL cache layer** short-circuits the pipeline for repeated or highly-
 ```mermaid
 graph TD
     A[CLI: main.py] --> P
+    A --> CP[compare.py\nrun_compare]
     B[Library: pipeline.py] --> P
+    B --> CP
     P[PRISMAReviewPipeline\nStep 0: cache check\nSteps 1-14: full pipeline\nStep 15: cache store]
+    CP --> P
     P --> C[HTTP Clients\nclients.py]
-    P --> D[pydantic-ai Agents\nagents.py · 12 typed agents]
+    P --> D[pydantic-ai Agents\nagents.py · 13 typed agents]
     P --> PG[PostgreSQL Layer\ncache/ subpackage]
     C --> M[Pydantic v2 Models\nmodels.py]
     D --> M
@@ -39,6 +45,7 @@ graph TD
     E --> F1[Markdown]
     E --> F2[JSON]
     E --> F3[BibTeX]
+    E --> F4[Compare Reports]
 
     C --- C1[PubMedClient]
     C --- C2[BioRxivClient]
@@ -57,12 +64,13 @@ graph TD
 prisma-review-agent/
 ├── main.py               # CLI entry point (argparse)
 ├── pipeline.py           # Core async orchestrator (PRISMAReviewPipeline)
-├── agents.py             # 12 pydantic-ai agents + runner functions
+├── compare.py            # Multi-model compare: run_compare(), _run_model_pipeline(), _compute_field_agreement()
+├── agents.py             # 13 pydantic-ai agents + runner functions
 ├── models.py             # All Pydantic v2 data models
 ├── clients.py            # HTTP clients: PubMedClient, BioRxivClient, Cache
 ├── evidence.py           # Evidence extraction + source grounding validation
 ├── validation.py         # Source grounding validator (rapidfuzz)
-├── export.py             # to_markdown(), to_json(), to_bibtex(), to_enhanced_markdown()
+├── export.py             # to_markdown(), to_json(), to_bibtex(), to_compare_markdown(), to_compare_json(), ...
 ├── __init__.py           # Root package (dev use)
 ├── prisma_review_agent/  # Installable package
 │   ├── __init__.py       # Public API re-exports
@@ -97,15 +105,15 @@ The `prisma_review_agent/` package is the installable form; root-level `.py` fil
 
 | Module | Responsibility | Key Types |
 |---|---|---|
-| `models.py` | All Pydantic v2 data models — no logic | `Article`, `ReviewProtocol`, `PRISMAFlowCounts`, `PRISMAReviewResult`, `EvidenceSpan`, `PrismaReview`, `ThematicSynthesisResult` (22 rich synthesis models). Per-rubric format control (005-US5): `SECTION_FORMAT`, `RubricSectionOutput`, `RubricSectionConfig`, `StudyDataExtractionReport`. **Feature 006 — field-level charting & appraisal schema**: `ANSWER_TYPE` (`Literal["enumerated","free_text","numeric","yes_no_extended"]`), `FieldDefinition` (validates option presence for enumerated/yes_no_extended; yes_no_extended options must be exactly `["Yes","No","Not Reported"]` or `["Yes","No","N/A"]`), `ChartingSection`, `ChartingTemplate` (immutable-style; `override_field()` and `add_section()` return new instances), `FieldAnswer`, `SectionExtractionResult`, `CONCERN_AGGREGATION_RULE` (`Literal["majority_yes","strict","lenient"]`), `AppraisalItemSpec`, `AppraisalDomainSpec`, `CriticalAppraisalConfig`, `ItemRating`, `DomainAppraisal`, `CriticalAppraisalResult`. `StudyDataExtractionReport` gains `field_answers: dict[str, SectionExtractionResult]`. `Methods` gains `critical_appraisal_results: list[CriticalAppraisalResult]`. `ReviewProtocol` gains `charting_template: Optional[ChartingTemplate]` and `critical_appraisal_config: Optional[CriticalAppraisalConfig]`. `PRISMAReviewResult` gains `structured_appraisal_results: list[CriticalAppraisalResult]`. **Feature 007 — multi-model compare**: `FieldAgreement` (per-field agreement record; `agreed: bool`, `values: dict[str, str]`, `answer_type`), `SynthesisDivergence` (validated ≥2 positions), `MergedReviewResult` (`consensus_synthesis`, `field_agreement: dict[str, FieldAgreement]`, `synthesis_divergences`, `models_included/failed`), `ModelReviewRun` (`@model_validator` enforcing exactly one of `result/error`; `.succeeded` property), `CompareReviewResult` (`@model_validator` enforcing 2–5 unique `compare_models`). |
+| `models.py` | All Pydantic v2 data models — no logic | `Article`, `ReviewProtocol`, `PRISMAFlowCounts`, `PRISMAReviewResult`, `EvidenceSpan`, `PrismaReview`, `ThematicSynthesisResult` (22 rich synthesis models). Per-rubric format control (005-US5): `SECTION_FORMAT`, `RubricSectionOutput`, `RubricSectionConfig`, `StudyDataExtractionReport`. **Feature 006 — field-level charting & appraisal schema**: `ANSWER_TYPE`, `FieldDefinition`, `ChartingSection`, `ChartingTemplate`, `FieldAnswer`, `SectionExtractionResult`, `CONCERN_AGGREGATION_RULE`, `AppraisalItemSpec`, `AppraisalDomainSpec`, `CriticalAppraisalConfig`, `ItemRating`, `DomainAppraisal`, `CriticalAppraisalResult`. **Feature 007 — multi-model compare**: `FieldAgreement(field_name, agreed, values: dict[str,str])`, `SynthesisDivergence(topic, positions: dict[str,str])` (validator: ≥2 positions required), `ModelReviewRun(model_name, result?, error?)` (exactly-one-of validator; `.succeeded` property), `MergedReviewResult(consensus_synthesis, field_agreement, synthesis_divergences)`, `CompareReviewResult(protocol, compare_models, model_results, merged)` (validator: ≥2 unique models). |
 | `clients.py` | HTTP data acquisition + SQLite cache | `PubMedClient`, `BioRxivClient`, `Cache` |
-| `agents.py` | LLM agent definitions + async runners | `AgentDeps`, 18 `Agent` instances, `run_*` functions. Rich synthesis agents: `abstract_section_agent`, `introduction_section_agent`, `thematic_synthesis_agent`, `quantitative_analysis_agent`, `discussion_section_agent`, `conclusion_section_agent`. **Feature 006**: `_apply_concern_rule(ratings, rule) -> str` (deterministic Python, not LLM — computes `domain_concern` for auditable appraisal); `default_charting_template() -> ChartingTemplate` (7-section, 60-field factory); `default_appraisal_config() -> CriticalAppraisalConfig` (4-domain, 17-item factory). `run_data_charting()` extended with `charting_template` param — injects field constraints into LLM prompt; `reviewer_only` fields excluded. `run_critical_appraisal()` extended with `appraisal_config` param; return type changed to `tuple[CriticalAppraisalRubric, CriticalAppraisalResult]` for backward compat. **Feature 007**: `ConsensusSynthesisOutput(BaseModel)` with `consensus_text: str` and `divergences: list[SynthesisDivergence]`; `consensus_synthesis_agent` (pydantic-ai `Agent[AgentDeps, ConsensusSynthesisOutput]`); `run_consensus_synthesis(syntheses: dict[str, str], deps: AgentDeps) -> ConsensusSynthesisOutput` — called when ≥2 model runs succeed to produce merged narrative + divergence list. |
-| `pipeline.py` | Async orchestrator — calls clients, agents, cache; hosts plan confirmation checkpoint (step 1a), `_build_review_plan()` helper, and rich synthesis assembly. `assemble_prisma_review()` runs a two-wave `asyncio.gather` to build the full `PrismaReview` object; `_assemble_methods(protocol, strategy, flow_counts, charting_rubrics, resolved_config?)` and `_assemble_extracted_studies()` are deterministic helpers (no LLM). `_backfill_plain_text_fields()` preserves backward compat. `_resolve_section_config(protocol) -> list[tuple[str,str,str]]` returns `[(key, display_title, format_type)]` ordered by display priority. **Feature 006**: pipeline loop resolves `charting_template = proto.charting_template or default_charting_template()` and `appraisal_config = proto.critical_appraisal_config or default_appraisal_config()` before the per-article loop; unpacks `tuple` from `run_critical_appraisal()`; assembles `field_answers` dict from template + rubric attributes; stores `structured_appraisal_results` on `PRISMAReviewResult`. **Feature 007**: `_AcquisitionResult(NamedTuple)` (`strategy, all_search_queries, deduped, all_articles, flow`) returned by the new `_fetch_articles()` internal method (Steps 1–6 extracted from `run()`); `run()` is externally unchanged. `run_compare(self, models, *, ...) -> CompareReviewResult` thin wrapper that delegates to `compare.run_compare()`. | `PRISMAReviewPipeline.run(...)`, `PRISMAReviewPipeline.run_compare(models, ...)`, `PRISMAReviewPipeline._fetch_articles(...)` |
+| `agents.py` | LLM agent definitions + async runners | `AgentDeps`, 18 `Agent` instances, `run_*` functions. Rich synthesis agents: `abstract_section_agent`, `introduction_section_agent`, `thematic_synthesis_agent`, `quantitative_analysis_agent`, `discussion_section_agent`, `conclusion_section_agent`. **Feature 006**: `_apply_concern_rule(ratings, rule) -> str`; `default_charting_template() -> ChartingTemplate`; `default_appraisal_config() -> CriticalAppraisalConfig`; `run_data_charting()` and `run_critical_appraisal()` extended. **Feature 007**: `ConsensusSynthesisOutput(consensus_text, divergences: list[SynthesisDivergence])`; `consensus_synthesis_agent` (output_type=`ConsensusSynthesisOutput`, system prompt instructs cross-model synthesis); `run_consensus_synthesis(syntheses: dict[str,str], deps) -> ConsensusSynthesisOutput` (builds per-model synthesis prompt, runs agent, returns divergences alongside consensus text). |
+| `pipeline.py` | Async orchestrator — calls clients, agents, cache; hosts plan confirmation checkpoint (step 1a), `_build_review_plan()` helper, and rich synthesis assembly. `assemble_prisma_review()` wraps two-wave `asyncio.gather` in `asyncio.wait_for(timeout=assemble_timeout)`. **Feature 006**: pipeline loop resolves `charting_template` / `appraisal_config`, unpacks `run_critical_appraisal()` tuple, assembles `field_answers`, stores `structured_appraisal_results`. **Feature 007**: `AcquisitionResult` dataclass `(deduped, all_search_queries, flow)` — shared output of article acquisition; `_fetch_articles() -> AcquisitionResult` (Steps 1–6: search, dedup); `_run_from_deduped(acq, **kwargs) -> PRISMAReviewResult` (Steps 7–15: LLM-dependent steps on pre-fetched articles); `run_compare(models, *, consensus_model, assemble_timeout, ...) -> CompareReviewResult` (thin wrapper delegating to `compare.run_compare()`). `run()` gains `assemble_timeout: float = 3600.0` forwarded to `assemble_prisma_review()`. | `PRISMAReviewPipeline.run(...)`, `PRISMAReviewPipeline.run_compare(models, ...)` |
 | `evidence.py` | Evidence extraction + source grounding gate | `extract_evidence()` |
 | `validation.py` | Source grounding validator — rapidfuzz matching | `filter_grounded()`, `validate_grounding()`, `ValidationReport` |
-| `export.py` | Output formatters with cache provenance | `to_markdown()`, `to_json()`, `to_bibtex()`, `to_turtle()`, `to_jsonld()`, `to_oxigraph_store()`, `to_rubric_markdown()`, `to_rubric_json()`. **Feature 006**: `to_charting_markdown(result) -> str` (H2 per study / H3 per section / pipe table; `reviewer_only` fields render as `_[Human reviewer]_`; fallback when no `field_answers`), `to_charting_json(result) -> str` (JSON array; `reviewer_only` fields use `{"value": null, "reviewer_only": true}`), `to_appraisal_markdown(result) -> str` (H2 per study / H3 per domain / item table + Overall Concern row; cross-study summary table appended), `to_appraisal_json(result) -> str` (`{"studies": [...], "summary": {domain: {Low:N, Some:N, High:N, total:N}}}`). **Feature 007**: `to_compare_markdown(result: CompareReviewResult) -> str` (H1 title + compare tag; H2 Run Summary table; H2 per-model full `to_markdown()` output; H2 Merged section with consensus + divergences table), `to_compare_json(result) -> str` (delegates to `result.model_dump_json(indent=2)`), `to_compare_charting_markdown(result) -> str` (H2 per study / H3 per section / pipe table with `✓ Agree` / `⚠ Differ` cells), `to_compare_charting_json(result) -> str` (JSON array per study per section with `agreed: bool`). |
-| `compare.py` | Multi-model compare orchestrator | `_run_model_pipeline(pipeline, deduped, model_name, proto, *, ...) -> PRISMAReviewResult` (Steps 7–15 for one model); `_compute_field_agreement(model_results) -> dict[str, FieldAgreement]` (exact match for enumerated/yes_no_extended; rapidfuzz `token_set_ratio >= 80` for free_text/numeric; key `"{source_id}::{section_key}::{field_name}"`); `_all_agree(values, answer_type) -> bool`; `run_compare(pipeline, models, *, ...) -> CompareReviewResult` (validates 2–5 unique models; calls `_fetch_articles()` once; `asyncio.gather` per-model runs; assembles `MergedReviewResult`). |
-| `main.py` | CLI argument parsing + `ReviewProtocol` construction; `_cli_confirm()` callback for interactive plan confirmation; `--auto` / `--max-plan-iterations` flags. **Feature 007**: `--compare-models MODEL [MODEL ...]` flag; `_run_compare_mode()` helper writes `{slug}_compare.md`, `{slug}_compare.json`, and per-model `{slug}_{model_short}.md` | `main()`, `run_review()`, `_cli_confirm()`, `_run_compare_mode()` |
+| `export.py` | Output formatters with cache provenance | `to_markdown()`, `to_json()`, `to_bibtex()`, `to_turtle()`, `to_jsonld()`, `to_oxigraph_store()`, `to_rubric_markdown()`, `to_rubric_json()`. **Feature 006**: `to_charting_markdown()`, `to_charting_json()`, `to_appraisal_markdown()`, `to_appraisal_json()`. **Feature 007**: `to_compare_markdown(result) -> str` (run-summary table, per-model synthesis, consensus section, divergences table), `to_compare_json(result) -> str` (`CompareReviewResult.model_dump_json(indent=2)`), `to_compare_charting_markdown(result) -> str` (per-study field comparison table with agree/differ indicators), `to_compare_charting_json(result) -> str` (`{compare_models, studies: [{source_id, fields: [{field_name, agreed, values}]}]}`). |
+| `compare.py` | Multi-model parallel execution + consensus synthesis | `run_compare(pipeline, models, **kwargs) -> CompareReviewResult` (validates 2–5 unique models; calls `_fetch_articles()` once; `asyncio.gather(..., return_exceptions=True)` per model; wraps partial failures in `ModelReviewRun(error=...)`; calls `run_consensus_synthesis()`); `_run_model_pipeline(pipeline, acq, model_name, **kwargs) -> PRISMAReviewResult` (creates sub-pipeline with `enable_cache=False` and target model; calls `_run_from_deduped()` on deep-copied articles); `_compute_field_agreement(model_results) -> dict[str, FieldAgreement]` (key format `"{source_id}::{section_key}::{field_name}"`; exact + rapidfuzz fuzzy match ≥80); `_FALLBACK_CONSENSUS` constant. |
+| `main.py` | CLI argument parsing + `ReviewProtocol` construction; `_cli_confirm()` callback for interactive plan confirmation; `--auto` / `--max-plan-iterations` flags; **Feature 007**: `--compare-models` flag triggers `pipeline.run_compare()` branch; writes `{slug}_compare.md`, `{slug}_compare.json`, and per-model `{slug}_{model_short}.md` | `main()`, `run_review()`, `_cli_confirm()` |
 | `ontology/namespaces.py` | RDF namespace constants + URI-minting helpers | `SLR`, `PROV`, `DCTERMS`, `FABIO`, `BIBO`, `OA`; `article_uri()`, `review_uri()`, `bind_namespaces()` |
 | `ontology/rdf_export.py` | rdflib graph construction + Turtle / JSON-LD serialization | `_build_graph()`, `to_turtle()`, `to_jsonld()`, `_add_charting()`, `_add_rob()`, `_add_evidence_spans()` |
 | `ontology/rdf_store.py` | pyoxigraph-backed SPARQL store | `SLRStore.load()`, `.query()`, `.save()`, `.load_from_file()` |
@@ -319,6 +327,54 @@ classDiagram
 - `domain_concern` is computed deterministically by `_apply_concern_rule()` in Python — never delegated to the LLM.
 - `ReviewProtocol` accepts both fields as `Optional`; the pipeline falls back to `default_charting_template()` / `default_appraisal_config()` when they are `None`.
 
+### Feature 007 — Multi-Model Compare Models
+
+```mermaid
+classDiagram
+    class CompareReviewResult {
+        +ReviewProtocol protocol
+        +list~str~ compare_models
+        +list~ModelReviewRun~ model_results
+        +MergedReviewResult merged
+        +_validate_unique_models()
+    }
+    class ModelReviewRun {
+        +str model_name
+        +PRISMAReviewResult result
+        +str error
+        +bool succeeded
+        +_exactly_one_of_result_or_error()
+    }
+    class MergedReviewResult {
+        +str consensus_synthesis
+        +dict~str_FieldAgreement~ field_agreement
+        +list~SynthesisDivergence~ synthesis_divergences
+    }
+    class FieldAgreement {
+        +str field_name
+        +bool agreed
+        +dict~str_str~ values
+    }
+    class SynthesisDivergence {
+        +str topic
+        +dict~str_str~ positions
+        +_validate_positions()
+    }
+
+    CompareReviewResult "1" --> "*" ModelReviewRun
+    CompareReviewResult "1" --> "1" MergedReviewResult
+    MergedReviewResult "1" --> "*" FieldAgreement
+    MergedReviewResult "1" --> "*" SynthesisDivergence
+    ModelReviewRun "1" --> "0..1" PRISMAReviewResult
+```
+
+**Key invariants:**
+
+- `CompareReviewResult.compare_models` must contain ≥ 2 unique entries (validator deduplicates and raises if fewer than 2 unique).
+- `ModelReviewRun`: exactly one of `result` or `error` must be set; both `None` or both set raises `ValueError`. `.succeeded` is `result is not None`.
+- `SynthesisDivergence.positions` must contain ≥ 2 entries (captures at least two models' positions on a topic).
+- `MergedReviewResult.field_agreement` keys follow `"{source_id}::{section_key}::{field_name}"` format (matching `DataChartingRubric.field_answers` layout).
+
 ### LLM Output Models (agent → Pydantic)
 
 | Agent | Output Model | Key Fields |
@@ -468,6 +524,7 @@ flowchart LR
 | 10 | `bias_summary_agent` | `run_bias_summary(articles, deps)` | `str` |
 | 11 | `limitations_agent` | `run_limitations(flow, articles, deps)` | `str` |
 | 12 | `evidence_extraction_agent` | `run_evidence_extraction(articles, deps)` | `BatchEvidenceExtraction` |
+| 13 | `consensus_synthesis_agent` | `run_consensus_synthesis(syntheses, deps)` | `ConsensusSynthesisOutput` (**Feature 007** — compare mode only; receives per-model synthesis texts, returns unified `consensus_text` + `divergences[]`) |
 
 ---
 
@@ -1155,6 +1212,20 @@ After step 1 (search strategy generation), `pipeline.run()` optionally pauses at
 ### 15. ArticleStore as a growing source library
 
 Every article fetched during any review run is upserted into `article_store`. On subsequent runs, `get_by_pmids()` pre-populates `full_text` before the PubMed API is called, reducing NCBI load and latency. The `tsvector` GIN index enables fast keyword search over the accumulated article library for future source retrieval without hitting external APIs.
+
+### 17. Three runtime bug fixes (Feature 008)
+
+**Bug 1 — `Article.inclusion_status` enum assignment**: `pipeline.py` previously assigned plain strings (`"included"`, `"excluded"`) to `Article.inclusion_status`, which is typed as `InclusionStatus` (a `str, Enum`). Pydantic v2 emits a `PydanticSerializationUnexpectedValue` warning for every such article at JSON serialization time. Fixed by importing `InclusionStatus` in `pipeline.py` and assigning `InclusionStatus.INCLUDED` / `InclusionStatus.EXCLUDED` directly at the three screening assignment sites (TA screening ×2, FT screening ×1).
+
+**Bug 2 — Orphaned `supporting_studies` IDs**: `run_thematic_synthesis()` in `agents.py` built its evidence block with `PMID:{paper_pmid}` format, while the charting rubric summaries in the same prompt used `source_id` format (`R-XXX`/`M-XXX` — last 3 digits of PMID). The LLM produced `theme.supporting_studies` using the PMID-prefixed format, which then failed to resolve against `extracted_ids` (containing `R-XXX` values), triggering orphan warnings. Fixed by building a `pmid → source_id` lookup (same formula as `run_extract_study()`: `R-{pmid[-3:]}` for PubMed, `M-{pmid[-3:]}` for bioRxiv) and applying it to the evidence block lines so both rubric summaries and evidence spans use consistent IDs.
+
+**Bug 3 — `assemble_prisma_review()` hang**: The two-wave `asyncio.gather` calls in `assemble_prisma_review()` had no timeout. If any LLM call stalled, the function blocked indefinitely with no error. Fixed by wrapping each wave with `asyncio.wait_for(timeout=assemble_timeout)` where `assemble_timeout: float = 3600.0` is a new optional parameter (default 1 hour). On timeout, the function logs `"Wave N assembly timed out after %.0f s"` and re-raises `asyncio.TimeoutError` for the caller to handle.
+
+### 18. Multi-model compare — shared acquisition, per-model LLM steps
+
+Article acquisition (Steps 1–6: PubMed/bioRxiv search, related articles, citation hops, deduplication) is run once by `_fetch_articles()` and shared as an `AcquisitionResult` across all model pipelines. LLM-dependent steps (Steps 7–15: screening, evidence, RoB, synthesis, charting, appraisal, assembly) are run independently per model by `_run_from_deduped()` via `asyncio.gather(..., return_exceptions=True)`.
+
+This avoids re-fetching articles N times while ensuring each model applies its own judgement to screening, synthesis, and appraisal decisions. `_run_model_pipeline()` creates a new `PRISMAReviewPipeline` per model with `enable_cache=False` and `model_name=model_name`, deep-copying article objects to prevent cross-model state mutation. Partial failures are captured as `ModelReviewRun(error=str(exc))` rather than propagating — the caller always receives a `CompareReviewResult` even if some models fail. If fewer than 2 models succeed, consensus synthesis is replaced by `_FALLBACK_CONSENSUS` rather than calling the LLM with insufficient input.
 
 ---
 

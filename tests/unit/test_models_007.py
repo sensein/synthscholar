@@ -1,4 +1,4 @@
-"""Unit tests for Feature 007 Pydantic models (multi-model compare mode)."""
+"""Unit tests for Feature 007 Pydantic models."""
 
 import pytest
 from pydantic import ValidationError
@@ -8,199 +8,139 @@ from prisma_review_agent.models import (
     FieldAgreement,
     MergedReviewResult,
     ModelReviewRun,
-    PRISMAFlowCounts,
     PRISMAReviewResult,
     ReviewProtocol,
     SynthesisDivergence,
 )
 
 
-def _minimal_result() -> PRISMAReviewResult:
+def _protocol() -> ReviewProtocol:
+    return ReviewProtocol(title="Test review")
+
+
+def _result() -> PRISMAReviewResult:
     return PRISMAReviewResult(
-        research_question="Test question",
-        protocol=ReviewProtocol(title="Test"),
-        flow=PRISMAFlowCounts(),
-        synthesis_text="Test synthesis",
-        timestamp="2026-04-17T00:00:00",
+        research_question="test",
+        protocol=_protocol(),
+        timestamp="2026-01-01T00:00:00",
     )
 
 
-def _minimal_compare_result(models: list[str] | None = None) -> CompareReviewResult:
-    mods = models or ["model-A", "model-B"]
-    runs = [ModelReviewRun(model_name=m, result=_minimal_result()) for m in mods]
+def _compare_result(models=None) -> CompareReviewResult:
+    models = models or ["model-A", "model-B"]
     return CompareReviewResult(
-        protocol=ReviewProtocol(title="Test"),
-        compare_models=mods,
-        model_results=runs,
-        merged=MergedReviewResult(
-            consensus_synthesis="Test consensus",
-            models_included=mods,
-        ),
-        timestamp="2026-04-17T00:00:00",
+        protocol=_protocol(),
+        compare_models=models,
+        model_results=[
+            ModelReviewRun(model_name=m, result=_result()) for m in models
+        ],
+        merged=MergedReviewResult(),
     )
 
-
-# ─── CompareReviewResult validators ────────────────────────────────────────────
-
-class TestCompareReviewResult:
-    def test_two_unique_models_ok(self):
-        result = _minimal_compare_result(["model-A", "model-B"])
-        assert len(result.compare_models) == 2
-
-    def test_five_models_ok(self):
-        models = [f"model-{i}" for i in range(5)]
-        result = _minimal_compare_result(models)
-        assert len(result.compare_models) == 5
-
-    def test_fewer_than_two_raises(self):
-        with pytest.raises((ValueError, ValidationError)):
-            CompareReviewResult(
-                protocol=ReviewProtocol(title="T"),
-                compare_models=["only-one"],
-                model_results=[ModelReviewRun(model_name="only-one", result=_minimal_result())],
-                merged=MergedReviewResult(),
-                timestamp="",
-            )
-
-    def test_more_than_five_raises(self):
-        models = [f"model-{i}" for i in range(6)]
-        runs = [ModelReviewRun(model_name=m, result=_minimal_result()) for m in models]
-        with pytest.raises((ValueError, ValidationError)):
-            CompareReviewResult(
-                protocol=ReviewProtocol(title="T"),
-                compare_models=models,
-                model_results=runs,
-                merged=MergedReviewResult(),
-                timestamp="",
-            )
-
-    def test_duplicate_models_raises(self):
-        with pytest.raises((ValueError, ValidationError)):
-            CompareReviewResult(
-                protocol=ReviewProtocol(title="T"),
-                compare_models=["same", "same"],
-                model_results=[
-                    ModelReviewRun(model_name="same", result=_minimal_result()),
-                    ModelReviewRun(model_name="same", result=_minimal_result()),
-                ],
-                merged=MergedReviewResult(),
-                timestamp="",
-            )
-
-
-# ─── ModelReviewRun validators ─────────────────────────────────────────────────
-
-class TestModelReviewRun:
-    def test_result_only_ok(self):
-        run = ModelReviewRun(model_name="m", result=_minimal_result())
-        assert run.succeeded is True
-        assert run.error is None
-
-    def test_error_only_ok(self):
-        run = ModelReviewRun(model_name="m", error="Something failed")
-        assert run.succeeded is False
-        assert run.result is None
-
-    def test_neither_result_nor_error_raises(self):
-        with pytest.raises((ValueError, ValidationError)):
-            ModelReviewRun(model_name="m")
-
-    def test_both_result_and_error_raises(self):
-        with pytest.raises((ValueError, ValidationError)):
-            ModelReviewRun(
-                model_name="m",
-                result=_minimal_result(),
-                error="also an error",
-            )
-
-    def test_succeeded_property(self):
-        ok = ModelReviewRun(model_name="m", result=_minimal_result())
-        fail = ModelReviewRun(model_name="m", error="boom")
-        assert ok.succeeded is True
-        assert fail.succeeded is False
-
-
-# ─── FieldAgreement values dict ───────────────────────────────────────────────
 
 class TestFieldAgreement:
     def test_agreed_true(self):
-        fa = FieldAgreement(
-            field_name="Study Design",
-            section_key="A",
-            source_id="M-001",
-            agreed=True,
-            values={"model-A": "RCT", "model-B": "RCT"},
-            answer_type="enumerated",
-        )
+        fa = FieldAgreement(field_name="f", agreed=True, values={"A": "yes", "B": "yes"})
         assert fa.agreed is True
-        assert fa.values["model-A"] == "RCT"
 
-    def test_agreed_false_different_values(self):
-        fa = FieldAgreement(
-            field_name="Study Design",
-            section_key="A",
-            source_id="M-001",
-            agreed=False,
-            values={"model-A": "RCT", "model-B": "Observational"},
-            answer_type="enumerated",
-        )
+    def test_agreed_false(self):
+        fa = FieldAgreement(field_name="f", agreed=False, values={"A": "yes", "B": "no"})
         assert fa.agreed is False
 
-    def test_empty_values_dict_ok(self):
-        fa = FieldAgreement(
-            field_name="X", section_key="Y", source_id="Z",
-            agreed=False,
-        )
-        assert fa.values == {}
+    def test_values_preserves_model_names(self):
+        fa = FieldAgreement(field_name="x", agreed=True, values={"modelA": "val1", "modelB": "val1"})
+        assert set(fa.values.keys()) == {"modelA", "modelB"}
 
-
-# ─── MergedReviewResult JSON round-trip ───────────────────────────────────────
-
-class TestMergedReviewResult:
-    def test_json_round_trip(self):
-        merged = MergedReviewResult(
-            consensus_synthesis="Consensus text here",
-            models_included=["model-A", "model-B"],
-            models_failed=[],
-            field_agreement={
-                "M-001::A::Design": FieldAgreement(
-                    field_name="Design", section_key="A", source_id="M-001",
-                    agreed=True, values={"model-A": "RCT", "model-B": "RCT"},
-                    answer_type="enumerated",
-                )
-            },
-        )
-        json_str = merged.model_dump_json()
-        restored = MergedReviewResult.model_validate_json(json_str)
-        assert restored.consensus_synthesis == merged.consensus_synthesis
-        assert "M-001::A::Design" in restored.field_agreement
-        assert restored.field_agreement["M-001::A::Design"].agreed is True
-
-
-# ─── SynthesisDivergence min-2-positions validator ─────────────────────────────
 
 class TestSynthesisDivergence:
-    def test_two_positions_ok(self):
-        sd = SynthesisDivergence(
-            topic="Feature importance",
-            positions={"model-A": "High importance", "model-B": "Not mentioned"},
-        )
-        assert len(sd.positions) == 2
+    def test_valid_two_positions(self):
+        d = SynthesisDivergence(topic="accuracy", positions={"A": "high", "B": "moderate"})
+        assert d.topic == "accuracy"
 
-    def test_three_positions_ok(self):
-        sd = SynthesisDivergence(
-            topic="Sample size",
-            positions={"A": "n=50", "B": "n=100", "C": "Not reported"},
+    def test_valid_three_positions(self):
+        d = SynthesisDivergence(
+            topic="t", positions={"A": "x", "B": "y", "C": "z"}
         )
-        assert len(sd.positions) == 3
+        assert len(d.positions) == 3
 
     def test_one_position_raises(self):
-        with pytest.raises((ValueError, ValidationError)):
-            SynthesisDivergence(
-                topic="X",
-                positions={"model-A": "only one"},
-            )
+        with pytest.raises(ValidationError):
+            SynthesisDivergence(topic="t", positions={"A": "only one"})
 
     def test_zero_positions_raises(self):
-        with pytest.raises((ValueError, ValidationError)):
-            SynthesisDivergence(topic="X", positions={})
+        with pytest.raises(ValidationError):
+            SynthesisDivergence(topic="t", positions={})
+
+
+class TestModelReviewRun:
+    def test_success_run(self):
+        run = ModelReviewRun(model_name="m", result=_result())
+        assert run.succeeded is True
+        assert run.error is None
+
+    def test_failed_run(self):
+        run = ModelReviewRun(model_name="m", error="timeout")
+        assert run.succeeded is False
+        assert run.result is None
+
+    def test_both_none_raises(self):
+        with pytest.raises(ValidationError):
+            ModelReviewRun(model_name="m")
+
+    def test_both_set_raises(self):
+        with pytest.raises(ValidationError):
+            ModelReviewRun(model_name="m", result=_result(), error="oops")
+
+
+class TestMergedReviewResult:
+    def test_defaults(self):
+        m = MergedReviewResult()
+        assert m.consensus_synthesis == ""
+        assert m.field_agreement == {}
+        assert m.synthesis_divergences == []
+
+    def test_json_round_trip(self):
+        fa = FieldAgreement(field_name="f", agreed=True, values={"A": "v"})
+        div = SynthesisDivergence(topic="t", positions={"A": "a", "B": "b"})
+        m = MergedReviewResult(
+            consensus_synthesis="consensus here",
+            field_agreement={"s::k::f": fa},
+            synthesis_divergences=[div],
+        )
+        json_str = m.model_dump_json()
+        m2 = MergedReviewResult.model_validate_json(json_str)
+        assert m2.consensus_synthesis == "consensus here"
+        assert "s::k::f" in m2.field_agreement
+        assert len(m2.synthesis_divergences) == 1
+
+
+class TestCompareReviewResult:
+    def test_valid_two_models(self):
+        r = _compare_result(["A", "B"])
+        assert r.compare_models == ["A", "B"]
+
+    def test_valid_five_models(self):
+        models = [f"m{i}" for i in range(5)]
+        r = _compare_result(models)
+        assert len(r.model_results) == 5
+
+    def test_one_unique_model_raises(self):
+        with pytest.raises(ValidationError):
+            CompareReviewResult(
+                protocol=_protocol(),
+                compare_models=["only-one"],
+                model_results=[ModelReviewRun(model_name="only-one", result=_result())],
+                merged=MergedReviewResult(),
+            )
+
+    def test_duplicate_models_deduped_by_validator(self):
+        with pytest.raises(ValidationError):
+            CompareReviewResult(
+                protocol=_protocol(),
+                compare_models=["A", "A"],
+                model_results=[
+                    ModelReviewRun(model_name="A", result=_result()),
+                    ModelReviewRun(model_name="A", result=_result()),
+                ],
+                merged=MergedReviewResult(),
+            )

@@ -56,6 +56,8 @@ class CacheEntry(BaseModel):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     expires_at: datetime | None = None
     similarity_score: float | None = None  # set when returned as a fuzzy match
+    review_id: str = ""       # source review; empty for legacy entries
+    is_shared: bool = True    # False = private to owner only
 
 
 class CacheLookupResult(BaseModel):

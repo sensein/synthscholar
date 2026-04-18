@@ -322,6 +322,7 @@ class ReviewProtocol(BaseModel):
     force_refresh: bool = False
     cache_threshold: float = Field(default=0.95, ge=0.0, le=1.0)
     cache_ttl_days: int = Field(default=30, ge=0)
+    share_to_cache: bool = True  # whether to write result to shared pool
     # Custom per-article charting questions (answered into DataChartingRubric.custom_fields).
     # Leave empty to rely solely on the built-in sections A–G.
     charting_questions: list[str] = Field(
@@ -1032,6 +1033,72 @@ class PrismaReview(BaseModel):
     conclusion: Conclusion
     references: list[str]
     optional: Optional[OptionalSection] = None
+
+
+# ────────────────── Feature 007: Multi-Model Compare Models ────────────
+
+
+class FieldAgreement(BaseModel):
+    """Per-field agreement record across model runs."""
+    field_name: str
+    agreed: bool
+    values: dict[str, str]  # model_name → extracted value
+
+
+class SynthesisDivergence(BaseModel):
+    """A notable point where model syntheses diverge."""
+    topic: str
+    positions: dict[str, str]  # model_name → position text
+
+    @model_validator(mode="after")
+    def _at_least_two_positions(self) -> "SynthesisDivergence":
+        if len(self.positions) < 2:
+            raise ValueError("SynthesisDivergence requires positions from at least 2 models")
+        return self
+
+
+class ModelReviewRun(BaseModel):
+    """One model's run result — either a full result or a recorded error."""
+    model_name: str
+    result: Optional[PRISMAReviewResult] = None
+    error: Optional[str] = None
+
+    @property
+    def succeeded(self) -> bool:
+        return self.result is not None
+
+    @model_validator(mode="after")
+    def _exactly_one_of_result_or_error(self) -> "ModelReviewRun":
+        if (self.result is None) == (self.error is None):
+            raise ValueError(
+                "ModelReviewRun: exactly one of 'result' or 'error' must be set"
+            )
+        return self
+
+
+class MergedReviewResult(BaseModel):
+    """Merged output from all model runs: consensus text + field-level agreement."""
+    consensus_synthesis: str = ""
+    field_agreement: dict[str, FieldAgreement] = Field(default_factory=dict)
+    synthesis_divergences: list[SynthesisDivergence] = Field(default_factory=list)
+
+
+class CompareReviewResult(BaseModel):
+    """Top-level container for a compare-mode run (2–5 models)."""
+    protocol: ReviewProtocol
+    compare_models: list[str]
+    model_results: list[ModelReviewRun]
+    merged: MergedReviewResult
+    timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
+
+    @model_validator(mode="after")
+    def _validate_unique_models(self) -> "CompareReviewResult":
+        unique = list(dict.fromkeys(self.compare_models))
+        if len(unique) < 2:
+            raise ValueError(
+                "CompareReviewResult requires at least 2 unique models in compare_models"
+            )
+        return self
 
 
 # Rebuild PRISMAReviewResult one final time to resolve PrismaReview forward reference
