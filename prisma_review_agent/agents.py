@@ -75,8 +75,15 @@ class AgentDeps:
     model: object = field(default=None, repr=False)
 
 
-def build_model(api_key: str, model_name: str = "anthropic/claude-sonnet-4") -> OpenAIChatModel:
-    """Create an OpenRouter-backed model for pydantic-ai agents."""
+def build_model(api_key: str, model_name: str = "anthropic/claude-sonnet-4"):
+    """Create a model for pydantic-ai agents.
+
+    When model_name is "test", returns pydantic_ai.models.test.TestModel for
+    CI/mock runs that avoid real LLM API calls.
+    """
+    if model_name == "test":
+        from pydantic_ai.models.test import TestModel
+        return TestModel()
     provider = OpenRouterProvider(api_key=api_key)
     return OpenAIChatModel(model_name, provider=provider)
 
@@ -956,6 +963,59 @@ def _validate_format(text: str, fmt: str) -> bool:
     return bool(re.search(pattern, text, re.MULTILINE))
 
 
+def _is_schema_too_complex_error(exc: Exception) -> bool:
+    """Return True for provider 400 errors caused by overly-complex JSON schemas (e.g. Gemini)."""
+    msg = str(exc)
+    return "too much branching" in msg or (
+        "INVALID_ARGUMENT" in msg and "constraint" in msg.lower()
+    )
+
+
+async def _run_with_text_fallback(agent: "Any", prompt: str, target_type: "Any", deps: "Any", model: "Any") -> "Any":
+    """Try structured-output agent.run(); on schema-complexity 400, retry as plain text + JSON parse."""
+    import logging as _lg
+    import re as _re2
+
+    try:
+        r = await agent.run(prompt, deps=deps, model=model)
+        return r.output
+    except Exception as _exc:
+        if not _is_schema_too_complex_error(_exc):
+            raise
+        _log2 = _lg.getLogger(__name__)
+        _log2.warning(
+            "Schema-complexity error (%s); retrying agent '%s' in text mode",
+            type(_exc).__name__, getattr(agent, "name", "?"),
+        )
+        _fields = [k for k in target_type.model_fields if k != "section_outputs"]
+        _hint = ", ".join(_fields)
+        _fp = (
+            prompt
+            + f"\n\nReturn ONLY a JSON object. Required fields: {_hint}. "
+            "Use empty string for unknown text fields, [] for list fields, "
+            "{} for dict fields. No markdown fences."
+        )
+        _tr = await agent.run(_fp, output_type=str, deps=deps, model=model)
+        _raw = _tr.output.strip()
+        if _raw.startswith("```"):
+            _lines = _raw.split("\n")
+            _raw = "\n".join(_lines[1:-1] if _lines[-1].strip() == "```" else _lines[1:])
+        try:
+            return target_type.model_validate_json(_raw)
+        except Exception as _pe:
+            _m = _re2.search(r"\{.*\}", _raw, _re2.DOTALL)
+            if _m:
+                try:
+                    return target_type.model_validate_json(_m.group())
+                except Exception:
+                    pass
+            _log2.warning(
+                "Text-fallback JSON parse failed for agent '%s' (using defaults): %s",
+                getattr(agent, "name", "?"), _pe,
+            )
+            return target_type()
+
+
 async def run_data_charting(
     article: Article,
     deps: AgentDeps,
@@ -1028,7 +1088,7 @@ async def run_data_charting(
                 )
         field_constraint_block = "\n".join(constraint_lines)
 
-    result = await data_charting_agent.run(
+    _charting_prompt = (
         f"Article PMID: {article.pmid}\n"
         f"Title: {article.title}\n"
         f"Authors: {article.authors}\n"
@@ -1039,11 +1099,11 @@ async def run_data_charting(
         f"Full text: {(article.full_text or 'Not available')[:4000]}"
         + custom_block
         + format_block
-        + field_constraint_block,
-        deps=deps,
-        model=model,
+        + field_constraint_block
     )
-    rubric = result.output
+    rubric = await _run_with_text_fallback(
+        data_charting_agent, _charting_prompt, DataChartingRubric, deps, model
+    )
     rubric.source_id = f"M-{article.pmid[-3:]}" if article.pmid.startswith("biorxiv_") else f"R-{article.pmid[-3:]}"
 
     # Populate section_outputs when config is provided
@@ -1150,7 +1210,7 @@ async def run_critical_appraisal(
         )
         config_block = "\n".join(config_lines)
 
-    result = await critical_appraisal_agent.run(
+    _appraisal_prompt = (
         f"Article: {article.title} ({article.year})\n"
         f"Study Design: {charting.study_design}\n"
         f"Sample: {charting.n_disordered} disordered, {charting.n_controls} controls\n"
@@ -1159,11 +1219,11 @@ async def run_critical_appraisal(
         f"Performance: {charting.key_performance_results}\n"
         f"Limitations noted: {charting.reviewer_notes}\n"
         f"\nAppraisal domains to use:\n{domains_block}"
-        + config_block,
-        deps=deps,
-        model=model,
+        + config_block
     )
-    rubric = result.output
+    rubric = await _run_with_text_fallback(
+        critical_appraisal_agent, _appraisal_prompt, CriticalAppraisalRubric, deps, model
+    )
     rubric.source_id = charting.source_id
     for domain_field, label in zip(
         [

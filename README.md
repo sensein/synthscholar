@@ -283,14 +283,66 @@ result = await pipeline.run(auto_confirm=True)
 
 Run the same protocol through two or more LLMs in parallel. Article acquisition (PubMed/bioRxiv search, deduplication) runs once; all LLM-dependent steps (screening, synthesis, charting, appraisal) run independently per model. Results are merged into a single `CompareReviewResult` with per-field agreement indicators and an LLM-generated consensus synthesis.
 
-#### CLI — compare mode
+#### Plan confirmation and strategy revision in compare mode
+
+The "Generated Search Plan" review/approve/revise gate works **identically** in compare mode. Article acquisition (search strategy generation, PubMed/bioRxiv search, deduplication) runs **once** and is shared across all models. The plan confirmation loop fires during that shared step — before any per-model LLM work begins.
+
+**CLI — plan prompt in compare mode**
+
+Omit `--auto` to see the prompt. The same three-way response applies:
 
 ```bash
-# Two-model compare; writes {slug}_compare.md, {slug}_compare.json, and per-model .md files
 prisma-review \
   --title "CRISPR gene therapy efficacy" \
   --inclusion "Clinical trials, human subjects" \
   --exclusion "Animal-only studies" \
+  --compare-models anthropic/claude-sonnet-4 openai/gpt-4o
+```
+
+```
+══════════════════════════════════════════════════
+  Generated Search Plan (Iteration 1)
+══════════════════════════════════════════════════
+Research question: CRISPR gene therapy efficacy in clinical trials
+
+PubMed queries (3):
+  1. CRISPR gene therapy clinical trials efficacy
+  2. CRISPR-Cas9 human trials outcomes
+  3. gene editing therapy safety efficacy RCT
+
+MeSH terms: CRISPR-Cas Systems, Gene Therapy, Clinical Trials as Topic
+Rationale: Focused on clinical evidence to match inclusion criteria...
+══════════════════════════════════════════════════
+Confirm plan? [yes / no / <feedback>]:
+```
+
+- Press **Enter** or type **yes** → proceed; the approved strategy is used for the shared article fetch, then all models run in parallel
+- Type **no** → halt with `PlanRejectedError` before any search is executed
+- Type feedback (e.g., `"add pediatric CRISPR trials and broaden to gene editing"`) → the search strategy is **revised** and the updated plan is shown again for re-approval (up to `--max-plan-iterations` rounds)
+
+**Revised plan after feedback:**
+
+```
+══════════════════════════════════════════════════
+  Generated Search Plan (Iteration 2)
+══════════════════════════════════════════════════
+PubMed queries (4):
+  1. CRISPR gene therapy pediatric clinical trials efficacy
+  2. CRISPR-Cas9 children adolescents outcomes
+  3. gene editing therapy sickle cell beta-thalassemia pediatric
+  4. base editing clinical trial safety efficacy
+
+Rationale: Expanded to include pediatric subgroups and broader gene editing
+           approaches as requested...
+══════════════════════════════════════════════════
+Confirm plan? [yes / no / <feedback>]:
+```
+
+**CLI — skip confirmation (unattended / CI)**
+
+```bash
+prisma-review \
+  --title "CRISPR gene therapy efficacy" \
   --compare-models anthropic/claude-sonnet-4 openai/gpt-4o \
   --auto
 ```
@@ -307,6 +359,7 @@ from prisma_review_agent import (
     to_compare_markdown, to_compare_json,
     to_compare_charting_markdown, to_compare_charting_json,
 )
+from prisma_review_agent.models import ReviewPlan, PlanRejectedError, MaxIterationsReachedError
 
 protocol = ReviewProtocol(
     title="CRISPR gene therapy efficacy",
@@ -314,19 +367,46 @@ protocol = ReviewProtocol(
     exclusion_criteria="Animal-only studies, reviews",
 )
 
+def confirm_and_revise(plan: ReviewPlan) -> bool | str:
+    """Called once per iteration. Return True to approve, False to abort,
+    or a feedback string to revise the strategy and re-prompt."""
+    print(f"\n--- Search Plan (iteration {plan.iteration}) ---")
+    print(f"Research question: {plan.research_question}")
+    print(f"PubMed queries ({len(plan.pubmed_queries)}):")
+    for q in plan.pubmed_queries:
+        print(f"  - {q}")
+    if plan.mesh_terms:
+        print(f"MeSH: {', '.join(plan.mesh_terms)}")
+    print(f"Rationale: {plan.rationale[:120]}...")
+    answer = input("Approve? [yes / no / feedback to revise]: ").strip()
+    if answer.lower() in ("", "yes", "y"):
+        return True           # approved — proceed with shared article acquisition
+    if answer.lower() in ("no", "abort"):
+        return False          # rejected — raises PlanRejectedError
+    return answer             # feedback string — strategy is re-generated and callback fires again
+
 async def run():
     pipeline = PRISMAReviewPipeline(
         api_key="sk-or-v1-...",
-        model_name="anthropic/claude-sonnet-4",  # used for search strategy; per-model LLM steps use their own model
+        model_name="anthropic/claude-sonnet-4",  # used for search strategy generation
         protocol=protocol,
     )
 
-    compare_result = await pipeline.run_compare(
-        models=["anthropic/claude-sonnet-4", "openai/gpt-4o"],
-        auto_confirm=True,           # skip plan confirmation prompt
-        consensus_model="anthropic/claude-sonnet-4",  # model for consensus synthesis (default: first in list)
-        assemble_timeout=3600.0,     # per-model assembly timeout in seconds
-    )
+    try:
+        compare_result = await pipeline.run_compare(
+            models=["anthropic/claude-sonnet-4", "openai/gpt-4o"],
+            auto_confirm=False,                  # enable plan review + revision
+            confirm_callback=confirm_and_revise, # same interface as pipeline.run()
+            max_plan_iterations=3,               # max revision rounds (default 3)
+            consensus_model="anthropic/claude-sonnet-4",
+            assemble_timeout=3600.0,
+        )
+    except PlanRejectedError:
+        print("Review aborted — plan rejected by user.")
+        return
+    except MaxIterationsReachedError as e:
+        print(f"Stopped after {e.max_allowed} revision rounds without approval.")
+        return
 
     # Per-model and merged exports
     Path("compare.md").write_text(to_compare_markdown(compare_result))
@@ -1225,9 +1305,12 @@ Any model available on OpenRouter works. Tested with:
 | Claude Sonnet 4 | `anthropic/claude-sonnet-4` | Best balance of quality/speed |
 | Claude Haiku 4 | `anthropic/claude-haiku-4` | Faster, good for screening |
 | Gemini 2.5 Pro | `google/gemini-2.5-pro` | Good structured output |
+| Gemini 2.5 Flash | `google/gemini-2.5-flash` | Fast; uses text fallback for charting/appraisal |
 | GPT-4o | `openai/gpt-4o` | Strong general performance |
 | DeepSeek Chat | `deepseek/deepseek-chat` | Cost-effective |
 | Llama 3.1 70B | `meta-llama/llama-3.1-70b-instruct` | Open-source option |
+
+**Schema compatibility note:** Google Gemini models reject structured-output schemas with many optional properties (HTTP 400 "too much branching"). The charting and critical appraisal steps automatically detect this error and retry in text mode — the model returns JSON as plain text, which is then parsed into the same data model. All other pipeline steps are unaffected. No configuration is needed; the fallback is transparent.
 
 ## Data Models
 
@@ -1449,6 +1532,40 @@ async def run_my_agent(data: str, deps: AgentDeps) -> MyOutput:
 1. Create a client class in `clients.py` following the `PubMedClient` pattern.
 2. Add it to `PRISMAReviewPipeline.__init__()`.
 3. Add a search step in `pipeline.py`.
+
+## Running E2E Tests
+
+The `tests/e2e/` suite exercises the full review workflow through both the CLI and the Python API. All mock tests use `pydantic-ai` `TestModel` — no API key required.
+
+```bash
+# All e2e tests (mock mode — no API key needed)
+pytest tests/e2e/ -v
+
+# CLI tests only
+pytest tests/e2e/test_cli_e2e.py -v
+
+# Python API tests only
+pytest tests/e2e/test_python_api_e2e.py -v
+
+# Export format tests (requires tests/fixtures/minimal_review_result.json)
+pytest tests/e2e/test_export_validation.py -v
+
+# Full real-API smoke tests
+export OPENROUTER_API_KEY="sk-..."
+export RUN_E2E=1
+pytest tests/e2e/ -m smoke -v
+```
+
+**Build the export fixture** (once, then commit):
+
+```bash
+export OPENROUTER_API_KEY="sk-..."
+python scripts/build_e2e_fixture.py
+```
+
+See [specs/011-e2e-review-tests/quickstart.md](specs/011-e2e-review-tests/quickstart.md) for full details.
+
+---
 
 ## Dependencies
 
