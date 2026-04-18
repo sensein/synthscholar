@@ -59,6 +59,12 @@ from prisma_review_agent.models import (
     ItemRating,
     DomainAppraisal,
     CriticalAppraisalResult,
+    # Feature 007
+    CompareReviewResult,
+    ModelReviewRun,
+    MergedReviewResult,
+    FieldAgreement,
+    SynthesisDivergence,
 )
 from prisma_review_agent.pipeline import PRISMAReviewPipeline
 from prisma_review_agent.agents import default_charting_template, default_appraisal_config
@@ -68,6 +74,9 @@ from prisma_review_agent.export import (
     # Feature 006
     to_charting_markdown, to_charting_json,
     to_appraisal_markdown, to_appraisal_json,
+    # Feature 007
+    to_compare_markdown, to_compare_json,
+    to_compare_charting_markdown, to_compare_charting_json,
 )
 
 __version__ = "0.2.0"
@@ -141,4 +150,14 @@ __all__ = [
     "to_charting_json",
     "to_appraisal_markdown",
     "to_appraisal_json",
+    # Feature 007
+    "CompareReviewResult",
+    "ModelReviewRun",
+    "MergedReviewResult",
+    "FieldAgreement",
+    "SynthesisDivergence",
+    "to_compare_markdown",
+    "to_compare_json",
+    "to_compare_charting_markdown",
+    "to_compare_charting_json",
 ]

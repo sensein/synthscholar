@@ -59,6 +59,8 @@ from .models import (
     DomainAppraisal,
     CriticalAppraisalResult,
     CONCERN_AGGREGATION_RULE,
+    # Feature 007
+    SynthesisDivergence,
 )
 
 
@@ -1835,4 +1837,59 @@ def default_appraisal_config() -> CriticalAppraisalConfig:
             ),
         ]
     )
+
+
+# ─── Feature 007: Consensus Synthesis Agent ───────────────────────────────────
+
+from pydantic import BaseModel as _BaseModel
+
+
+class ConsensusSynthesisOutput(_BaseModel):
+    """Typed output for the consensus synthesis agent."""
+    consensus_text: str
+    divergences: list[SynthesisDivergence]
+
+
+_consensus_synthesis_agent: Agent[AgentDeps, ConsensusSynthesisOutput] = Agent(
+    model=None,  # set dynamically via deps at call time
+    output_type=ConsensusSynthesisOutput,
+    system_prompt=(
+        "You are a systematic review methodologist synthesising findings from multiple AI models "
+        "that independently reviewed the same body of literature. "
+        "Given each model's synthesis text, you must:\n"
+        "1. Identify the core findings that all models agree on and write a unified consensus_text.\n"
+        "2. For each substantive divergence (where models clearly differ in interpretation, "
+        "   emphasis, or conclusion), produce a SynthesisDivergence entry with a brief topic label "
+        "   and each model's position. Only include genuine divergences — do not fabricate them.\n"
+        "Return a ConsensusSynthesisOutput with consensus_text and divergences list."
+    ),
+)
+
+
+async def run_consensus_synthesis(
+    syntheses: dict[str, str],
+    deps: AgentDeps,
+) -> ConsensusSynthesisOutput:
+    """Run the consensus synthesis agent over multiple model synthesis texts.
+
+    Args:
+        syntheses: mapping of {model_name: synthesis_text} for each succeeded run.
+        deps: AgentDeps selecting which model runs the consensus agent.
+    """
+    model = build_model(deps.api_key, deps.model_name)
+    prompt_parts = ["Below are synthesis texts from different AI models reviewing the same studies.\n"]
+    for model_name, text in syntheses.items():
+        prompt_parts.append(f"=== {model_name} ===\n{text}\n")
+    prompt_parts.append(
+        "\nIdentify consensus findings and any substantive divergences. "
+        "Return a ConsensusSynthesisOutput."
+    )
+    user_prompt = "\n".join(prompt_parts)
+
+    result = await _consensus_synthesis_agent.run(
+        user_prompt,
+        model=model,
+        deps=deps,
+    )
+    return result.output
 

@@ -11,7 +11,7 @@ import asyncio
 import sys
 from collections import defaultdict
 from datetime import datetime
-from typing import Callable, Optional
+from typing import Callable, NamedTuple, Optional
 
 import logging
 
@@ -20,6 +20,12 @@ from .models import (
     ReviewProtocol,
     PRISMAFlowCounts,
     PRISMAReviewResult,
+    # Feature 007
+    CompareReviewResult,
+    ModelReviewRun,
+    MergedReviewResult,
+    FieldAgreement,
+    SynthesisDivergence,
     ScreeningLogEntry,
     ScreeningStage,
     ScreeningDecisionType,
@@ -94,6 +100,15 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+class _AcquisitionResult(NamedTuple):
+    """Result of Steps 1–6 (search strategy + HTTP acquisition + dedup). Shared across model runs."""
+    strategy: object               # SearchStrategy — typed as object to avoid circular import noise
+    all_search_queries: list[str]
+    deduped: list[Article]
+    all_articles: dict[str, Article]
+    flow: PRISMAFlowCounts
+
+
 class PRISMAReviewPipeline:
     """Full PRISMA 2020 pipeline with async agent orchestration."""
 
@@ -129,77 +144,21 @@ class PRISMAReviewPipeline:
         self._log.append(entry)
         print(entry)
 
-    async def run(
+    async def _fetch_articles(
         self,
-        progress_callback: Optional[Callable[[str], None]] = None,  # existing — unchanged
-        data_items: Optional[list[str]] = None,                     # existing — unchanged
-        auto_confirm: bool = False,           # new — False: show confirmation gate; True: skip it
-        confirm_callback: Optional[Callable[[ReviewPlan], "bool | str"]] = None,  # new — None: CLI input or auto
-        max_plan_iterations: int = 3,         # new — max re-generation attempts before MaxIterationsReachedError
-        output_synthesis_style: str = "paragraph",  # new — controls PrismaReview results rendering style: "paragraph" | "question_answer" | "bullet_list" | "table"
-    ) -> PRISMAReviewResult:
-        if not self.deps.api_key:
-            raise ValueError(
-                "api_key is required — set OPENROUTER_API_KEY or pass api_key to PRISMAReviewPipeline"
-            )
-        proto = self.protocol
+        proto: ReviewProtocol,
+        up: Callable[[str], None],
+        auto_confirm: bool = False,
+        confirm_callback: Optional[Callable] = None,
+        max_plan_iterations: int = 3,
+    ) -> _AcquisitionResult:
+        """Run Steps 1–6: search strategy, HTTP acquisition, deduplication.
+
+        Shared by run() and run_compare() so article fetching happens exactly once.
+        """
         flow = PRISMAFlowCounts()
-        all_screening: list[ScreeningLogEntry] = []
         all_articles: dict[str, Article] = {}
         seen_pmids: set[str] = set()
-
-        def up(msg: str):
-            self.log(msg)
-            if progress_callback:
-                progress_callback(msg)
-
-        # ── 0. PostgreSQL review-result cache check ──
-        pg_store: Optional[CacheStore] = None
-        art_store: Optional[ArticleStore] = None
-        criteria_dict = proto.model_dump()
-
-        if _CACHE_AVAILABLE and proto.pg_dsn:
-            try:
-                pg_store = CacheStore(dsn=proto.pg_dsn)
-                await pg_store.connect()
-                art_store = ArticleStore(dsn=proto.pg_dsn)
-                await art_store.connect()
-
-                if not proto.force_refresh:
-                    up("Checking review cache...")
-                    lookup = await cache_lookup(
-                        pg_store, criteria_dict, self.model_name,
-                        threshold=proto.cache_threshold,
-                        ttl_days=proto.cache_ttl_days,
-                    )
-                    if lookup.hit and lookup.entry:
-                        score = lookup.similarity_score or 1.0
-                        matched = lookup.entry.criteria_json.get("title", "")
-                        up(
-                            f"Cache HIT (similarity={score:.1%}) — matched: '{matched}' "
-                            f"[cached {lookup.entry.created_at.strftime('%Y-%m-%d')}]"
-                        )
-                        cached_result = PRISMAReviewResult.model_validate(
-                            lookup.entry.result_json
-                        )
-                        cached_result.cache_hit = True
-                        cached_result.cache_similarity_score = score
-                        cached_result.cache_matched_criteria = lookup.entry.criteria_json
-                        await pg_store.close()
-                        await art_store.close()
-                        return cached_result
-                    else:
-                        up("Cache miss — running full pipeline.")
-                else:
-                    up("Force-refresh: skipping cache lookup.")
-            except (CacheUnavailableError, CacheSchemaError) as exc:
-                logger.warning("Cache unavailable (%s) — continuing without cache.", exc)
-                pg_store = None
-                art_store = None
-            except Exception as exc:
-                logger.warning("Cache check failed (%s) — continuing without cache.", exc)
-                pg_store = None
-                art_store = None
 
         # ── 1. Search strategy (LLM agent) ──
         up("Generating search strategy...")
@@ -208,7 +167,6 @@ class PRISMAReviewPipeline:
         up(f"Rationale: {strategy.rationale}")
 
         # ── 1a. Plan confirmation checkpoint ──
-        # TTY detection: auto-confirm in non-interactive environments when no callback given
         _effective_auto = auto_confirm
         if not auto_confirm and confirm_callback is None and not sys.stdin.isatty():
             logger.warning(
@@ -330,6 +288,96 @@ class PRISMAReviewPipeline:
         flow.duplicates_removed = flow.total_identified - len(deduped)
         flow.after_dedup = len(deduped)
         up(f"After dedup: {flow.after_dedup} (removed {flow.duplicates_removed})")
+
+        return _AcquisitionResult(
+            strategy=strategy,
+            all_search_queries=all_search_queries,
+            deduped=deduped,
+            all_articles=all_articles,
+            flow=flow,
+        )
+
+    async def run(
+        self,
+        progress_callback: Optional[Callable[[str], None]] = None,  # existing — unchanged
+        data_items: Optional[list[str]] = None,                     # existing — unchanged
+        auto_confirm: bool = False,           # new — False: show confirmation gate; True: skip it
+        confirm_callback: Optional[Callable[[ReviewPlan], "bool | str"]] = None,  # new — None: CLI input or auto
+        max_plan_iterations: int = 3,         # new — max re-generation attempts before MaxIterationsReachedError
+        output_synthesis_style: str = "paragraph",  # new — controls PrismaReview results rendering style: "paragraph" | "question_answer" | "bullet_list" | "table"
+    ) -> PRISMAReviewResult:
+        if not self.deps.api_key:
+            raise ValueError(
+                "api_key is required — set OPENROUTER_API_KEY or pass api_key to PRISMAReviewPipeline"
+            )
+        proto = self.protocol
+        all_screening: list[ScreeningLogEntry] = []
+
+        def up(msg: str):
+            self.log(msg)
+            if progress_callback:
+                progress_callback(msg)
+
+        # ── 0. PostgreSQL review-result cache check ──
+        pg_store: Optional[CacheStore] = None
+        art_store: Optional[ArticleStore] = None
+        criteria_dict = proto.model_dump()
+
+        if _CACHE_AVAILABLE and proto.pg_dsn:
+            try:
+                pg_store = CacheStore(dsn=proto.pg_dsn)
+                await pg_store.connect()
+                art_store = ArticleStore(dsn=proto.pg_dsn)
+                await art_store.connect()
+
+                if not proto.force_refresh:
+                    up("Checking review cache...")
+                    lookup = await cache_lookup(
+                        pg_store, criteria_dict, self.model_name,
+                        threshold=proto.cache_threshold,
+                        ttl_days=proto.cache_ttl_days,
+                    )
+                    if lookup.hit and lookup.entry:
+                        score = lookup.similarity_score or 1.0
+                        matched = lookup.entry.criteria_json.get("title", "")
+                        up(
+                            f"Cache HIT (similarity={score:.1%}) — matched: '{matched}' "
+                            f"[cached {lookup.entry.created_at.strftime('%Y-%m-%d')}]"
+                        )
+                        cached_result = PRISMAReviewResult.model_validate(
+                            lookup.entry.result_json
+                        )
+                        cached_result.cache_hit = True
+                        cached_result.cache_similarity_score = score
+                        cached_result.cache_matched_criteria = lookup.entry.criteria_json
+                        await pg_store.close()
+                        await art_store.close()
+                        return cached_result
+                    else:
+                        up("Cache miss — running full pipeline.")
+                else:
+                    up("Force-refresh: skipping cache lookup.")
+            except (CacheUnavailableError, CacheSchemaError) as exc:
+                logger.warning("Cache unavailable (%s) — continuing without cache.", exc)
+                pg_store = None
+                art_store = None
+            except Exception as exc:
+                logger.warning("Cache check failed (%s) — continuing without cache.", exc)
+                pg_store = None
+                art_store = None
+
+        # ── Steps 1–6: Shared acquisition (search strategy + HTTP + dedup) ──
+        acq = await self._fetch_articles(
+            proto, up,
+            auto_confirm=auto_confirm,
+            confirm_callback=confirm_callback,
+            max_plan_iterations=max_plan_iterations,
+        )
+        strategy = acq.strategy
+        all_search_queries = acq.all_search_queries
+        deduped = acq.deduped
+        all_articles = acq.all_articles
+        flow = acq.flow
 
         if not deduped:
             return PRISMAReviewResult(
@@ -721,6 +769,29 @@ class PRISMAReviewPipeline:
                 pass
 
         return final_result
+
+    async def run_compare(
+        self,
+        models: list[str],
+        *,
+        progress_callback: Optional[Callable[[str], None]] = None,
+        data_items: Optional[list[str]] = None,
+        auto_confirm: bool = False,
+        confirm_callback: Optional[Callable] = None,
+        max_plan_iterations: int = 3,
+        consensus_model: Optional[str] = None,
+    ) -> "CompareReviewResult":
+        """Run the review in parallel for each model and return a merged CompareReviewResult."""
+        from .compare import run_compare as _run_compare
+        return await _run_compare(
+            self, models,
+            progress_callback=progress_callback,
+            data_items=data_items,
+            auto_confirm=auto_confirm,
+            confirm_callback=confirm_callback,
+            max_plan_iterations=max_plan_iterations,
+            consensus_model=consensus_model,
+        )
 
 
 # Section name → field names mapping for DataExtractionSchema assembly
