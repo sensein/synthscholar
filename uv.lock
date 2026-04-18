@@ -1925,7 +1925,7 @@ wheels = [
 
 [[package]]
 name = "prisma-review-agent"
-version = "0.2.2"
+version = "0.2.4"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
@@ -1946,6 +1946,11 @@ dev = [
     { name = "ruff" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "ruff" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.25" },
@@ -1962,6 +1967,9 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'" },
 ]
 provides-extras = ["dev"]
+
+[package.metadata.requires-dev]
+dev = [{ name = "ruff", specifier = ">=0.15.11" }]
 
 [[package]]
 name = "prompt-toolkit"
