@@ -142,6 +142,8 @@ class EvidenceSpan(BaseModel):
     relevance_score: float = 0.0
     claim: str = ""
     doi: str = ""
+    grounding_score: float = 0.0   # 0.0–1.0; set by validation.filter_grounded
+    grounded: bool = False          # True only after passing source grounding check
 
 
 class ExtractedEvidenceItem(BaseModel):
@@ -277,6 +279,8 @@ class ReviewProtocol(BaseModel):
     citation_style: str = "APA 7"  # APA 7 | Vancouver | Harvard | IEEE | Chicago
     languages: list[str] = Field(default_factory=lambda: ["English"])
     protocol_overrides: str = ""  # custom charting fields / cohort taxonomies
+    review_id: str = ""  # URI for slr:SystematicReview; minted from UUID if empty
+
     # Custom per-article charting questions (answered into DataChartingRubric.custom_fields).
     # Leave empty to rely solely on the built-in sections A–G.
     charting_questions: list[str] = Field(
@@ -297,6 +301,13 @@ class ReviewProtocol(BaseModel):
             "'Feature and Model Quality', 'Bias and Transparency']"
         ),
     )
+
+    # PostgreSQL cache fields — pipeline uses pg_dsn to activate result caching.
+    # Leave pg_dsn empty (default) to skip cache and always run the full pipeline.
+    pg_dsn: str = ""
+    force_refresh: bool = False
+    cache_threshold: float = Field(default=0.95, ge=0.0, le=1.0)
+    cache_ttl_days: int = Field(default=30, ge=0)
 
     @property
     def pico_text(self) -> str:

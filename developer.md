@@ -96,14 +96,14 @@ The `prisma_review_agent/` package is the installable form; root-level `.py` fil
 
 | Module | Responsibility | Key Types |
 |---|---|---|
-| `models.py` | All Pydantic v2 data models — no logic | `Article`, `ReviewProtocol`, `PRISMAFlowCounts`, `PRISMAReviewResult`, `EvidenceSpan` |
+| `models.py` | All Pydantic v2 data models — no logic | `Article`, `ReviewProtocol`, `PRISMAFlowCounts`, `PRISMAReviewResult`, `EvidenceSpan`, `PrismaReview`, `ThematicSynthesisResult` (22 rich synthesis models). Per-rubric format control (005-US5): `SECTION_FORMAT` (`Literal["descriptive","yes_no","table","bullet_list","numeric"]`), `RubricSectionOutput` (per-section extraction result with `format_used`, `formatted_answer`, `section_summary`; validator enforces `section_summary` required for table/bullet_list/numeric), `RubricSectionConfig` (caller config per section: `section_key`, `section_name`, `order`, `output_format`), `StudyDataExtractionReport` (per-study container: `source_id`, `sections: dict[str, RubricSectionOutput]`). `BUILTIN_SECTIONS` module-level constant maps keys A–G to display titles. `ReviewProtocol` gains `section_output_formats: dict[str,str]` and `rubric_section_config: list[RubricSectionConfig]` with a `@model_validator` that rejects invalid format values. `DataChartingRubric` gains `section_outputs: dict[str, RubricSectionOutput]`. `Methods` gains `data_extraction: list[StudyDataExtractionReport]`. |
 | `clients.py` | HTTP data acquisition + SQLite cache | `PubMedClient`, `BioRxivClient`, `Cache` |
-| `agents.py` | LLM agent definitions + async runners | `AgentDeps`, 12 `Agent` instances, `run_*` functions |
-| `pipeline.py` | Async orchestrator — calls clients, agents, cache | `PRISMAReviewPipeline.run()` |
+| `agents.py` | LLM agent definitions + async runners | `AgentDeps`, 18 `Agent` instances, `run_*` functions. Rich synthesis agents: `abstract_section_agent`, `introduction_section_agent`, `thematic_synthesis_agent`, `quantitative_analysis_agent`, `discussion_section_agent`, `conclusion_section_agent` |
+| `pipeline.py` | Async orchestrator — calls clients, agents, cache; hosts plan confirmation checkpoint (step 1a), `_build_review_plan()` helper, and rich synthesis assembly. `assemble_prisma_review()` runs a two-wave `asyncio.gather` to build the full `PrismaReview` object; `_assemble_methods(protocol, strategy, flow_counts, charting_rubrics, resolved_config?)` and `_assemble_extracted_studies()` are deterministic helpers (no LLM). `_backfill_plain_text_fields()` preserves backward compat. `_resolve_section_config(protocol) -> list[tuple[str,str,str]]` returns `[(key, display_title, format_type)]` ordered by display priority — precedence: `rubric_section_config` > `section_output_formats` > BUILTIN_SECTIONS defaults > `charting_questions`; computed once per run before the charting loop and passed into `run_data_charting()` and `_assemble_methods()`. | `PRISMAReviewPipeline.run(progress_callback, data_items, auto_confirm, confirm_callback, max_plan_iterations, output_synthesis_style)` |
 | `evidence.py` | Evidence extraction + source grounding gate | `extract_evidence()` |
 | `validation.py` | Source grounding validator — rapidfuzz matching | `filter_grounded()`, `validate_grounding()`, `ValidationReport` |
-| `export.py` | Output formatters with cache provenance | `to_markdown()`, `to_json()`, `to_bibtex()`, `to_turtle()`, `to_jsonld()`, `to_oxigraph_store()` |
-| `main.py` | CLI argument parsing + `ReviewProtocol` construction | `main()`, `run_review()` |
+| `export.py` | Output formatters with cache provenance | `to_markdown()`, `to_json()`, `to_bibtex()`, `to_turtle()`, `to_jsonld()`, `to_oxigraph_store()`, `to_rubric_markdown(result) -> str` (H2 per study / H3 per section / `**Format**:` / `**Summary**:` ; falls back to stub when no `section_outputs` present), `to_rubric_json(result) -> str` (JSON array of `{source_id, title, sections:{title:{format_used, formatted_answer, section_summary}}}` ; returns `"[]"` fallback) |
+| `main.py` | CLI argument parsing + `ReviewProtocol` construction; `_cli_confirm()` callback for interactive plan confirmation; `--auto` / `--max-plan-iterations` flags | `main()`, `run_review()`, `_cli_confirm()` |
 | `ontology/namespaces.py` | RDF namespace constants + URI-minting helpers | `SLR`, `PROV`, `DCTERMS`, `FABIO`, `BIBO`, `OA`; `article_uri()`, `review_uri()`, `bind_namespaces()` |
 | `ontology/rdf_export.py` | rdflib graph construction + Turtle / JSON-LD serialization | `_build_graph()`, `to_turtle()`, `to_jsonld()`, `_add_charting()`, `_add_rob()`, `_add_evidence_spans()` |
 | `ontology/rdf_store.py` | pyoxigraph-backed SPARQL store | `SLRStore.load()`, `.query()`, `.save()`, `.load_from_file()` |
@@ -867,6 +867,16 @@ Identical criteria are fingerprinted with SHA-256 (normalised, lowercase, sorted
 ### 14. Pyoxigraph store via Turtle round-trip
 
 `rdf_store.py` populates a `pyoxigraph.Store` by serializing the rdflib graph to Turtle bytes and loading them into pyoxigraph, rather than translating the graph object directly. This is intentional: rdflib and pyoxigraph have incompatible internal representations, and Turtle is a lossless, widely-supported interchange format. The round-trip adds ~10 ms for typical reviews (< 100 sources) — negligible compared to pipeline runtime. For large reviews, call `store.save(path)` once and `store.load_from_file(path)` on subsequent sessions to avoid re-serialization.
+
+### 16. Plan confirmation — callback-first, TTY detection, no `input()` in core pipeline
+
+After step 1 (search strategy generation), `pipeline.run()` optionally pauses at a confirmation checkpoint (step 1a). The design keeps the pipeline free of terminal dependencies:
+
+- `confirm_callback: Callable[[ReviewPlan], bool | str] | None` is the primary mechanism. The pipeline calls it with a `ReviewPlan` and interprets `True`/`""` as approval, `False` as rejection (raises `PlanRejectedError`), and any other string as feedback that triggers re-generation via `run_search_strategy(user_feedback=feedback)`.
+- `auto_confirm=True` bypasses the checkpoint entirely, restoring pre-feature behavior. All existing callers (`pipeline.run()`, `pipeline.run(progress_callback=cb)`, `pipeline.run(data_items=[...])`) are unaffected by default.
+- TTY detection: when neither `auto_confirm` nor `confirm_callback` is set and `sys.stdin.isatty()` returns `False`, the pipeline logs a warning and defaults to auto mode — matching the behavior of Unix tools like `git` and `pip` in non-interactive environments.
+- `_cli_confirm()` lives in `main.py` (not `pipeline.py`) and is passed as `confirm_callback`. This is the key architectural boundary: `input()` never enters the core library.
+- `MaxIterationsReachedError(iterations, max_allowed)` is raised when the for-else loop exhausts `max_plan_iterations` iterations without approval.
 
 ### 15. ArticleStore as a growing source library
 

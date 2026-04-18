@@ -36,7 +36,7 @@ import argparse
 from pathlib import Path
 from datetime import datetime
 
-from prisma_review_agent.models import ReviewProtocol, RoBTool
+from prisma_review_agent.models import ReviewProtocol, RoBTool, ReviewPlan, PlanRejectedError, MaxIterationsReachedError
 from prisma_review_agent.pipeline import PRISMAReviewPipeline
 from prisma_review_agent.export import to_markdown, to_bibtex, to_json, to_turtle, to_jsonld, to_oxigraph_store
 
@@ -46,12 +46,14 @@ ROB_TOOL_CHOICES = [t.value for t in RoBTool]
 OUTPUT_DIR = Path("prisma_results")
 
 
-def get_api_key() -> str:
-    """Get OpenRouter API key from environment."""
-    key = os.environ.get("OPENROUTER_API_KEY", "")
+def get_api_key(cli_value: str = "") -> str:
+    """Get OpenRouter API key — CLI arg takes precedence over env var."""
+    # api_key is called at line 1 of run_review(), before PRISMAReviewPipeline construction
+    key = cli_value or os.environ.get("OPENROUTER_API_KEY", "")
     if not key:
-        print("ERROR: Set OPENROUTER_API_KEY environment variable.")
+        print("ERROR: Set OPENROUTER_API_KEY environment variable or pass --api-key.")
         print("  export OPENROUTER_API_KEY='sk-or-v1-...'")
+        print("  prisma-review --title '...' --api-key 'sk-or-v1-...'")
         sys.exit(1)
     return key
 
@@ -120,6 +122,29 @@ def build_protocol_interactive() -> ReviewProtocol:
     )
 
 
+def _cli_confirm(plan: ReviewPlan) -> "bool | str":
+    """Interactive CLI callback for plan confirmation."""
+    width = 50
+    border = "═" * width
+    print(f"\n{border}")
+    print(f"  Generated Search Plan (Iteration {plan.iteration})")
+    print(border)
+    print(f"Research question: {plan.research_question}\n")
+    print(f"PubMed queries ({len(plan.pubmed_queries)}):")
+    for i, q in enumerate(plan.pubmed_queries, 1):
+        print(f"  {i}. {q}")
+    if plan.mesh_terms:
+        print(f"\nMeSH terms: {', '.join(plan.mesh_terms)}")
+    print(f"\nRationale: {plan.rationale}")
+    print(border)
+    answer = input("Confirm plan? [yes / no / <feedback>]: ").strip()
+    if answer.lower() in ("", "y", "yes"):
+        return True
+    if answer.lower() in ("no", "abort"):
+        return False
+    return answer
+
+
 def save_exports(result, formats: list[str]):
     """Save review results in requested formats."""
     OUTPUT_DIR.mkdir(exist_ok=True)
@@ -158,7 +183,8 @@ def save_exports(result, formats: list[str]):
 
 async def run_review(args: argparse.Namespace):
     """Execute the PRISMA review pipeline."""
-    api_key = get_api_key()
+    # get_api_key() is intentionally first — fails fast before any pipeline construction
+    api_key = get_api_key(args.api_key)
 
     # Build protocol
     if args.interactive:
@@ -198,7 +224,20 @@ async def run_review(args: argparse.Namespace):
         biorxiv_days=args.biorxiv_days,
     )
 
-    result = await pipeline.run(data_items=data_items)
+    cb = None if args.auto else _cli_confirm
+    try:
+        result = await pipeline.run(
+            data_items=data_items,
+            auto_confirm=args.auto,
+            confirm_callback=cb,
+            max_plan_iterations=args.max_plan_iterations,
+        )
+    except PlanRejectedError as e:
+        print(f"\nPlan rejected after {e.iterations} iteration(s).")
+        sys.exit(1)
+    except MaxIterationsReachedError as e:
+        print(f"\nMaximum re-generation limit ({e.max_allowed}) reached. Aborting.")
+        sys.exit(1)
 
     # Print summary
     f = result.flow
@@ -316,6 +355,12 @@ Examples:
     # Mode
     parser.add_argument("--interactive", "-i", action="store_true",
                         help="Interactive protocol setup")
+    parser.add_argument("--api-key", type=str, default="",
+                        help="OpenRouter API key (overrides OPENROUTER_API_KEY env var)")
+    parser.add_argument("--auto", action="store_true", default=False,
+                        help="Skip plan confirmation and run pipeline end-to-end without prompts")
+    parser.add_argument("--max-plan-iterations", type=int, default=3,
+                        help="Maximum plan re-generation attempts before aborting (default 3)")
 
     args = parser.parse_args()
     asyncio.run(run_review(args))

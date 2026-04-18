@@ -8,6 +8,7 @@ for LLM tasks and plain HTTP clients for data acquisition.
 from __future__ import annotations
 
 import asyncio
+import sys
 from collections import defaultdict
 from datetime import datetime
 from typing import Callable, Optional
@@ -24,6 +25,29 @@ from .models import (
     ScreeningDecisionType,
     EvidenceSpan,
     GRADEAssessment,
+    ReviewPlan,
+    PlanRejectedError,
+    MaxIterationsReachedError,
+    PrismaReview,
+    PrismaFlow,
+    Methods,
+    Results,
+    Discussion,
+    Conclusion,
+    Abstract,
+    Introduction,
+    Implications,
+    DataExtractionField,
+    DataExtractionSchema,
+    SourceMetadata,
+    StudyDesign,
+    ExtractedStudy,
+    OutputFormat,
+    OptionalSection,
+    BiasAssessment,
+    Theme,
+    BUILTIN_SECTIONS,
+    StudyDataExtractionReport,
 )
 from .clients import Cache, PubMedClient, BioRxivClient
 from .evidence import extract_evidence
@@ -37,6 +61,20 @@ from .agents import (
     run_grade,
     run_bias_summary,
     run_limitations,
+    run_data_charting,
+    run_narrative_row,
+    run_critical_appraisal,
+    run_grounding_validation,
+    run_introduction,
+    run_conclusions,
+    run_abstract,
+    build_quality_checklist,
+    run_abstract_section,
+    run_introduction_section,
+    run_thematic_synthesis,
+    run_discussion_section,
+    run_conclusion_section,
+    run_quantitative_analysis,
 )
 
 try:
@@ -88,9 +126,17 @@ class PRISMAReviewPipeline:
 
     async def run(
         self,
-        progress_callback: Optional[Callable[[str], None]] = None,
-        data_items: Optional[list[str]] = None,
+        progress_callback: Optional[Callable[[str], None]] = None,  # existing — unchanged
+        data_items: Optional[list[str]] = None,                     # existing — unchanged
+        auto_confirm: bool = False,           # new — False: show confirmation gate; True: skip it
+        confirm_callback: Optional[Callable[[ReviewPlan], "bool | str"]] = None,  # new — None: CLI input or auto
+        max_plan_iterations: int = 3,         # new — max re-generation attempts before MaxIterationsReachedError
+        output_synthesis_style: str = "paragraph",  # new — controls PrismaReview results rendering style: "paragraph" | "question_answer" | "bullet_list" | "table"
     ) -> PRISMAReviewResult:
+        if not self.deps.api_key:
+            raise ValueError(
+                "api_key is required — set OPENROUTER_API_KEY or pass api_key to PRISMAReviewPipeline"
+            )
         proto = self.protocol
         flow = PRISMAFlowCounts()
         all_screening: list[ScreeningLogEntry] = []
@@ -153,11 +199,38 @@ class PRISMAReviewPipeline:
         # ── 1. Search strategy (LLM agent) ──
         up("Generating search strategy...")
         strategy = await run_search_strategy(self.deps)
+        up(f"Strategy: {len(strategy.pubmed_queries)} PubMed + {len(strategy.biorxiv_queries)} bioRxiv queries")
+        up(f"Rationale: {strategy.rationale}")
+
+        # ── 1a. Plan confirmation checkpoint ──
+        # TTY detection: auto-confirm in non-interactive environments when no callback given
+        _effective_auto = auto_confirm
+        if not auto_confirm and confirm_callback is None and not sys.stdin.isatty():
+            logger.warning(
+                "Non-interactive environment detected; defaulting to auto_confirm=True"
+            )
+            _effective_auto = True
+
+        if not _effective_auto and confirm_callback is not None:
+            for iteration in range(1, max_plan_iterations + 1):
+                plan = _build_review_plan(strategy, proto.question, iteration=iteration)
+                up(f"Awaiting plan confirmation (iteration {iteration})...")
+                response = confirm_callback(plan)
+                if response is True or response == "":
+                    up("Plan approved.")
+                    break
+                elif response is False:
+                    raise PlanRejectedError(iterations=iteration)
+                else:
+                    feedback = str(response)
+                    up(f"Revising strategy with feedback: {feedback[:80]}...")
+                    strategy = await run_search_strategy(self.deps, user_feedback=feedback)
+            else:
+                raise MaxIterationsReachedError(iteration, max_plan_iterations)
+
         pubmed_queries = strategy.pubmed_queries or [proto.question]
         biorxiv_queries = strategy.biorxiv_queries or []
         all_search_queries = pubmed_queries + biorxiv_queries
-        up(f"Strategy: {len(pubmed_queries)} PubMed + {len(biorxiv_queries)} bioRxiv queries")
-        up(f"Rationale: {strategy.rationale}")
 
         # ── 2. PubMed search ──
         for i, q in enumerate(pubmed_queries):
@@ -485,6 +558,70 @@ class PRISMAReviewPipeline:
             if isinstance(result, GRADEAssessment):
                 grade_assessments[outcome] = result
 
+        # ── Steps 13–18: Charting, Appraisal, Narrative, Grounding, Document sections ──
+
+        charting_questions = list(proto.charting_questions) if proto.charting_questions else None
+        appraisal_domains = list(proto.appraisal_domains) if proto.appraisal_domains else None
+
+        data_charting_rubrics = []
+        critical_appraisals = []
+        narrative_rows = []
+
+        _resolved_cfg = _resolve_section_config(self.protocol)
+
+        for article in ft_included:
+            try:
+                up(f"Charting article {article.pmid}…")
+                rubric = await run_data_charting(
+                    article, self.deps, charting_questions, resolved_section_config=_resolved_cfg
+                )
+                data_charting_rubrics.append(rubric)
+
+                appraisal = await run_critical_appraisal(article, rubric, self.deps, appraisal_domains)
+                critical_appraisals.append(appraisal)
+
+                row = await run_narrative_row(rubric, appraisal, self.deps)
+                narrative_rows.append(row)
+            except Exception as exc:
+                logger.warning("Charting/appraisal failed for %s: %s", article.pmid, exc)
+
+        # Grounding validation
+        grounding_validation = None
+        try:
+            up("Validating grounding of synthesis text…")
+            corpus: dict[str, str] = {
+                a.pmid: (a.abstract or "") + " " + (a.full_text or "")
+                for a in ft_included
+            }
+            citation_map = {a.pmid: f"{a.authors} ({a.year})" for a in ft_included}
+            grounding_validation = await run_grounding_validation(
+                synthesis, corpus, citation_map, self.deps
+            )
+            up(
+                f"Grounding validation: {grounding_validation.overall_verdict} "
+                f"({grounding_validation.grounding_rate:.1%} supported)"
+            )
+        except Exception as exc:
+            logger.warning("Grounding validation failed: %s", exc)
+
+        # Introduction, Conclusions, Abstract (parallel)
+        grade_summary = "; ".join(
+            f"{k}: {v.overall_certainty.value}" for k, v in grade_assessments.items()
+        )
+        flow_text = (
+            f"{flow.total_identified} identified, {flow.included_synthesis} included"
+        )
+        try:
+            up("Generating document sections…")
+            introduction_text, conclusions_text, structured_abstract = await asyncio.gather(
+                run_introduction(self.deps),
+                run_conclusions(synthesis, grade_summary, self.deps),
+                run_abstract(flow_text, synthesis, self.deps),
+            )
+        except Exception as exc:
+            logger.warning("Document section generation failed: %s", exc)
+            introduction_text = conclusions_text = structured_abstract = ""
+
         up("Review complete!")
 
         final_result = PRISMAReviewResult(
@@ -500,9 +637,50 @@ class PRISMAReviewPipeline:
             limitations=limitations_text,
             grade_assessments=grade_assessments,
             timestamp=datetime.now().isoformat(),
+            data_charting_rubrics=data_charting_rubrics,
+            narrative_rows=narrative_rows,
+            critical_appraisals=critical_appraisals,
+            grounding_validation=grounding_validation,
+            structured_abstract=structured_abstract,
+            introduction_text=introduction_text,
+            conclusions_text=conclusions_text,
         )
+        final_result.quality_checklist = build_quality_checklist(final_result)
 
-        # ── 15. Persist result to PostgreSQL cache ──
+        # ── Assemble rich PrismaReview report ──
+        if final_result.included_articles:
+            try:
+                up("Assembling structured PrismaReview report...")
+                final_result.prisma_review = await assemble_prisma_review(
+                    final_result, self.deps, output_synthesis_style,
+                    resolved_config=_resolved_cfg,
+                )
+                pr = final_result.prisma_review
+                # Backfill plain-text fields for backward compatibility
+                final_result.synthesis_text = final_result.synthesis_text or "\n\n".join(
+                    t.description for t in pr.results.themes
+                )
+                final_result.structured_abstract = final_result.structured_abstract or (
+                    f"Background: {pr.abstract.background}\n"
+                    f"Objective: {pr.abstract.objective}\n"
+                    f"Methods: {pr.abstract.methods}\n"
+                    f"Results: {pr.abstract.results}\n"
+                    f"Conclusion: {pr.abstract.conclusion}"
+                )
+                final_result.introduction_text = final_result.introduction_text or (
+                    f"{pr.introduction.background}\n\n"
+                    f"{pr.introduction.problem_statement}\n\n"
+                    f"{pr.introduction.objectives}"
+                )
+                final_result.conclusions_text = final_result.conclusions_text or (
+                    f"{pr.conclusion.key_takeaways}\n\n{pr.conclusion.recommendations}"
+                )
+                up(f"PrismaReview assembled: {len(pr.results.themes)} themes, "
+                   f"{len(pr.results.extracted_studies or [])} studies")
+            except Exception as exc:
+                logger.warning("PrismaReview assembly failed: %s", exc)
+
+        # ── Persist result to PostgreSQL cache ──
         if pg_store:
             try:
                 await cache_store(
@@ -526,3 +704,329 @@ class PRISMAReviewPipeline:
                 pass
 
         return final_result
+
+
+# Section name → field names mapping for DataExtractionSchema assembly
+_CHARTING_SECTIONS: list[tuple[str, list[str]]] = [
+    ("Publication Information", [
+        "title", "authors", "year", "journal_conference", "doi",
+        "database_retrieved", "disorder_cohort", "primary_focus",
+    ]),
+    ("Study Design", [
+        "primary_goal", "study_design", "duration_frequency",
+        "subject_model", "task_type", "study_setting", "country_region",
+    ]),
+    ("Participants: Disordered Group", [
+        "disorder_diagnosis", "diagnosis_assessment", "n_disordered",
+        "age_mean_sd", "age_range", "gender_distribution",
+        "comorbidities_included_excluded", "medications_therapies", "severity_levels",
+    ]),
+    ("Participants: Healthy Controls", [
+        "healthy_controls_included", "healthy_status_confirmed", "n_controls",
+        "age_mean_sd_controls", "age_range_controls", "gender_distribution_controls",
+        "age_matched", "gender_matched", "neurodevelopmentally_typical",
+    ]),
+    ("Data Collection", [
+        "data_types", "tasks_performed", "equipment_tools",
+        "new_dataset_contributed", "dataset_openly_available",
+        "dataset_available_request", "sensitive_data_anonymized",
+    ]),
+    ("Features and Models", [
+        "feature_types", "specific_features", "feature_extraction_tools",
+        "feature_importance_reported", "importance_method", "top_features_identified",
+        "feature_change_direction", "model_category", "specific_algorithms",
+        "validation_methodology", "performance_metrics", "key_performance_results",
+    ]),
+    ("Synthesis", [
+        "summary_key_findings", "features_associated_disorder",
+        "future_directions_recommended", "reviewer_notes",
+    ]),
+]
+
+
+def _resolve_section_config(protocol: ReviewProtocol) -> list[tuple[str, str, str]]:
+    """Return [(section_key, display_title, format_type)] ordered by display order.
+
+    Precedence: rubric_section_config > section_output_formats > built-in defaults.
+    Custom charting_questions not covered by config are appended at the end.
+    """
+    import warnings
+
+    _valid_fmts = {"descriptive", "yes_no", "table", "bullet_list", "numeric"}
+
+    # Start with built-in sections at default order
+    entries: list[dict] = [
+        {"key": k, "title": t, "format": "descriptive", "order": i}
+        for i, (k, t) in enumerate(BUILTIN_SECTIONS)
+    ]
+
+    # Apply section_output_formats overrides (format only, title/order unchanged)
+    for fmt_title, fmt_type in protocol.section_output_formats.items():
+        matched = False
+        for entry in entries:
+            if entry["title"].lower() == fmt_title.lower() or entry["key"] == fmt_title:
+                entry["format"] = fmt_type
+                matched = True
+                break
+        if not matched:
+            warnings.warn(
+                f"section_output_formats key '{fmt_title}' does not match any built-in section; ignoring",
+                UserWarning,
+                stacklevel=2,
+            )
+
+    # Apply rubric_section_config overrides (title, order, and format)
+    builtin_keys = {e["key"] for e in entries}
+    for cfg in protocol.rubric_section_config:
+        if cfg.section_key in builtin_keys:
+            for entry in entries:
+                if entry["key"] == cfg.section_key:
+                    entry["title"] = cfg.section_name
+                    entry["order"] = cfg.order
+                    entry["format"] = cfg.output_format
+                    break
+        else:
+            entries.append({
+                "key": cfg.section_key,
+                "title": cfg.section_name,
+                "format": cfg.output_format,
+                "order": cfg.order,
+            })
+
+    # Append custom charting_questions not already covered
+    covered_titles = {e["title"].lower() for e in entries}
+    covered_keys = {e["key"] for e in entries}
+    for i, question in enumerate(protocol.charting_questions):
+        q_key = question[:20]
+        if question.lower() not in covered_titles and q_key not in covered_keys:
+            entries.append({"key": q_key, "title": question, "format": "descriptive", "order": 100 + i})
+
+    entries.sort(key=lambda e: e["order"])
+    return [(e["key"], e["title"], e["format"]) for e in entries]
+
+
+def _assemble_methods(
+    protocol: ReviewProtocol,
+    search_queries: list[str],
+    flow_counts: PRISMAFlowCounts,
+    charting_rubrics: list,
+    bias_assessment: str,
+    resolved_config: list[tuple[str, str, str]] | None = None,
+) -> Methods:
+    """Build Methods deterministically from existing pipeline data — no LLM call."""
+    prisma_flow = PrismaFlow(
+        total_identified=flow_counts.total_identified,
+        duplicates_removed=flow_counts.duplicates_removed,
+        screened=flow_counts.screened_title_abstract,
+        excluded=flow_counts.excluded_title_abstract,
+        full_text_reviewed=flow_counts.assessed_eligibility,
+        final_included=flow_counts.included_synthesis,
+    )
+
+    inclusion_list = [c.strip() for c in protocol.inclusion_criteria.split("\n") if c.strip()]
+    exclusion_list = [c.strip() for c in protocol.exclusion_criteria.split("\n") if c.strip()]
+
+    query_str = "; ".join(search_queries[:5]) if search_queries else "Not recorded"
+    search_strategy = (
+        f"Systematic searches were conducted across {', '.join(protocol.databases)}. "
+        f"Queries: {query_str}"
+    )
+
+    extraction_schemas = [
+        DataExtractionSchema(
+            section_name=section_name,
+            fields=[
+                DataExtractionField(
+                    field_name=f,
+                    description=f.replace("_", " ").title(),
+                )
+                for f in fields
+            ],
+        )
+        for section_name, fields in _CHARTING_SECTIONS
+    ]
+
+    # Build data_extraction from rubric section_outputs (US5)
+    data_extraction: list[StudyDataExtractionReport] = []
+    if resolved_config:
+        for rubric in charting_rubrics:
+            sections_ordered = {
+                title: rubric.section_outputs[title]
+                for _, title, _ in resolved_config
+                if title in rubric.section_outputs
+            }
+            if sections_ordered:
+                data_extraction.append(
+                    StudyDataExtractionReport(source_id=rubric.source_id, sections=sections_ordered)
+                )
+
+    return Methods(
+        search_strategy=search_strategy,
+        study_selection=prisma_flow,
+        inclusion_criteria=inclusion_list or [protocol.inclusion_criteria],
+        exclusion_criteria=exclusion_list or [protocol.exclusion_criteria],
+        data_extraction_schema=extraction_schemas,
+        data_extraction=data_extraction,
+        quality_assessment=bias_assessment or "Quality assessment completed.",
+    )
+
+
+def _assemble_extracted_studies(charting_rubrics: list) -> list[ExtractedStudy]:
+    """Build ExtractedStudy list from DataChartingRubric Sections A+B — no LLM call."""
+    studies = []
+    for rubric in charting_rubrics:
+        try:
+            year_val = int(rubric.year) if rubric.year and rubric.year.isdigit() else 0
+            metadata = SourceMetadata(
+                source_id=rubric.source_id,
+                title=rubric.title or "Unknown",
+                authors=rubric.authors or "Unknown",
+                year=year_val,
+                journal_or_conference=rubric.journal_conference or None,
+                doi=rubric.doi or None,
+                database_retrieved_from=rubric.database_retrieved or "unknown",
+                disorder_cohort=rubric.disorder_cohort or None,
+                primary_focus=rubric.primary_focus or None,
+            )
+            design = StudyDesign(
+                primary_study_goal=rubric.primary_goal or "Not specified",
+                study_design=rubric.study_design or "unclear",
+                longitudinal_duration=rubric.duration_frequency or None,
+                subject_model=rubric.subject_model or None,
+                task_type=rubric.task_type or None,
+                study_setting=rubric.study_setting or None,
+                country_or_region=rubric.country_region or None,
+            )
+            studies.append(ExtractedStudy(metadata=metadata, design=design))
+        except Exception as exc:
+            logger.warning("ExtractedStudy assembly failed for rubric %s: %s", getattr(rubric, "source_id", "?"), exc)
+    return studies
+
+
+async def assemble_prisma_review(
+    result: "PRISMAReviewResult",
+    deps: "AgentDeps",
+    output_style: str = "paragraph",
+    resolved_config: list[tuple[str, str, str]] | None = None,
+) -> PrismaReview:
+    """Orchestrate 5 agents and 2 deterministic helpers to build a PrismaReview."""
+    protocol = result.protocol
+
+    # Step 1: Deterministic assembly
+    methods = _assemble_methods(
+        protocol=protocol,
+        search_queries=result.search_queries,
+        flow_counts=result.flow,
+        charting_rubrics=result.data_charting_rubrics,
+        bias_assessment=result.bias_assessment,
+        resolved_config=resolved_config,
+    )
+    extracted_studies = _assemble_extracted_studies(result.data_charting_rubrics)
+
+    # Step 2: Wave 1 — parallel LLM calls (thematic synthesis, introduction, quantitative analysis)
+    wave1_results = await asyncio.gather(
+        run_thematic_synthesis(
+            deps, result.included_articles, result.evidence_spans,
+            result.data_charting_rubrics, output_style,
+        ),
+        run_introduction_section(deps, protocol),
+        run_quantitative_analysis(deps, result.included_articles),
+        return_exceptions=True,
+    )
+    synthesis_result, introduction, quant_analysis = wave1_results
+
+    if isinstance(synthesis_result, BaseException):
+        raise synthesis_result
+    if isinstance(introduction, BaseException):
+        logger.warning("Introduction section generation failed: %s", introduction)
+        introduction = Introduction(
+            background=protocol.objective,
+            problem_statement="",
+            research_gap="",
+            objectives=protocol.objective,
+        )
+    if isinstance(quant_analysis, BaseException):
+        logger.warning("Quantitative analysis failed: %s", quant_analysis)
+        quant_analysis = None
+
+    # Step 3: Wave 2 — parallel LLM calls requiring themes from Wave 1
+    wave2_results = await asyncio.gather(
+        run_abstract_section(
+            deps, protocol, synthesis_result.themes,
+            methods.study_selection, synthesis_result.bias_assessment.overall_quality,
+        ),
+        run_discussion_section(deps, protocol, synthesis_result.themes, result.limitations),
+        run_conclusion_section(deps, protocol, synthesis_result.themes),
+        return_exceptions=True,
+    )
+    abstract_result, discussion, conclusion = wave2_results
+
+    if isinstance(abstract_result, BaseException):
+        logger.warning("Abstract section generation failed: %s", abstract_result)
+        abstract_result = Abstract(
+            background="", objective=protocol.objective, methods="", results="", conclusion="",
+        )
+    if isinstance(discussion, BaseException):
+        logger.warning("Discussion section generation failed: %s", discussion)
+        discussion = Discussion(
+            summary_of_findings="",
+            interpretation="",
+            comparison_with_literature="",
+            implications=Implications(clinical="", policy="", research=""),
+            limitations=result.limitations,
+        )
+    if isinstance(conclusion, BaseException):
+        logger.warning("Conclusion section generation failed: %s", conclusion)
+        conclusion = Conclusion(key_takeaways="", recommendations="", future_research="")
+
+    # Step 4: Build references
+    references = [a.citation for a in result.included_articles]
+
+    # Step 5: Validate — T014 validation logging
+    if len(extracted_studies) != methods.study_selection.final_included:
+        logger.warning(
+            "extracted_studies count (%d) != final_included (%d)",
+            len(extracted_studies),
+            methods.study_selection.final_included,
+        )
+
+    extracted_ids = {s.metadata.source_id for s in extracted_studies}
+    for theme in synthesis_result.themes:
+        for sid in theme.supporting_studies:
+            if sid not in extracted_ids:
+                logger.warning("Orphaned supporting_study ID: %s", sid)
+
+    # Step 6: Return PrismaReview
+    return PrismaReview(
+        title=result.research_question,
+        abstract=abstract_result,
+        introduction=introduction,
+        methods=methods,
+        results=Results(
+            output_format=OutputFormat(style=output_style),
+            prisma_flow_summary=methods.study_selection,
+            extracted_studies=extracted_studies,
+            paragraph_summary=synthesis_result.paragraph_summary,
+            question_answer_summary=synthesis_result.question_answer_summary,
+            themes=synthesis_result.themes,
+            quantitative_analysis=quant_analysis,
+            bias_assessment=synthesis_result.bias_assessment,
+        ),
+        discussion=discussion,
+        conclusion=conclusion,
+        references=references,
+        optional=OptionalSection(),
+    )
+
+
+def _build_review_plan(strategy, question: str, iteration: int) -> ReviewPlan:
+    """Build a ReviewPlan from a SearchStrategy for presentation to the user."""
+    return ReviewPlan(
+        research_question=question,
+        pubmed_queries=strategy.pubmed_queries,
+        biorxiv_queries=strategy.biorxiv_queries,
+        mesh_terms=strategy.mesh_terms,
+        key_concepts=strategy.key_concepts,
+        rationale=strategy.rationale,
+        iteration=iteration,
+    )

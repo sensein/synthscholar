@@ -938,9 +938,9 @@ def _deduplicate_spans(spans: list[EvidenceSpan], threshold: float = 0.7) -> lis
 # ────────────────────── Grounding Validation Agent ────────────────────────────
 
 grounding_validation_agent = Agent(
-    "openai:gpt-4o",
+    None,  # model supplied per-call via model= kwarg; avoids requiring OPENAI_API_KEY at import time
     deps_type=AgentDeps,
-    result_type=GroundingValidationResult,
+    output_type=GroundingValidationResult,
     system_prompt="""
 You are a **Grounding Validator** for systematic review text produced in the PRISMA 2020 tradition. Your job is to determine, clause by clause, whether each assertion in AI-generated review excerpts is faithfully grounded in the provided source corpus.
 
