@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 import json
 
-from .models import PRISMAReviewResult
+from .models import PRISMAReviewResult, CompareReviewResult
 from .ontology.rdf_export import to_turtle, to_jsonld  # noqa: F401 — re-exported
 from .ontology.rdf_store import SLRStore  # noqa: F401 — re-exported
 
@@ -20,6 +20,9 @@ __all__ = [
     # Feature 006
     "to_charting_markdown", "to_charting_json",
     "to_appraisal_markdown", "to_appraisal_json",
+    # Feature 007
+    "to_compare_markdown", "to_compare_json",
+    "to_compare_charting_markdown", "to_compare_charting_json",
 ]
 
 
@@ -567,5 +570,205 @@ def to_appraisal_json(result: PRISMAReviewResult) -> str:
             "source_id": appraisal.source_id,
             "appraisal": appraisal_data,
         })
+
+
+# ────────────────── Feature 007: Compare-mode exports ──────────────────
+
+
+def to_compare_markdown(result: CompareReviewResult) -> str:
+    """Export compare-mode results as Markdown with per-model sections and merged consensus."""
+    p = result.protocol
+    lines = [
+        f"# {p.title or 'Systematic Review'} — Multi-Model Compare",
+        f"\n*Generated: {result.timestamp} | Models: {', '.join(result.compare_models)}*\n",
+        "---\n",
+    ]
+
+    # Run summary table
+    lines.append("## Run Summary\n")
+    lines.append("| Model | Status | Included | Evidence Spans |")
+    lines.append("|-------|--------|----------|----------------|")
+    for run in result.model_results:
+        status = "✓ Success" if run.succeeded else "✗ Failed"
+        included = len(run.result.included_articles or []) if run.succeeded and run.result else "—"
+        spans = len(run.result.evidence_spans or []) if run.succeeded and run.result else "—"
+        lines.append(f"| {run.model_name} | {status} | {included} | {spans} |")
+    lines.append("")
+
+    # Per-model sections
+    for run in result.model_results:
+        lines.append(f"\n---\n\n## Model: {run.model_name}\n")
+        if run.succeeded and run.result:
+            lines.append(to_markdown(run.result))
+        else:
+            lines.append(f"> ⚠ **Run Failed**: {run.error or 'unknown error'}\n")
+
+    # Merged consensus section
+    lines.append("\n---\n\n## Merged — Consensus & Divergences\n")
+    lines.append("### Consensus Synthesis\n")
+    lines.append(result.merged.consensus_synthesis or "_No consensus synthesis available._")
+    lines.append("")
+
+    if result.merged.synthesis_divergences:
+        lines.append("\n### Notable Divergences\n")
+        lines.append("| Topic | " + " | ".join(result.compare_models) + " |")
+        lines.append("|-------|" + "--------|" * len(result.compare_models))
+        for div in result.merged.synthesis_divergences:
+            row = f"| {div.topic} |"
+            for m in result.compare_models:
+                pos = div.positions.get(m, "_no data_")
+                row += f" {pos[:120]} |"
+            lines.append(row)
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def to_compare_json(result: CompareReviewResult) -> str:
+    """Export compare-mode results as JSON."""
+    return result.model_dump_json(indent=2)
+
+
+def to_compare_charting_markdown(result: CompareReviewResult) -> str:
+    """Export side-by-side charting comparison as Markdown tables."""
+    p = result.protocol
+    lines = [
+        f"# {p.title or 'Systematic Review'} — Charting Comparison",
+        f"\n*Models: {', '.join(result.compare_models)}*\n",
+    ]
+
+    succeeded = [r for r in result.model_results if r.succeeded and r.result]
+
+    if not succeeded:
+        lines.append("> No successful model runs to compare.\n")
+        return "\n".join(lines)
+
+    # Gather all source_ids from any model
+    all_source_ids: list[str] = []
+    seen_ids: set[str] = set()
+    for run in succeeded:
+        for rubric in (run.result.data_charting_rubrics if run.result else []):
+            if rubric.source_id not in seen_ids:
+                all_source_ids.append(rubric.source_id)
+                seen_ids.add(rubric.source_id)
+
+    if not all_source_ids:
+        lines.append("> No charting data available.\n")
+        return "\n".join(lines)
+
+    model_names = [r.model_name for r in succeeded]
+
+    for source_id in all_source_ids:
+        lines.append(f"\n## Study: {source_id}\n")
+
+        # Gather sections present in any model for this study
+        section_keys: list[str] = []
+        seen_secs: set[str] = set()
+        for run in succeeded:
+            rubric = next(
+                (r for r in (run.result.data_charting_rubrics if run.result else []) if r.source_id == source_id),
+                None,
+            )
+            if rubric:
+                for sk in rubric.field_answers.keys():
+                    if sk not in seen_secs:
+                        section_keys.append(sk)
+                        seen_secs.add(sk)
+
+        for section_key in section_keys:
+            lines.append(f"### Section: {section_key}\n")
+            header = "| Field | " + " | ".join(model_names) + " | Agreement |"
+            sep = "|-------|" + "--------|" * len(model_names) + "-----------|"
+            lines.append(header)
+            lines.append(sep)
+
+            # Gather all field names in this section across models
+            field_names: list[str] = []
+            seen_fields: set[str] = set()
+            for run in succeeded:
+                rubric = next(
+                    (r for r in (run.result.data_charting_rubrics if run.result else []) if r.source_id == source_id),
+                    None,
+                )
+                if rubric and section_key in rubric.field_answers:
+                    sec_res = rubric.field_answers[section_key]
+                    if hasattr(sec_res, "field_answers"):
+                        for fa in sec_res.field_answers:
+                            if fa.field_name not in seen_fields:
+                                field_names.append(fa.field_name)
+                                seen_fields.add(fa.field_name)
+
+            for field_name in field_names:
+                key = f"{source_id}::{section_key}::{field_name}"
+                fa_entry = result.merged.field_agreement.get(key)
+
+                row_values: list[str] = []
+                for run in succeeded:
+                    rubric = next(
+                        (r for r in (run.result.data_charting_rubrics if run.result else []) if r.source_id == source_id),
+                        None,
+                    )
+                    val = "_—_"
+                    if rubric and section_key in rubric.field_answers:
+                        sec_res = rubric.field_answers[section_key]
+                        if hasattr(sec_res, "field_answers"):
+                            for fa in sec_res.field_answers:
+                                if fa.field_name == field_name:
+                                    val = (fa.value or "").replace("|", "\\|")[:80]
+                                    break
+                    row_values.append(val)
+
+                if fa_entry is not None:
+                    agreement_cell = "✓ Agree" if fa_entry.agreed else "⚠ Differ"
+                else:
+                    agreement_cell = "—"
+
+                row = f"| {field_name} | " + " | ".join(row_values) + f" | {agreement_cell} |"
+                lines.append(row)
+
+            lines.append("")
+
+    return "\n".join(lines)
+
+
+def to_compare_charting_json(result: CompareReviewResult) -> str:
+    """Export charting comparison as JSON with per-field agreement indicators."""
+    succeeded = [r for r in result.model_results if r.succeeded and r.result]
+
+    studies: list[dict] = []
+
+    all_source_ids: list[str] = []
+    seen_ids: set[str] = set()
+    # Collect source_ids from rubrics
+    for run in succeeded:
+        for rubric in (run.result.data_charting_rubrics if run.result else []):
+            if rubric.source_id not in seen_ids:
+                all_source_ids.append(rubric.source_id)
+                seen_ids.add(rubric.source_id)
+    # Also collect source_ids from field_agreement keys (covers cases with no rubrics)
+    for key in result.merged.field_agreement:
+        sid = key.split("::")[0]
+        if sid not in seen_ids:
+            all_source_ids.append(sid)
+            seen_ids.add(sid)
+
+    for source_id in all_source_ids:
+        fields_data: list[dict] = []
+
+        key_prefix = f"{source_id}::"
+        for key, fa in result.merged.field_agreement.items():
+            if not key.startswith(key_prefix):
+                continue
+            _, section_key, field_name = key.split("::", 2)
+            fields_data.append({
+                "section_key": section_key,
+                "field_name": field_name,
+                "values": fa.values,
+                "agreed": fa.agreed,
+            })
+
+        studies.append({"source_id": source_id, "fields": fields_data})
+
+    return json.dumps({"compare_models": result.compare_models, "studies": studies}, indent=2)
 
     return json.dumps({"studies": studies, "summary": summary}, indent=2, ensure_ascii=False)

@@ -12,6 +12,7 @@ prisma-review-agent/
 ├── evidence.py         # Evidence extraction + source grounding validation gate
 ├── validation.py       # Source grounding validator — rapidfuzz fuzzy matching
 ├── pipeline.py         # Async orchestrator — 16-step PRISMA pipeline with cache
+├── compare.py          # Multi-model compare mode — parallel runs + consensus synthesis
 ├── export.py           # Export: Markdown, JSON, BibTeX, CSV formats
 ├── main.py             # Standalone CLI with argparse + interactive mode
 └── prisma_review_agent/
@@ -277,6 +278,97 @@ asyncio.run(main())
 # No confirmation prompts; runs end-to-end
 result = await pipeline.run(auto_confirm=True)
 ```
+
+### Multi-Model Compare Mode
+
+Run the same protocol through two or more LLMs in parallel. Article acquisition (PubMed/bioRxiv search, deduplication) runs once; all LLM-dependent steps (screening, synthesis, charting, appraisal) run independently per model. Results are merged into a single `CompareReviewResult` with per-field agreement indicators and an LLM-generated consensus synthesis.
+
+#### CLI — compare mode
+
+```bash
+# Two-model compare; writes {slug}_compare.md, {slug}_compare.json, and per-model .md files
+prisma-review \
+  --title "CRISPR gene therapy efficacy" \
+  --inclusion "Clinical trials, human subjects" \
+  --exclusion "Animal-only studies" \
+  --compare-models anthropic/claude-sonnet-4 openai/gpt-4o \
+  --auto
+```
+
+Requires at least 2 models; up to 5 supported per run.
+
+#### Python API — compare mode
+
+```python
+import asyncio
+from pathlib import Path
+from prisma_review_agent import (
+    PRISMAReviewPipeline, ReviewProtocol,
+    to_compare_markdown, to_compare_json,
+    to_compare_charting_markdown, to_compare_charting_json,
+)
+
+protocol = ReviewProtocol(
+    title="CRISPR gene therapy efficacy",
+    inclusion_criteria="Clinical trials, human subjects, English",
+    exclusion_criteria="Animal-only studies, reviews",
+)
+
+async def run():
+    pipeline = PRISMAReviewPipeline(
+        api_key="sk-or-v1-...",
+        model_name="anthropic/claude-sonnet-4",  # used for search strategy; per-model LLM steps use their own model
+        protocol=protocol,
+    )
+
+    compare_result = await pipeline.run_compare(
+        models=["anthropic/claude-sonnet-4", "openai/gpt-4o"],
+        auto_confirm=True,           # skip plan confirmation prompt
+        consensus_model="anthropic/claude-sonnet-4",  # model for consensus synthesis (default: first in list)
+        assemble_timeout=3600.0,     # per-model assembly timeout in seconds
+    )
+
+    # Per-model and merged exports
+    Path("compare.md").write_text(to_compare_markdown(compare_result))
+    Path("compare.json").write_text(to_compare_json(compare_result))
+    Path("charting_compare.md").write_text(to_compare_charting_markdown(compare_result))
+
+    # Access structured results
+    for run in compare_result.model_results:
+        if run.succeeded:
+            print(f"{run.model_name}: {len(run.result.included_articles or [])} included")
+        else:
+            print(f"{run.model_name}: FAILED — {run.error}")
+
+    print("\nConsensus:")
+    print(compare_result.merged.consensus_synthesis[:300])
+
+    print(f"\nDivergences: {len(compare_result.merged.synthesis_divergences)}")
+    for div in compare_result.merged.synthesis_divergences:
+        print(f"  [{div.topic}]")
+        for model, pos in div.positions.items():
+            print(f"    {model}: {pos[:80]}")
+
+    # Field-level agreement
+    agreed = sum(1 for fa in compare_result.merged.field_agreement.values() if fa.agreed)
+    total = len(compare_result.merged.field_agreement)
+    print(f"\nField agreement: {agreed}/{total} fields agreed")
+
+asyncio.run(run())
+```
+
+#### `CompareReviewResult` structure
+
+| Attribute | Type | Description |
+|---|---|---|
+| `compare_models` | `list[str]` | Ordered list of model names used |
+| `model_results` | `list[ModelReviewRun]` | One entry per model; `.succeeded` / `.result` / `.error` |
+| `merged.consensus_synthesis` | `str` | LLM-generated prose summarising agreed findings |
+| `merged.synthesis_divergences` | `list[SynthesisDivergence]` | Per-topic disagreements with per-model positions |
+| `merged.field_agreement` | `dict[str, FieldAgreement]` | Key: `"{source_id}::{section_key}::{field_name}"` |
+| `protocol` | `ReviewProtocol` | Shared protocol used for all model runs |
+
+Partial failures are handled gracefully: if one model fails, its `ModelReviewRun` has `error` set and `result=None`; the remaining models' results and the consensus synthesis (if ≥2 succeeded) are still returned.
 
 ### Structured Report Output (`result.prisma_review`)
 
@@ -752,6 +844,82 @@ async def stream_progress(session_id: str):
 
 > **Note**: The in-memory `_sessions` dict works for single-process development. In production, use Redis pub/sub (for SSE fan-out) and store session state in a persistent store. The `asyncio.get_event_loop().run_until_complete(event.wait())` call in `confirm_callback` works in a single-threaded asyncio loop; if the pipeline runs in a thread pool, use `loop.call_soon_threadsafe(event.set)` instead.
 
+#### Pattern 3 — Configurable assembly timeout
+
+`pipeline.run()` accepts an `assemble_timeout` parameter (default `3600.0` seconds) that wraps the two-wave LLM gather with `asyncio.wait_for`. Expose it in your API so callers can set shorter timeouts for testing or longer ones for very large reviews:
+
+```python
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel as PydanticBase
+from prisma_review_agent.pipeline import PRISMAReviewPipeline
+from prisma_review_agent.models import ReviewProtocol
+import asyncio, uuid
+
+app = FastAPI()
+_sessions: dict[str, dict] = {}
+
+
+class ReviewRequest(PydanticBase):
+    title: str
+    inclusion: str = ""
+    exclusion: str = ""
+    assemble_timeout: float = 3600.0   # client-supplied; guard against absurd values server-side
+
+
+@app.post("/review/start")
+async def start_review(req: ReviewRequest):
+    # Hard cap: never allow a timeout > 2 hours from an external caller
+    timeout = min(req.assemble_timeout, 7200.0)
+
+    session_id = str(uuid.uuid4())
+    session: dict = {"status": "running", "result": None, "progress": []}
+    _sessions[session_id] = session
+
+    protocol = ReviewProtocol(
+        title=req.title,
+        inclusion_criteria=req.inclusion,
+        exclusion_criteria=req.exclusion,
+    )
+    pipeline = PRISMAReviewPipeline(
+        api_key="sk-or-v1-...",
+        model_name="anthropic/claude-sonnet-4",
+        protocol=protocol,
+    )
+
+    asyncio.create_task(_run_with_timeout(pipeline, session, timeout))
+    return {"session_id": session_id}
+
+
+async def _run_with_timeout(pipeline, session: dict, timeout: float):
+    try:
+        result = await pipeline.run(
+            auto_confirm=True,
+            assemble_timeout=timeout,
+        )
+        session["result"] = result.model_dump(mode="json")
+        session["status"] = "complete"
+    except asyncio.TimeoutError:
+        session["status"] = "timeout"
+        session["error"] = f"Assembly exceeded {timeout:.0f}s limit"
+    except Exception as e:
+        session["status"] = f"error: {e}"
+
+
+@app.get("/review/{session_id}/status")
+async def get_status(session_id: str):
+    session = _sessions.get(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    if session["status"] == "timeout":
+        raise HTTPException(504, session.get("error", "Assembly timed out"))
+    return {"status": session["status"], "result": session.get("result")}
+```
+
+**Key points:**
+- Cap the caller-supplied timeout server-side (`min(req.assemble_timeout, 7200.0)`) to prevent runaway tasks.
+- `asyncio.TimeoutError` is raised inside the background task — catching it there and writing `"timeout"` to the session lets `/status` return a 504.
+- The default `3600.0` s is appropriate for production reviews with 10–50 included studies. Use `30.0`–`120.0` s for smoke-test environments.
+
 #### Suggested UI for the Plan Confirmation Phase
 
 Inspired by research review tools (see design reference in the project), the plan confirmation screen should feel like a structured "contract" the user approves before the pipeline does any expensive work. Suggested layout (following the KSynth-style design):
@@ -884,6 +1052,10 @@ prisma-review --title "..." --export enhanced_md charting_csv narrative_csv appr
 
 # Individual formats
 prisma-review --title "..." --export charting narrative appraisal json
+
+# Compare-mode exports (after running with --compare-models)
+prisma-review --title "..." --compare-models anthropic/claude-sonnet-4 openai/gpt-4o \
+  --auto --export md json
 
 # RDF / Linked Data formats
 prisma-review --title "..." --export ttl           # Turtle RDF

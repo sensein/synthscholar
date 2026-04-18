@@ -102,15 +102,17 @@ async def cache_lookup(
     model_name: str,
     threshold: float = 0.95,
     ttl_days: int = 30,
+    owner_review_id: str = "",
 ) -> CacheLookupResult:
     """Direct cache lookup without LLM dispatch overhead."""
     config = SimilarityConfig(threshold=threshold, ttl_days=ttl_days)
     fingerprint = compute_fingerprint(criteria_json, model_name)
-    entry = await store.lookup_exact(fingerprint)
+    entry = await store.lookup_exact(fingerprint, owner_review_id=owner_review_id)
     if entry is not None:
         return CacheLookupResult(hit=True, entry=entry, similarity_score=1.0,
                                  matched_fingerprint=fingerprint)
-    return await store.lookup_similar(criteria_json, model_name, config)
+    return await store.lookup_similar(criteria_json, model_name, config,
+                                      owner_review_id=owner_review_id)
 
 
 async def cache_store(
@@ -120,6 +122,8 @@ async def cache_store(
     result_json: dict[str, Any],
     threshold: float = 0.95,
     ttl_days: int = 30,
+    review_id: str = "",
+    is_shared: bool = True,
 ) -> bool:
     """Direct cache store without LLM dispatch overhead."""
     config = SimilarityConfig(threshold=threshold, ttl_days=ttl_days)
@@ -130,4 +134,6 @@ async def cache_store(
         result_json=result_json,
         config=config,
         fingerprint=fingerprint,
+        review_id=review_id,
+        is_shared=is_shared,
     )
