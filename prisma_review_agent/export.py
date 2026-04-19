@@ -759,6 +759,15 @@ def to_compare_charting_markdown(result: CompareReviewResult) -> str:
 
     model_names = [r.model_name for r in succeeded]
 
+    def _get_extraction_report(run_result, sid: str):
+        """Return StudyDataExtractionReport for source_id from prisma_review.methods."""
+        if not run_result:
+            return None
+        pr = run_result.prisma_review
+        if not pr or not pr.methods:
+            return None
+        return next((r for r in pr.methods.data_extraction if r.source_id == sid), None)
+
     for source_id in all_source_ids:
         lines.append(f"\n## Study: {source_id}\n")
 
@@ -766,12 +775,9 @@ def to_compare_charting_markdown(result: CompareReviewResult) -> str:
         section_keys: list[str] = []
         seen_secs: set[str] = set()
         for run in succeeded:
-            rubric = next(
-                (r for r in (run.result.data_charting_rubrics if run.result else []) if r.source_id == source_id),
-                None,
-            )
-            if rubric:
-                for sk in rubric.field_answers.keys():
+            report = _get_extraction_report(run.result, source_id)
+            if report:
+                for sk in report.field_answers.keys():
                     if sk not in seen_secs:
                         section_keys.append(sk)
                         seen_secs.add(sk)
@@ -787,12 +793,9 @@ def to_compare_charting_markdown(result: CompareReviewResult) -> str:
             field_names: list[str] = []
             seen_fields: set[str] = set()
             for run in succeeded:
-                rubric = next(
-                    (r for r in (run.result.data_charting_rubrics if run.result else []) if r.source_id == source_id),
-                    None,
-                )
-                if rubric and section_key in rubric.field_answers:
-                    sec_res = rubric.field_answers[section_key]
+                report = _get_extraction_report(run.result, source_id)
+                if report and section_key in report.field_answers:
+                    sec_res = report.field_answers[section_key]
                     if hasattr(sec_res, "field_answers"):
                         for fa in sec_res.field_answers:
                             if fa.field_name not in seen_fields:
@@ -805,13 +808,10 @@ def to_compare_charting_markdown(result: CompareReviewResult) -> str:
 
                 row_values: list[str] = []
                 for run in succeeded:
-                    rubric = next(
-                        (r for r in (run.result.data_charting_rubrics if run.result else []) if r.source_id == source_id),
-                        None,
-                    )
+                    report = _get_extraction_report(run.result, source_id)
                     val = "_—_"
-                    if rubric and section_key in rubric.field_answers:
-                        sec_res = rubric.field_answers[section_key]
+                    if report and section_key in report.field_answers:
+                        sec_res = report.field_answers[section_key]
                         if hasattr(sec_res, "field_answers"):
                             for fa in sec_res.field_answers:
                                 if fa.field_name == field_name:

@@ -96,9 +96,15 @@ def _compute_field_agreement(
         result = run.result
         if not result:
             continue
-        for rubric in result.data_charting_rubrics:
-            source_id = rubric.source_id
-            for section_key, section_result in rubric.field_answers.items():
+        # field_answers lives on StudyDataExtractionReport, not DataChartingRubric
+        extraction_reports = (
+            result.prisma_review.methods.data_extraction
+            if result.prisma_review and result.prisma_review.methods
+            else []
+        )
+        for report in extraction_reports:
+            source_id = report.source_id
+            for section_key, section_result in report.field_answers.items():
                 if hasattr(section_result, "field_answers"):
                     for fa in section_result.field_answers:
                         if fa.value is None:
