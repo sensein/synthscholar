@@ -56,9 +56,8 @@ def to_markdown(result: PRISMAReviewResult) -> str:
     included = result.included_articles
     pr = result.prisma_review  # may be None
 
-    def _cell(text: str, limit: int = 120) -> str:
-        t = (text or "").replace("|", "\\|").replace("\n", " ")
-        return t[:limit] + "..." if len(t) > limit else t
+    def _cell(text: str) -> str:
+        return (text or "").replace("|", "\\|").replace("\n", "<br>")
 
     cache_banner = ""
     if result.cache_hit:
@@ -173,7 +172,8 @@ def to_markdown(result: PRISMAReviewResult) -> str:
     for a in included:
         design = a.extracted_data.study_design if a.extracted_data else "NR"
         rob = a.risk_of_bias.overall.value if a.risk_of_bias else "NR"
-        lines.append(f"| {a.short_author} | {a.year} | {a.journal[:30]} | {design} | {rob} |")
+        journal = (a.journal or "").replace("|", "\\|").replace("\n", "<br>")
+        lines.append(f"| {a.short_author} | {a.year} | {journal} | {design} | {rob} |")
     lines.append("")
 
     if result.narrative_rows:
@@ -325,9 +325,8 @@ def to_narrative_summary_markdown(result: PRISMAReviewResult) -> str:
     if not result.narrative_rows:
         return "# Narrative Summary Table\n\n*No narrative summary rows available.*\n"
 
-    def _cell(text: str, limit: int = 120) -> str:
-        t = (text or "").replace("|", "\\|").replace("\n", " ")
-        return t[:limit] + "..." if len(t) > limit else t
+    def _cell(text: str) -> str:
+        return (text or "").replace("|", "\\|").replace("\n", "<br>")
 
     n = len(result.narrative_rows)
     lines = [
@@ -718,7 +717,8 @@ def to_compare_markdown(result: CompareReviewResult) -> str:
             row = f"| {div.topic} |"
             for m in result.compare_models:
                 pos = div.positions.get(m, "_no data_")
-                row += f" {pos[:120]} |"
+                pos = pos.replace("|", "\\|").replace("\n", "<br>")
+                row += f" {pos} |"
             lines.append(row)
         lines.append("")
 
@@ -815,7 +815,7 @@ def to_compare_charting_markdown(result: CompareReviewResult) -> str:
                         if hasattr(sec_res, "field_answers"):
                             for fa in sec_res.field_answers:
                                 if fa.field_name == field_name:
-                                    val = (fa.value or "").replace("|", "\\|")[:80]
+                                    val = (fa.value or "").replace("|", "\\|").replace("\n", "<br>")
                                     break
                     row_values.append(val)
 
