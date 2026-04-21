@@ -8,8 +8,11 @@ the OpenAIChatModel + OpenRouterProvider.
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
+
+logger = logging.getLogger(__name__)
 
 from pydantic import BaseModel
 from pydantic_ai import Agent, RunContext
@@ -611,55 +614,74 @@ async def run_evidence_extraction(
     articles: list[Article],
     deps: AgentDeps,
     batch_size: int = 5,
+    concurrency: int = 5,
 ) -> list[EvidenceSpan]:
     """Extract evidence spans from articles using LLM agent.
 
-    Processes articles in batches and converts the structured output
+    Processes articles in parallel batches and converts the structured output
     into a flat list of EvidenceSpan objects.
     """
-    all_spans: list[EvidenceSpan] = []
+    import asyncio as _asyncio
+
     model = deps.model or build_model(deps.api_key, deps.model_name)
+    batches = [articles[i:i + batch_size] for i in range(0, len(articles), batch_size)]
+    n_batches = len(batches)
+    batch_spans: list[list[EvidenceSpan]] = [[] for _ in batches]
+    sem = _asyncio.Semaphore(concurrency)
+    _ev_done = [0]
 
-    for batch_start in range(0, len(articles), batch_size):
-        batch = articles[batch_start:batch_start + batch_size]
-        articles_text = "\n\n".join(
-            f"=== Article {i} (PMID:{a.pmid}) ===\n"
-            f"Title: {a.title}\n"
-            f"Authors: {a.authors} ({a.year})\n"
-            f"Abstract: {(a.abstract or 'N/A')[:1000]}\n"
-            f"Full text excerpt: {(a.full_text or 'N/A')[:2000]}"
-            for i, a in enumerate(batch)
-        )
-
-        try:
-            result = await evidence_extraction_agent.run(
-                f"Extract evidence from these {len(batch)} articles:\n\n{articles_text}",
-                deps=deps,
-                model=model,
+    async def _run_batch(bidx: int, batch: list[Article]) -> None:
+        async with sem:
+            articles_text = "\n\n".join(
+                f"=== Article {i} (PMID:{a.pmid}) ===\n"
+                f"Title: {a.title}\n"
+                f"Authors: {a.authors} ({a.year})\n"
+                f"Abstract: {(a.abstract or 'N/A')[:1000]}\n"
+                f"Full text excerpt: {(a.full_text or 'N/A')[:2000]}"
+                for i, a in enumerate(batch)
             )
-            extraction = result.output
-
-            for art_ev in extraction.articles:
-                # Find the matching article for metadata
-                art = next(
-                    (a for a in batch if a.pmid == art_ev.pmid),
-                    None,
+            pmids = ", ".join(a.pmid for a in batch)
+            _rem_start = n_batches - _ev_done[0]
+            logger.info(
+                "evidence_batch_start batch=%d/%d articles=[%s] remaining_batches=%d",
+                bidx + 1, n_batches, pmids, _rem_start,
+            )
+            try:
+                result = await evidence_extraction_agent.run(
+                    f"Extract evidence from these {len(batch)} articles:\n\n{articles_text}",
+                    deps=deps,
+                    model=model,
                 )
-                for ev in art_ev.evidence:
-                    all_spans.append(EvidenceSpan(
-                        text=ev.quote,
-                        paper_pmid=art_ev.pmid,
-                        paper_title=art.title if art else "",
-                        section=ev.section,
-                        relevance_score=ev.relevance,
-                        claim=ev.claim,
-                        doi=art.doi if art else "",
-                    ))
-        except Exception:
-            # Fallback: skip this batch
-            continue
+                extraction = result.output
+                spans: list[EvidenceSpan] = []
+                for art_ev in extraction.articles:
+                    art = next((a for a in batch if a.pmid == art_ev.pmid), None)
+                    for ev in art_ev.evidence:
+                        spans.append(EvidenceSpan(
+                            text=ev.quote,
+                            paper_pmid=art_ev.pmid,
+                            paper_title=art.title if art else "",
+                            section=ev.section,
+                            relevance_score=ev.relevance,
+                            claim=ev.claim,
+                            doi=art.doi if art else "",
+                        ))
+                batch_spans[bidx] = spans
+            except Exception:
+                pass
+            finally:
+                _ev_done[0] += 1
+                _rem = n_batches - _ev_done[0]
+                logger.info(
+                    "evidence_batch_done batch=%d/%d spans_so_far=%d remaining_batches=%d",
+                    bidx + 1, n_batches,
+                    sum(len(s) for s in batch_spans),
+                    _rem,
+                )
 
-    # Sort by relevance and deduplicate
+    await _asyncio.gather(*[_run_batch(i, b) for i, b in enumerate(batches)])
+
+    all_spans = [span for spans in batch_spans for span in spans]
     all_spans.sort(key=lambda x: x.relevance_score, reverse=True)
     return _deduplicate_spans(all_spans)
 

@@ -78,6 +78,7 @@ def build_protocol_from_args(args: argparse.Namespace) -> ReviewProtocol:
         max_hops=args.hops,
         registration_number=args.registration or "",
         rob_tool=RoBTool(args.rob_tool),
+        article_concurrency=args.concurrency,
     )
 
 
@@ -214,6 +215,7 @@ async def run_review(args: argparse.Namespace):
     print(f"  Max results/query: {args.max_results}")
     print(f"  Citation hops: {protocol.max_hops}")
     print(f"  RoB tool: {protocol.rob_tool.value}")
+    print(f"  Concurrency: {protocol.article_concurrency} parallel LLM calls")
     print("=" * 60 + "\n")
 
     pipeline = PRISMAReviewPipeline(
@@ -388,6 +390,8 @@ Examples:
                         help="Disable SQLite cache")
     parser.add_argument("--extract-data", action="store_true",
                         help="Enable per-study data extraction")
+    parser.add_argument("--concurrency", type=int, default=5, metavar="N",
+                        help="Max concurrent LLM calls for per-article steps (screening, extraction, RoB, charting, appraisal, narrative). Default: 5. Max: 20.")
 
     # Output
     parser.add_argument("--export", "-e", nargs="+", default=["md"],

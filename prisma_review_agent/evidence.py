@@ -27,6 +27,7 @@ async def extract_evidence(
     deps: AgentDeps,
     max_spans: int = 30,
     grounding_threshold: float = DEFAULT_THRESHOLD,
+    concurrency: int = 5,
 ) -> list[EvidenceSpan]:
     """Extract and source-ground evidence spans from articles.
 
@@ -44,7 +45,7 @@ async def extract_evidence(
         List of source-grounded EvidenceSpan objects sorted by relevance.
         Each span has ``grounded=True`` and a non-zero ``grounding_score``.
     """
-    raw_spans = await run_evidence_extraction(articles, deps)
+    raw_spans = await run_evidence_extraction(articles, deps, concurrency=concurrency)
 
     verified, report = filter_grounded(raw_spans, articles, threshold=grounding_threshold)
 

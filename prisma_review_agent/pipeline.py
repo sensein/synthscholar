@@ -194,6 +194,133 @@ async def _load_or_run_batch(
         raise
 
 
+async def _parallel_ta_screening(
+    articles: list[Article],
+    deps: "AgentDeps",
+    concurrency: int,
+    up: "Callable[[str], None]",
+) -> tuple[list[Article], list[Article], list[ScreeningLogEntry]]:
+    """Run title/abstract screening on *articles* with *concurrency* parallel batches.
+
+    Returns (included, excluded, screening_log).
+    """
+    batches = [articles[i:i + 15] for i in range(0, len(articles), 15)]
+    sem = asyncio.Semaphore(concurrency)
+    results: list[tuple[list[Article], list[ScreeningLogEntry], list[Article]]] = [None] * len(batches)  # type: ignore[list-item]
+
+    async def _run(bidx: int, batch: list[Article]) -> None:
+        async with sem:
+            b_inc: list[Article] = []
+            b_exc: list[Article] = []
+            b_log: list[ScreeningLogEntry] = []
+            try:
+                batch_result = await run_screening(batch, deps, "title_abstract")
+                for dec in batch_result.decisions:
+                    if 0 <= dec.index < len(batch):
+                        art = batch[dec.index]
+                        art.quality_score = dec.relevance_score
+                        b_log.append(ScreeningLogEntry(
+                            pmid=art.pmid, title=art.title,
+                            decision=dec.decision, reason=dec.reason,
+                            stage=ScreeningStage.TITLE_ABSTRACT,
+                        ))
+                        if dec.decision == ScreeningDecisionType.INCLUDE:
+                            art.inclusion_status = InclusionStatus.INCLUDED
+                            b_inc.append(art)
+                        else:
+                            art.inclusion_status = InclusionStatus.EXCLUDED
+                            art.exclusion_reason = dec.reason
+                            b_exc.append(art)
+                covered = {e.pmid for e in b_log}
+                for art in batch:
+                    if art.pmid not in covered:
+                        b_inc.append(art)
+                        b_log.append(ScreeningLogEntry(
+                            pmid=art.pmid, title=art.title,
+                            decision=ScreeningDecisionType.INCLUDE,
+                            reason="Not evaluated — auto-included",
+                            stage=ScreeningStage.TITLE_ABSTRACT,
+                        ))
+            except Exception as e:
+                up(f"  Screening batch {bidx} failed ({e}), auto-including {len(batch)}")
+                for art in batch:
+                    b_inc.append(art)
+                    b_log.append(ScreeningLogEntry(
+                        pmid=art.pmid, title=art.title,
+                        decision=ScreeningDecisionType.INCLUDE,
+                        reason=f"Auto-included (error: {str(e)[:50]})",
+                        stage=ScreeningStage.TITLE_ABSTRACT,
+                    ))
+            results[bidx] = (b_inc, b_log, b_exc)
+
+    await asyncio.gather(*[_run(i, b) for i, b in enumerate(batches)])
+
+    included: list[Article] = []
+    excluded: list[Article] = []
+    log: list[ScreeningLogEntry] = []
+    for b_inc, b_log, b_exc in results:
+        if b_inc is None:
+            continue
+        included.extend(b_inc)
+        excluded.extend(b_exc)
+        log.extend(b_log)
+    return included, excluded, log
+
+
+async def _parallel_ft_screening(
+    articles: list[Article],
+    deps: "AgentDeps",
+    concurrency: int,
+    up: "Callable[[str], None]",
+) -> tuple[list[Article], list[Article], list[ScreeningLogEntry]]:
+    """Run full-text eligibility screening on *articles* with *concurrency* parallel batches.
+
+    Returns (included, excluded, screening_log).
+    """
+    batches = [articles[i:i + 10] for i in range(0, len(articles), 10)]
+    sem = asyncio.Semaphore(concurrency)
+    results: list[tuple[list[Article], list[ScreeningLogEntry], list[Article]]] = [None] * len(batches)  # type: ignore[list-item]
+
+    async def _run(bidx: int, batch: list[Article]) -> None:
+        async with sem:
+            b_inc: list[Article] = []
+            b_exc: list[Article] = []
+            b_log: list[ScreeningLogEntry] = []
+            try:
+                batch_result = await run_screening(batch, deps, "full_text")
+                for dec in batch_result.decisions:
+                    if 0 <= dec.index < len(batch):
+                        art = batch[dec.index]
+                        b_log.append(ScreeningLogEntry(
+                            pmid=art.pmid, title=art.title,
+                            decision=dec.decision, reason=dec.reason,
+                            stage=ScreeningStage.FULL_TEXT,
+                        ))
+                        if dec.decision == ScreeningDecisionType.INCLUDE:
+                            b_inc.append(art)
+                        else:
+                            art.inclusion_status = InclusionStatus.EXCLUDED
+                            art.exclusion_reason = dec.reason
+                            b_exc.append(art)
+            except Exception as e:
+                up(f"  FT screening batch {bidx} failed ({e}), auto-including")
+                b_inc.extend(batch)
+            results[bidx] = (b_inc, b_log, b_exc)
+
+    await asyncio.gather(*[_run(i, b) for i, b in enumerate(batches)])
+
+    included: list[Article] = []
+    excluded: list[Article] = []
+    log: list[ScreeningLogEntry] = []
+    for b_inc, b_log, b_exc in results:
+        if b_inc is None:
+            continue
+        included.extend(b_inc)
+        excluded.extend(b_exc)
+        log.extend(b_log)
+    return included, excluded, log
+
+
 @dataclass
 class AcquisitionResult:
     """Output of the shared article-acquisition phase (Steps 1–6)."""
@@ -517,71 +644,12 @@ class PRISMAReviewPipeline:
             ta_excluded: list[Article] = []  # not persisted in checkpoint
             up("Loaded T/A screening from checkpoint (step 7)")
         else:
-            # Resume from intermediate checkpoint if available (server restart mid-screening)
-            batch_resume = _ckpt.get("ta_screening_batch_offset", 0)
-            ta_excluded: list[Article] = []
-            if batch_resume > 0:
-                ta_included = [Article(**a) for a in _ckpt.get("ta_included_partial", [])]
-                all_screening = [ScreeningLogEntry(**e) for e in _ckpt.get("screening_log_partial", [])]
-                up(f"Resuming T/A screening from article {batch_resume} / {len(deduped)}")
-            else:
-                up(f"Screening {len(deduped)} articles (title/abstract)...")
-                flow.screened_title_abstract = len(deduped)
-
-            for batch_start in range(batch_resume, len(deduped), 15):
-                batch = deduped[batch_start:batch_start + 15]
-                try:
-                    batch_result = await run_screening(batch, self.deps, "title_abstract")
-                    for dec in batch_result.decisions:
-                        if 0 <= dec.index < len(batch):
-                            art = batch[dec.index]
-                            art.quality_score = dec.relevance_score
-                            all_screening.append(ScreeningLogEntry(
-                                pmid=art.pmid, title=art.title,
-                                decision=dec.decision,
-                                reason=dec.reason,
-                                stage=ScreeningStage.TITLE_ABSTRACT,
-                            ))
-                            if dec.decision == ScreeningDecisionType.INCLUDE:
-                                art.inclusion_status = InclusionStatus.INCLUDED
-                                ta_included.append(art)
-                            else:
-                                art.inclusion_status = InclusionStatus.EXCLUDED
-                                art.exclusion_reason = dec.reason
-                                ta_excluded.append(art)
-                    # Auto-include any missed articles
-                    covered = {s.pmid for s in all_screening if s.stage == ScreeningStage.TITLE_ABSTRACT}
-                    for art in batch:
-                        if art.pmid not in covered:
-                            ta_included.append(art)
-                            all_screening.append(ScreeningLogEntry(
-                                pmid=art.pmid, title=art.title,
-                                decision=ScreeningDecisionType.INCLUDE,
-                                reason="Not evaluated — auto-included",
-                                stage=ScreeningStage.TITLE_ABSTRACT,
-                            ))
-                except Exception as e:
-                    up(f"  Screening batch failed ({e}), auto-including {len(batch)}")
-                    for art in batch:
-                        ta_included.append(art)
-                        all_screening.append(ScreeningLogEntry(
-                            pmid=art.pmid, title=art.title,
-                            decision=ScreeningDecisionType.INCLUDE,
-                            reason=f"Auto-included (error: {str(e)[:50]})",
-                            stage=ScreeningStage.TITLE_ABSTRACT,
-                        ))
-
-                # Save intermediate checkpoint every 25 batches (~375 articles)
-                current_batch_num = (batch_start // 15) + 1
-                if current_batch_num % 25 == 0:
-                    next_offset = batch_start + 15
-                    await _save_ckpt_partial({
-                        "ta_screening_batch_offset": next_offset,
-                        "ta_included_partial": [a.model_dump() for a in ta_included],
-                        "screening_log_partial": [e.model_dump() for e in all_screening],
-                    })
-                    up(f"  Saved T/A screening progress ({current_batch_num} batches done)")
-
+            up(f"Screening {len(deduped)} articles (title/abstract, concurrency={proto.article_concurrency})...")
+            flow.screened_title_abstract = len(deduped)
+            ta_included, ta_excluded, _ta_log = await _parallel_ta_screening(
+                deduped, self.deps, proto.article_concurrency, up,
+            )
+            all_screening.extend(_ta_log)
             flow.excluded_title_abstract = len(ta_excluded)
             up(f"Screening: {len(ta_included)} included, {len(ta_excluded)} excluded")
             # Final step-7 checkpoint: ta_screening_batch_offset intentionally absent
@@ -654,29 +722,13 @@ class PRISMAReviewPipeline:
             ft_excluded: list[Article] = []
 
             if ft_articles:
-                up(f"Full-text eligibility screening ({len(ft_articles)} articles)...")
-                for batch_start in range(0, len(ft_articles), 10):
-                    batch = ft_articles[batch_start:batch_start + 10]
-                    try:
-                        batch_result = await run_screening(batch, self.deps, "full_text")
-                        for dec in batch_result.decisions:
-                            if 0 <= dec.index < len(batch):
-                                art = batch[dec.index]
-                                all_screening.append(ScreeningLogEntry(
-                                    pmid=art.pmid, title=art.title,
-                                    decision=dec.decision,
-                                    reason=dec.reason,
-                                    stage=ScreeningStage.FULL_TEXT,
-                                ))
-                                if dec.decision == ScreeningDecisionType.INCLUDE:
-                                    ft_included.append(art)
-                                else:
-                                    art.inclusion_status = InclusionStatus.EXCLUDED
-                                    art.exclusion_reason = dec.reason
-                                    ft_excluded.append(art)
-                    except Exception as e:
-                        up(f"  FT screening batch failed ({e}), auto-including")
-                        ft_included.extend(batch)
+                up(f"Full-text eligibility screening ({len(ft_articles)} articles, concurrency={proto.article_concurrency})...")
+                _ft_inc, _ft_exc, _ft_log = await _parallel_ft_screening(
+                    ft_articles, self.deps, proto.article_concurrency, up,
+                )
+                ft_included.extend(_ft_inc)
+                ft_excluded.extend(_ft_exc)
+                all_screening.extend(_ft_log)
 
             flow.assessed_eligibility = len(ta_included)
             flow.excluded_eligibility = len(ft_excluded)
@@ -713,22 +765,32 @@ class PRISMAReviewPipeline:
             evidence = [EvidenceSpan(**e) for e in _ckpt.get("evidence", [])]
             up("Loaded evidence from checkpoint (step 10)")
         else:
-            up("Extracting evidence spans...")
-            evidence = await extract_evidence(ft_included, self.deps)
-            up(f"Extracted {len(evidence)} evidence spans")
+            _n_ev_batches = max(1, (len(ft_included) + 4) // 5)  # 5 articles per batch
+            up(f"Extracting evidence spans — {len(ft_included)} articles in ~{_n_ev_batches} batches (concurrency={proto.article_concurrency})...")
+            evidence = await extract_evidence(ft_included, self.deps, concurrency=proto.article_concurrency)
+            up(f"Extracted {len(evidence)} evidence spans from {len(ft_included)} articles")
             await _save_ckpt(10, {"evidence": [e.model_dump() for e in evidence]})
 
         # ── 11. Per-study data extraction (LLM agent) ──
         if data_items:
-            up(f"Extracting data from {len(ft_included)} studies...")
-            for i, art in enumerate(ft_included):
-                up(f"  [{i+1}/{len(ft_included)}] {art.title[:50]}...")
-                try:
-                    art.extracted_data = await run_data_extraction(
-                        art, data_items, self.deps
-                    )
-                except Exception as e:
-                    up(f"  Data extraction failed for {art.pmid}: {e}")
+            _n_extr = len(ft_included)
+            up(f"Extracting data from {_n_extr} studies (concurrency={proto.article_concurrency})...")
+            _art_sem = asyncio.Semaphore(proto.article_concurrency)
+            _extr_done = [0]
+
+            async def _extract_one(i: int, art: Article) -> None:
+                async with _art_sem:
+                    up(f"  [{i+1}/{_n_extr}] {art.title[:50]}...")
+                    try:
+                        art.extracted_data = await run_data_extraction(art, data_items, self.deps)
+                    except Exception as e:
+                        up(f"  Data extraction failed for {art.pmid}: {e}")
+                    finally:
+                        _extr_done[0] += 1
+                        _rem = _n_extr - _extr_done[0]
+                        up(f"  ✓ {art.pmid} [{_extr_done[0]}/{_n_extr} done, {_rem} remaining]")
+
+            await asyncio.gather(*[_extract_one(i, art) for i, art in enumerate(ft_included)])
 
         # ── 12. Per-study risk of bias (LLM agent) ──
         if STAGE_ROB in _completed_stages:
@@ -744,22 +806,33 @@ class PRISMAReviewPipeline:
             up(f"Resume: loaded RoB results from DB")
             logger.info("stage_resumed stage=%s", STAGE_ROB)
         else:
-            up(f"Assessing risk of bias ({proto.rob_tool.value})...")
-            for i, art in enumerate(ft_included):
-                up(f"  [{i+1}/{len(ft_included)}] {art.title[:50]}...")
-                try:
-                    async def _do_rob(_a=art) -> dict:
-                        rob = await run_risk_of_bias(_a, self.deps)
-                        return {"rob": rob.model_dump()}
+            _n_rob = len(ft_included)
+            up(f"Assessing risk of bias ({proto.rob_tool.value}, concurrency={proto.article_concurrency})...")
+            _rob_sem = asyncio.Semaphore(proto.article_concurrency)
+            _rob_done = [0]
 
-                    payload = await _load_or_run_batch(
-                        pg_store, proto.review_id or "", STAGE_ROB, i,
-                        _do_rob, proto.max_batch_retries,
-                    )
-                    if "rob" in payload:
-                        art.risk_of_bias = RiskOfBiasResult(**payload["rob"])
-                except Exception as e:
-                    up(f"  RoB failed for {art.pmid}: {e}")
+            async def _rob_one(i: int, art: Article) -> None:
+                async with _rob_sem:
+                    up(f"  [{i+1}/{_n_rob}] {art.title[:50]}...")
+                    try:
+                        async def _do_rob(_a=art) -> dict:
+                            rob = await run_risk_of_bias(_a, self.deps)
+                            return {"rob": rob.model_dump()}
+
+                        payload = await _load_or_run_batch(
+                            pg_store, proto.review_id or "", STAGE_ROB, i,
+                            _do_rob, proto.max_batch_retries,
+                        )
+                        if "rob" in payload:
+                            art.risk_of_bias = RiskOfBiasResult(**payload["rob"])
+                    except Exception as e:
+                        up(f"  RoB failed for {art.pmid}: {e}")
+                    finally:
+                        _rob_done[0] += 1
+                        _rem = _n_rob - _rob_done[0]
+                        up(f"  ✓ {art.pmid} [{_rob_done[0]}/{_n_rob} done, {_rem} remaining]")
+
+            await asyncio.gather(*[_rob_one(i, art) for i, art in enumerate(ft_included)])
 
         # ── Setup for charting and synthesis ──
         flow_text = (
@@ -796,25 +869,40 @@ class PRISMAReviewPipeline:
                 up(f"Resume: loaded {len(data_charting_rubrics)} charting results from DB")
             logger.info("stage_resumed stage=%s skipped_batches=%d", STAGE_CHARTING, len(data_charting_rubrics))
         else:
-            for idx, article in enumerate(ft_included):
-                try:
-                    up(f"Charting article {article.pmid}…")
+            _n_chart = len(ft_included)
+            _chart_sem = asyncio.Semaphore(proto.article_concurrency)
+            _chart_results: list[DataChartingRubric | None] = [None] * _n_chart
+            _chart_done = [0]
 
-                    async def _do_charting(_art=article) -> dict:
-                        rubric = await run_data_charting(
-                            _art, self.deps, charting_questions,
-                            resolved_section_config=_resolved_cfg,
-                            charting_template=charting_template,
+            async def _chart_one(idx: int, article: Article) -> None:
+                async with _chart_sem:
+                    _rem_start = _n_chart - _chart_done[0]
+                    up(f"  Charting [{idx+1}/{_n_chart}, {_rem_start} remaining] {article.pmid}…")
+                    try:
+                        async def _do_charting(_art=article) -> dict:
+                            rubric = await run_data_charting(
+                                _art, self.deps, charting_questions,
+                                resolved_section_config=_resolved_cfg,
+                                charting_template=charting_template,
+                            )
+                            return {"rubric": rubric.model_dump()}
+
+                        payload = await _load_or_run_batch(
+                            pg_store, proto.review_id or "", STAGE_CHARTING, idx,
+                            _do_charting, proto.max_batch_retries,
                         )
-                        return {"rubric": rubric.model_dump()}
+                        _chart_results[idx] = DataChartingRubric(**payload["rubric"])
+                    except Exception as exc:
+                        logger.warning("Charting failed for %s: %s", article.pmid, exc)
+                    finally:
+                        _chart_done[0] += 1
+                        _rem = _n_chart - _chart_done[0]
+                        up(f"  ✓ Charted {article.pmid} [{_chart_done[0]}/{_n_chart} done, {_rem} remaining]")
 
-                    payload = await _load_or_run_batch(
-                        pg_store, proto.review_id or "", STAGE_CHARTING, idx,
-                        _do_charting, proto.max_batch_retries,
-                    )
-                    data_charting_rubrics.append(DataChartingRubric(**payload["rubric"]))
-                except Exception as exc:
-                    logger.warning("Charting failed for %s: %s", article.pmid, exc)
+            await asyncio.gather(*[_chart_one(idx, art) for idx, art in enumerate(ft_included)])
+            # Keep ft_included and rubrics aligned (drop articles whose charting failed)
+            paired = [(art, r) for art, r in zip(ft_included, _chart_results) if r is not None]
+            ft_included, data_charting_rubrics = ([p[0] for p in paired], [p[1] for p in paired])
             await _save_ckpt(13, {
                 "data_charting_rubrics": [r.model_dump() for r in data_charting_rubrics],
                 "ft_included": [a.model_dump() for a in ft_included],
@@ -836,24 +924,43 @@ class PRISMAReviewPipeline:
                 up(f"Resume: loaded {len(critical_appraisals)} appraisal results from DB")
             logger.info("stage_resumed stage=%s", STAGE_APPRAISAL)
         else:
-            for idx, (article, rubric) in enumerate(zip(ft_included, data_charting_rubrics)):
-                try:
-                    async def _do_appraisal(_art=article, _rub=rubric) -> dict:
-                        ap_rubric, ap_result = await run_critical_appraisal(
-                            _art, _rub, self.deps, appraisal_domains,
-                            appraisal_config=appraisal_config,
-                        )
-                        return {"appraisal": ap_rubric.model_dump(), "result": ap_result.model_dump()}
+            _n_appr = len(ft_included)
+            _appraisal_sem = asyncio.Semaphore(proto.article_concurrency)
+            _appraisal_results: list[tuple[CriticalAppraisalRubric, CriticalAppraisalResult | None] | None] = [None] * _n_appr
+            _appr_done = [0]
 
-                    payload = await _load_or_run_batch(
-                        pg_store, proto.review_id or "", STAGE_APPRAISAL, idx,
-                        _do_appraisal, proto.max_batch_retries,
-                    )
-                    critical_appraisals.append(CriticalAppraisalRubric(**payload["appraisal"]))
-                    if "result" in payload:
-                        critical_appraisal_results.append(CriticalAppraisalResult(**payload["result"]))
-                except Exception as exc:
-                    logger.warning("Appraisal failed for %s: %s", article.pmid, exc)
+            async def _appraise_one(idx: int, article: Article, rubric: "DataChartingRubric") -> None:
+                async with _appraisal_sem:
+                    _rem_start = _n_appr - _appr_done[0]
+                    up(f"  Appraising [{idx+1}/{_n_appr}, {_rem_start} remaining] {article.pmid}…")
+                    try:
+                        async def _do_appraisal(_art=article, _rub=rubric) -> dict:
+                            ap_rubric, ap_result = await run_critical_appraisal(
+                                _art, _rub, self.deps, appraisal_domains,
+                                appraisal_config=appraisal_config,
+                            )
+                            return {"appraisal": ap_rubric.model_dump(), "result": ap_result.model_dump()}
+
+                        payload = await _load_or_run_batch(
+                            pg_store, proto.review_id or "", STAGE_APPRAISAL, idx,
+                            _do_appraisal, proto.max_batch_retries,
+                        )
+                        ap_rubric = CriticalAppraisalRubric(**payload["appraisal"])
+                        ap_res = CriticalAppraisalResult(**payload["result"]) if "result" in payload else None
+                        _appraisal_results[idx] = (ap_rubric, ap_res)
+                    except Exception as exc:
+                        logger.warning("Appraisal failed for %s: %s", article.pmid, exc)
+                    finally:
+                        _appr_done[0] += 1
+                        _rem = _n_appr - _appr_done[0]
+                        up(f"  ✓ Appraised {article.pmid} [{_appr_done[0]}/{_n_appr} done, {_rem} remaining]")
+
+            await asyncio.gather(*[_appraise_one(idx, art, rub) for idx, (art, rub) in enumerate(zip(ft_included, data_charting_rubrics))])
+            for entry in _appraisal_results:
+                if entry is not None:
+                    critical_appraisals.append(entry[0])
+                    if entry[1] is not None:
+                        critical_appraisal_results.append(entry[1])
             await _save_ckpt(14, {
                 "critical_appraisals": [r.model_dump() for r in critical_appraisals],
             })
@@ -873,21 +980,34 @@ class PRISMAReviewPipeline:
                 up(f"Resume: loaded {len(narrative_rows)} narrative rows from DB")
             logger.info("stage_resumed stage=%s", STAGE_NARRATIVE)
         else:
-            for idx, (rubric, appraisal_rubric) in enumerate(
-                zip(data_charting_rubrics, critical_appraisals)
-            ):
-                try:
-                    async def _do_narrative(_rub=rubric, _ap=appraisal_rubric) -> dict:
-                        row = await run_narrative_row(_rub, _ap, self.deps)
-                        return {"row": row.model_dump()}
+            _n_narr = len(data_charting_rubrics)
+            _narr_sem = asyncio.Semaphore(proto.article_concurrency)
+            _narr_results: list[PRISMANarrativeRow | None] = [None] * _n_narr
+            _narr_done = [0]
 
-                    payload = await _load_or_run_batch(
-                        pg_store, proto.review_id or "", STAGE_NARRATIVE, idx,
-                        _do_narrative, proto.max_batch_retries,
-                    )
-                    narrative_rows.append(PRISMANarrativeRow(**payload["row"]))
-                except Exception as exc:
-                    logger.warning("Narrative row failed: %s", exc)
+            async def _narr_one(idx: int, rubric: "DataChartingRubric", appraisal_rubric: "CriticalAppraisalRubric") -> None:
+                async with _narr_sem:
+                    _rem_start = _n_narr - _narr_done[0]
+                    up(f"  Narrative [{idx+1}/{_n_narr}, {_rem_start} remaining] {rubric.source_id}…")
+                    try:
+                        async def _do_narrative(_rub=rubric, _ap=appraisal_rubric) -> dict:
+                            row = await run_narrative_row(_rub, _ap, self.deps)
+                            return {"row": row.model_dump()}
+
+                        payload = await _load_or_run_batch(
+                            pg_store, proto.review_id or "", STAGE_NARRATIVE, idx,
+                            _do_narrative, proto.max_batch_retries,
+                        )
+                        _narr_results[idx] = PRISMANarrativeRow(**payload["row"])
+                    except Exception as exc:
+                        logger.warning("Narrative row failed: %s", exc)
+                    finally:
+                        _narr_done[0] += 1
+                        _rem = _n_narr - _narr_done[0]
+                        up(f"  ✓ Narrative {rubric.source_id} [{_narr_done[0]}/{_n_narr} done, {_rem} remaining]")
+
+            await asyncio.gather(*[_narr_one(idx, rub, ap) for idx, (rub, ap) in enumerate(zip(data_charting_rubrics, critical_appraisals))])
+            narrative_rows = [r for r in _narr_results if r is not None]
             await _save_ckpt(15, {
                 "narrative_rows": [r.model_dump() for r in narrative_rows],
             })
@@ -1299,52 +1419,12 @@ class PRISMAReviewPipeline:
             )
 
         # 7. Title/abstract screening
-        up(f"Screening {len(deduped)} articles (title/abstract)...")
+        up(f"Screening {len(deduped)} articles (title/abstract, concurrency={proto.article_concurrency})...")
         flow.screened_title_abstract = len(deduped)
-        ta_included: list[Article] = []
-        ta_excluded: list[Article] = []
-
-        for batch_start in range(0, len(deduped), 15):
-            batch = deduped[batch_start:batch_start + 15]
-            try:
-                batch_result = await run_screening(batch, self.deps, "title_abstract")
-                for dec in batch_result.decisions:
-                    if 0 <= dec.index < len(batch):
-                        art = batch[dec.index]
-                        art.quality_score = dec.relevance_score
-                        all_screening.append(ScreeningLogEntry(
-                            pmid=art.pmid, title=art.title,
-                            decision=dec.decision, reason=dec.reason,
-                            stage=ScreeningStage.TITLE_ABSTRACT,
-                        ))
-                        if dec.decision == ScreeningDecisionType.INCLUDE:
-                            art.inclusion_status = InclusionStatus.INCLUDED
-                            ta_included.append(art)
-                        else:
-                            art.inclusion_status = InclusionStatus.EXCLUDED
-                            art.exclusion_reason = dec.reason
-                            ta_excluded.append(art)
-                covered = {s.pmid for s in all_screening if s.stage == ScreeningStage.TITLE_ABSTRACT}
-                for art in batch:
-                    if art.pmid not in covered:
-                        ta_included.append(art)
-                        all_screening.append(ScreeningLogEntry(
-                            pmid=art.pmid, title=art.title,
-                            decision=ScreeningDecisionType.INCLUDE,
-                            reason="Not evaluated — auto-included",
-                            stage=ScreeningStage.TITLE_ABSTRACT,
-                        ))
-            except Exception as e:
-                up(f"  Screening batch failed ({e}), auto-including {len(batch)}")
-                for art in batch:
-                    ta_included.append(art)
-                    all_screening.append(ScreeningLogEntry(
-                        pmid=art.pmid, title=art.title,
-                        decision=ScreeningDecisionType.INCLUDE,
-                        reason=f"Auto-included (error: {str(e)[:50]})",
-                        stage=ScreeningStage.TITLE_ABSTRACT,
-                    ))
-
+        ta_included, ta_excluded, _ta_log_c = await _parallel_ta_screening(
+            deduped, self.deps, proto.article_concurrency, up,
+        )
+        all_screening.extend(_ta_log_c)
         flow.excluded_title_abstract = len(ta_excluded)
         up(f"Screening: {len(ta_included)} included, {len(ta_excluded)} excluded")
 
@@ -1379,28 +1459,13 @@ class PRISMAReviewPipeline:
         ft_excluded: list[Article] = []
 
         if ft_articles:
-            up(f"Full-text eligibility screening ({len(ft_articles)} articles)...")
-            for batch_start in range(0, len(ft_articles), 10):
-                batch = ft_articles[batch_start:batch_start + 10]
-                try:
-                    batch_result = await run_screening(batch, self.deps, "full_text")
-                    for dec in batch_result.decisions:
-                        if 0 <= dec.index < len(batch):
-                            art = batch[dec.index]
-                            all_screening.append(ScreeningLogEntry(
-                                pmid=art.pmid, title=art.title,
-                                decision=dec.decision, reason=dec.reason,
-                                stage=ScreeningStage.FULL_TEXT,
-                            ))
-                            if dec.decision == ScreeningDecisionType.INCLUDE:
-                                ft_included.append(art)
-                            else:
-                                art.inclusion_status = InclusionStatus.EXCLUDED
-                                art.exclusion_reason = dec.reason
-                                ft_excluded.append(art)
-                except Exception as e:
-                    up(f"  FT screening batch failed ({e}), auto-including")
-                    ft_included.extend(batch)
+            up(f"Full-text eligibility screening ({len(ft_articles)} articles, concurrency={proto.article_concurrency})...")
+            _ft_inc_c, _ft_exc_c, _ft_log_c = await _parallel_ft_screening(
+                ft_articles, self.deps, proto.article_concurrency, up,
+            )
+            ft_included.extend(_ft_inc_c)
+            ft_excluded.extend(_ft_exc_c)
+            all_screening.extend(_ft_log_c)
 
         flow.assessed_eligibility = len(ta_included)
         flow.excluded_eligibility = len(ft_excluded)
@@ -1426,49 +1491,74 @@ class PRISMAReviewPipeline:
             )
 
         # 10. Evidence span extraction
-        up("Extracting evidence spans...")
-        evidence = await extract_evidence(ft_included, self.deps)
-        up(f"Extracted {len(evidence)} evidence spans")
+        _n_ev_batches_c = max(1, (len(ft_included) + 4) // 5)
+        up(f"Extracting evidence spans — {len(ft_included)} articles in ~{_n_ev_batches_c} batches (concurrency={proto.article_concurrency})...")
+        evidence = await extract_evidence(ft_included, self.deps, concurrency=proto.article_concurrency)
+        up(f"Extracted {len(evidence)} evidence spans from {len(ft_included)} articles")
 
-        # 11. Per-study data extraction
+        # 11. Per-study data extraction (parallel)
         if data_items:
-            up(f"Extracting data from {len(ft_included)} studies...")
-            for i, art in enumerate(ft_included):
-                up(f"  [{i+1}/{len(ft_included)}] {art.title[:50]}...")
+            _n_extr_c = len(ft_included)
+            up(f"Extracting data from {_n_extr_c} studies (concurrency={proto.article_concurrency})...")
+            _extr_sem_c = asyncio.Semaphore(proto.article_concurrency)
+            _extr_done_c = [0]
+
+            async def _extract_one_c(i: int, art: Article) -> None:
+                async with _extr_sem_c:
+                    up(f"  [{i+1}/{_n_extr_c}] {art.title[:50]}...")
+                    try:
+                        art.extracted_data = await run_data_extraction(art, data_items, self.deps)
+                    except Exception as e:
+                        up(f"  Data extraction failed for {art.pmid}: {e}")
+                    finally:
+                        _extr_done_c[0] += 1
+                        up(f"  ✓ {art.pmid} [{_extr_done_c[0]}/{_n_extr_c} done, {_n_extr_c - _extr_done_c[0]} remaining]")
+
+            await asyncio.gather(*[_extract_one_c(i, art) for i, art in enumerate(ft_included)])
+
+        # 12. Risk of bias (parallel)
+        _n_rob_c = len(ft_included)
+        up(f"Assessing risk of bias ({proto.rob_tool.value}, concurrency={proto.article_concurrency})...")
+        _rob_sem_c = asyncio.Semaphore(proto.article_concurrency)
+        _rob_done_c = [0]
+
+        async def _rob_one_c(i: int, art: Article) -> None:
+            async with _rob_sem_c:
+                up(f"  [{i+1}/{_n_rob_c}] {art.title[:50]}...")
                 try:
-                    art.extracted_data = await run_data_extraction(art, data_items, self.deps)
+                    art.risk_of_bias = await run_risk_of_bias(art, self.deps)
                 except Exception as e:
-                    up(f"  Data extraction failed for {art.pmid}: {e}")
+                    up(f"  RoB failed for {art.pmid}: {e}")
+                finally:
+                    _rob_done_c[0] += 1
+                    up(f"  ✓ {art.pmid} [{_rob_done_c[0]}/{_n_rob_c} done, {_n_rob_c - _rob_done_c[0]} remaining]")
 
-        # 12. Risk of bias
-        up(f"Assessing risk of bias ({proto.rob_tool.value})...")
-        for i, art in enumerate(ft_included):
-            try:
-                art.risk_of_bias = await run_risk_of_bias(art, self.deps)
-            except Exception as e:
-                up(f"  RoB failed for {art.pmid}: {e}")
+        await asyncio.gather(*[_rob_one_c(i, art) for i, art in enumerate(ft_included)])
 
-        # 13. Synthesis
+        # 13+14. Synthesis + bias + GRADE + limitations — all independent, run concurrently
         flow_text = (
             f"Identified: {flow.total_identified} | After dedup: {flow.after_dedup} | "
             f"Screened: {flow.screened_title_abstract} | Excluded (TA): {flow.excluded_title_abstract} | "
             f"FT assessed: {flow.assessed_eligibility} | Excluded (FT): {flow.excluded_eligibility} | "
             f"Included: {flow.included_synthesis}"
         )
-        up(f"Synthesizing {len(ft_included)} articles...")
-        synthesis = await run_synthesis(ft_included, evidence, flow_text, self.deps)
-
-        # 14. Bias, GRADE, limitations
-        up("Assessing overall bias and GRADE...")
         outcome_text = proto.pico_outcome or "Primary outcome"
         outcomes = [o.strip() for o in outcome_text.split(",") if o.strip()]
         grade_tasks = {outcome: run_grade(outcome, ft_included, self.deps) for outcome in outcomes[:3]}
-        bias_result, limitations_result, *grade_results = await asyncio.gather(
+        up(f"Synthesizing {len(ft_included)} articles (+ bias, GRADE, limitations in parallel)...")
+        (
+            synthesis_raw,
+            bias_result,
+            limitations_result,
+            *grade_results,
+        ) = await asyncio.gather(
+            run_synthesis(ft_included, evidence, flow_text, self.deps),
             run_bias_summary(ft_included, self.deps),
             run_limitations(flow_text, ft_included, self.deps),
             *grade_tasks.values(),
             return_exceptions=True,
         )
+        synthesis = synthesis_raw if isinstance(synthesis_raw, str) else ""
         bias_text = bias_result if isinstance(bias_result, str) else ""
         limitations_text = limitations_result if isinstance(limitations_result, str) else ""
         grade_assessments: dict[str, GRADEAssessment] = {}
@@ -1486,46 +1576,111 @@ class PRISMAReviewPipeline:
         narrative_rows = []
         _resolved_cfg = _resolve_section_config(proto)
 
-        for article in ft_included:
-            try:
-                up(f"Charting article {article.pmid}…")
-                rubric = await run_data_charting(
-                    article, self.deps, charting_questions,
-                    resolved_section_config=_resolved_cfg,
-                    charting_template=charting_template,
-                )
-                data_charting_rubrics.append(rubric)
-                appraisal_rubric, appraisal_result = await run_critical_appraisal(
-                    article, rubric, self.deps, None, appraisal_config=appraisal_config,
-                )
-                critical_appraisals.append(appraisal_rubric)
-                critical_appraisal_results.append(appraisal_result)
-                row = await run_narrative_row(rubric, appraisal_rubric, self.deps)
-                narrative_rows.append(row)
-            except Exception as exc:
-                logger.warning("Charting/appraisal failed for %s: %s", article.pmid, exc)
+        # 15a. Data charting (parallel)
+        _n_chart_c = len(ft_included)
+        _chart_sem_c = asyncio.Semaphore(proto.article_concurrency)
+        _chart_results_c: list = [None] * _n_chart_c
+        _chart_done_c = [0]
 
-        grounding_validation = None
-        try:
-            up("Validating grounding of synthesis text…")
-            corpus = {a.pmid: (a.abstract or "") + " " + (a.full_text or "") for a in ft_included}
-            citation_map = {a.pmid: f"{a.authors} ({a.year})" for a in ft_included}
-            grounding_validation = await run_grounding_validation(synthesis, corpus, citation_map, self.deps)
-        except Exception as exc:
-            logger.warning("Grounding validation failed: %s", exc)
+        async def _chart_one_c(idx: int, article: Article) -> None:
+            async with _chart_sem_c:
+                _rem = _n_chart_c - _chart_done_c[0]
+                up(f"  Charting [{idx+1}/{_n_chart_c}, {_rem} remaining] {article.pmid}…")
+                try:
+                    rubric = await run_data_charting(
+                        article, self.deps, charting_questions,
+                        resolved_section_config=_resolved_cfg,
+                        charting_template=charting_template,
+                    )
+                    _chart_results_c[idx] = rubric
+                except Exception as exc:
+                    logger.warning("Charting failed for %s: %s", article.pmid, exc)
+                finally:
+                    _chart_done_c[0] += 1
+                    up(f"  ✓ Charted {article.pmid} [{_chart_done_c[0]}/{_n_chart_c} done, {_n_chart_c - _chart_done_c[0]} remaining]")
+
+        await asyncio.gather(*[_chart_one_c(idx, art) for idx, art in enumerate(ft_included)])
+        paired_c = [(art, r) for art, r in zip(ft_included, _chart_results_c) if r is not None]
+        ft_included_c = [p[0] for p in paired_c]
+        data_charting_rubrics = [p[1] for p in paired_c]
+
+        # 15b. Critical appraisal (parallel)
+        _n_appr_c = len(ft_included_c)
+        _appr_sem_c = asyncio.Semaphore(proto.article_concurrency)
+        _appr_results_c: list = [None] * _n_appr_c
+        _appr_done_c = [0]
+
+        async def _appraise_one_c(idx: int, article: Article, rubric) -> None:
+            async with _appr_sem_c:
+                _rem = _n_appr_c - _appr_done_c[0]
+                up(f"  Appraising [{idx+1}/{_n_appr_c}, {_rem} remaining] {article.pmid}…")
+                try:
+                    ap_rubric, ap_result = await run_critical_appraisal(
+                        article, rubric, self.deps, None, appraisal_config=appraisal_config,
+                    )
+                    _appr_results_c[idx] = (ap_rubric, ap_result)
+                except Exception as exc:
+                    logger.warning("Appraisal failed for %s: %s", article.pmid, exc)
+                finally:
+                    _appr_done_c[0] += 1
+                    up(f"  ✓ Appraised {article.pmid} [{_appr_done_c[0]}/{_n_appr_c} done, {_n_appr_c - _appr_done_c[0]} remaining]")
+
+        await asyncio.gather(*[_appraise_one_c(idx, art, rub) for idx, (art, rub) in enumerate(zip(ft_included_c, data_charting_rubrics))])
+        for entry in _appr_results_c:
+            if entry is not None:
+                critical_appraisals.append(entry[0])
+                critical_appraisal_results.append(entry[1])
+
+        # 15c. Narrative rows (parallel)
+        _n_narr_c = len(data_charting_rubrics)
+        _narr_sem_c = asyncio.Semaphore(proto.article_concurrency)
+        _narr_results_c: list = [None] * _n_narr_c
+        _narr_done_c = [0]
+
+        async def _narr_one_c(idx: int, rubric, ap_rubric) -> None:
+            async with _narr_sem_c:
+                _rem = _n_narr_c - _narr_done_c[0]
+                up(f"  Narrative [{idx+1}/{_n_narr_c}, {_rem} remaining] {rubric.source_id}…")
+                try:
+                    row = await run_narrative_row(rubric, ap_rubric, self.deps)
+                    _narr_results_c[idx] = row
+                except Exception as exc:
+                    logger.warning("Narrative row failed: %s", exc)
+                finally:
+                    _narr_done_c[0] += 1
+                    up(f"  ✓ Narrative {rubric.source_id} [{_narr_done_c[0]}/{_n_narr_c} done, {_n_narr_c - _narr_done_c[0]} remaining]")
+
+        await asyncio.gather(*[_narr_one_c(idx, rub, ap) for idx, (rub, ap) in enumerate(zip(data_charting_rubrics, critical_appraisals))])
+        narrative_rows = [r for r in _narr_results_c if r is not None]
 
         grade_summary = "; ".join(f"{k}: {v.overall_certainty.value}" for k, v in grade_assessments.items())
         flow_text_short = f"{flow.total_identified} identified, {flow.included_synthesis} included"
+        corpus = {a.pmid: (a.abstract or "") + " " + (a.full_text or "") for a in ft_included}
+        citation_map = {a.pmid: f"{a.authors} ({a.year})" for a in ft_included}
+        up("Generating document sections and validating grounding…")
+        grounding_validation = None
+        introduction_text = conclusions_text = structured_abstract = ""
         try:
-            up("Generating document sections…")
-            introduction_text, conclusions_text, structured_abstract = await asyncio.gather(
+            (
+                introduction_text_r,
+                conclusions_text_r,
+                structured_abstract_r,
+                grounding_raw,
+            ) = await asyncio.gather(
                 run_introduction(self.deps),
                 run_conclusions(synthesis, grade_summary, self.deps),
                 run_abstract(flow_text_short, synthesis, self.deps),
+                run_grounding_validation(synthesis, corpus, citation_map, self.deps),
+                return_exceptions=True,
             )
+            introduction_text = introduction_text_r if isinstance(introduction_text_r, str) else ""
+            conclusions_text = conclusions_text_r if isinstance(conclusions_text_r, str) else ""
+            structured_abstract = structured_abstract_r if isinstance(structured_abstract_r, str) else ""
+            grounding_validation = grounding_raw if isinstance(grounding_raw, GroundingValidationResult) else None
+            if isinstance(grounding_raw, BaseException):
+                logger.warning("Grounding validation failed: %s", grounding_raw)
         except Exception as exc:
             logger.warning("Document section generation failed: %s", exc)
-            introduction_text = conclusions_text = structured_abstract = ""
 
         up("Review complete!")
         final_result = PRISMAReviewResult(

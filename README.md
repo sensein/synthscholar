@@ -33,7 +33,7 @@ prisma-review-agent/
 - **Source grounding**: Every extracted evidence span is verified against its source article using rapidfuzz fuzzy matching before being included. Ungrounded spans are silently dropped.
 - **Typed throughout**: Every data structure is a Pydantic `BaseModel` with validation. Structured outputs from agents are parsed and validated automatically by pydantic-ai.
 - **PostgreSQL result cache**: Reviews with ≥ 95% similar criteria are served from cache in seconds instead of minutes. All fetched articles are indexed for future source reuse.
-- **Async pipeline**: The orchestrator uses `asyncio` for concurrent LLM calls (bias + GRADE + limitations run in parallel).
+- **Parallel per-article processing**: Steps 7–15 (T/A screening, FT screening, evidence extraction, data extraction, RoB, charting, appraisal, narrative rows) run with configurable `asyncio` concurrency in **both** the standard pipeline and compare mode. Two shared module-level helpers (`_parallel_ta_screening`, `_parallel_ft_screening` in `pipeline.py`) are reused by both paths, keeping the parallelism logic in one place. At the default of 5 parallel LLM calls, a 100-article review that would take ~70 min sequentially completes in ~15 min. Set `--concurrency 10` for larger reviews.
 - **Standalone**: No web framework dependency. PostgreSQL is optional — the pipeline degrades gracefully without it.
 
 ## Installation
@@ -96,6 +96,7 @@ prisma-review \
   --hops 2 \
   --rob-tool "RoB 2" \
   --extract-data \
+  --concurrency 10 \
   --export md json bib
 
 # Interactive mode
@@ -178,6 +179,7 @@ protocol = ReviewProtocol(
     exclusion_criteria="Animal studies, reviews, case reports",
     max_hops=10,
     rob_tool=RoBTool.NEWCASTLE_OTTAWA,
+    article_concurrency=10,   # parallel LLM calls per article step (default: 5)
 
     # Domain-specific charting questions — answered per included article and stored
     # in DataChartingRubric.custom_fields (question text → extracted answer).
@@ -281,7 +283,7 @@ result = await pipeline.run(auto_confirm=True)
 
 ### Multi-Model Compare Mode
 
-Run the same protocol through two or more LLMs in parallel. Article acquisition (PubMed/bioRxiv search, deduplication) runs once; all LLM-dependent steps (screening, synthesis, charting, appraisal) run independently per model. Results are merged into a single `CompareReviewResult` with per-field agreement indicators and an LLM-generated consensus synthesis.
+Run the same protocol through two or more LLMs in parallel. Article acquisition (PubMed/bioRxiv search, deduplication) runs once; all LLM-dependent steps (screening, evidence extraction, data extraction, RoB, charting, appraisal, narrative) run independently per model using the same shared parallel helpers as the standard pipeline — steps 7–15 are fully parallel within each model's pipeline. Results are merged into a single `CompareReviewResult` with per-field agreement indicators and an LLM-generated consensus synthesis.
 
 #### Plan confirmation and strategy revision in compare mode
 
@@ -747,33 +749,201 @@ assert loaded == template   # full round-trip fidelity
 
 ### FastAPI Integration
 
-The pipeline's `confirm_callback` and `progress_callback` hooks make it straightforward to build a live UI on top of FastAPI. The pattern uses `asyncio.Event` to bridge the synchronous callback with an async HTTP round-trip, and Server-Sent Events (SSE) for real-time progress streaming.
+The pipeline's `confirm_callback` and `progress_callback` hooks make it straightforward to build a live UI on top of FastAPI. Progress messages now carry structured per-article information (stage name, done/total/remaining counts) that the server parses into typed SSE events so the UI can render live progress bars, article cards, and stage indicators without any client-side string parsing.
 
-#### Pattern 1 — Plan confirmation with polling
+#### Shared helpers (used by all patterns)
+
+Put these in a shared module (e.g. `shared.py`) imported by every pattern below.
+
+```python
+# shared.py
+import os
+import re
+import json
+from pydantic import BaseModel as PydanticBase, Field
+
+# ── concurrency default ───────────────────────────────────────────────────────
+
+def _default_concurrency() -> int:
+    """2× logical CPUs, clamped to [8, 10]. Falls back to 8 in restricted containers."""
+    try:
+        return max(8, min((os.cpu_count() or 4) * 2, 10))
+    except Exception:
+        return 8
+
+
+# ── request model ─────────────────────────────────────────────────────────────
+
+class ReviewRequest(PydanticBase):
+    title: str
+    inclusion: str = ""
+    exclusion: str = ""
+    assemble_timeout: float = 3600.0
+    concurrency: int = Field(
+        default_factory=_default_concurrency,
+        ge=1, le=20,
+        description="Max concurrent LLM calls per article step. Auto-detected from CPU count (8–10).",
+    )
+    section_output_formats: dict[str, str] = {}
+    rubric_section_config: list[dict] = []
+
+
+# ── progress message parser ───────────────────────────────────────────────────
+
+# Matches: "✓ 28087124 [5/38 done, 33 remaining]"  (completion line)
+_RE_ARTICLE_DONE  = re.compile(r"✓\s+(\S+)\s+\[(\d+)/(\d+) done,\s*(\d+) remaining\]")
+# Matches: "Charting [3/38, 35 remaining] 28087124…" (start line)
+_RE_ARTICLE_START = re.compile(r"\[(\d+)/(\d+),\s*(\d+) remaining\]\s+(\S+)")
+# Matches: "[1/38] Some title…"  (extraction / RoB start line)
+_RE_IDX_TITLE     = re.compile(r"\[(\d+)/(\d+)\]\s+(.+)")
+
+# Stage keywords → canonical stage name
+_STAGE_KEYWORDS = {
+    "Screening": "screening",
+    "Extracting evidence": "evidence_extraction",
+    "Extracting data from": "data_extraction",
+    "Assessing risk of bias": "risk_of_bias",
+    "Charting": "data_charting",
+    "Appraising": "critical_appraisal",
+    "Narrative": "narrative_synthesis",
+    "Synthesizing": "synthesis",
+    "Assessing bias": "bias_assessment",
+    "GRADE": "grade",
+}
+
+
+def parse_progress_message(msg: str, session: dict) -> dict:
+    """Convert a raw pipeline progress string into a typed event dict.
+
+    Updates session["stage"], session["stage_done"], session["stage_total"],
+    and session["stage_remaining"] in place so /progress can serve a snapshot.
+
+    Returned dict always has a "type" key. Types:
+      log           — generic informational line
+      stage_start   — a new pipeline stage has begun
+      article_start — a single article started processing (non-blocking)
+      article_done  — a single article finished; includes done/total/remaining
+      stage_done    — all articles in the current stage finished (remaining == 0)
+    """
+    stripped = msg.strip()
+
+    # ── article completion line ────────────────────────────────────────────────
+    m = _RE_ARTICLE_DONE.search(stripped)
+    if m:
+        pmid, done, total, remaining = m.group(1), int(m.group(2)), int(m.group(3)), int(m.group(4))
+        session["stage_done"]      = done
+        session["stage_total"]     = total
+        session["stage_remaining"] = remaining
+        event = {
+            "type":      "article_done",
+            "pmid":      pmid,
+            "done":      done,
+            "total":     total,
+            "remaining": remaining,
+            "stage":     session.get("stage", ""),
+            "message":   stripped,
+        }
+        if remaining == 0:
+            event["type"] = "stage_done"
+        return event
+
+    # ── article start line (Charting / Appraising / Narrative) ────────────────
+    m = _RE_ARTICLE_START.search(stripped)
+    if m:
+        idx, total, remaining, pmid = int(m.group(1)), int(m.group(2)), int(m.group(3)), m.group(4)
+        session["stage_total"]     = total
+        session["stage_remaining"] = remaining
+        return {
+            "type":      "article_start",
+            "pmid":      pmid,
+            "index":     idx,
+            "total":     total,
+            "remaining": remaining,
+            "stage":     session.get("stage", ""),
+            "message":   stripped,
+        }
+
+    # ── extraction / RoB start line "[1/38] Title…" ───────────────────────────
+    m = _RE_IDX_TITLE.search(stripped)
+    if m:
+        idx, total, title = int(m.group(1)), int(m.group(2)), m.group(3)
+        session["stage_total"] = total
+        return {
+            "type":    "article_start",
+            "index":   idx,
+            "total":   total,
+            "title":   title[:80],
+            "stage":   session.get("stage", ""),
+            "message": stripped,
+        }
+
+    # ── stage start line ──────────────────────────────────────────────────────
+    for keyword, stage_name in _STAGE_KEYWORDS.items():
+        if keyword in stripped:
+            session["stage"]           = stage_name
+            session["stage_done"]      = 0
+            session["stage_remaining"] = 0
+            # extract total if present: "Extracting data from 38 studies"
+            m_total = re.search(r"(\d+)\s+(?:studies|articles)", stripped)
+            if m_total:
+                session["stage_total"] = int(m_total.group(1))
+            return {
+                "type":    "stage_start",
+                "stage":   stage_name,
+                "total":   session.get("stage_total", 0),
+                "message": stripped,
+            }
+
+    # ── generic log line ──────────────────────────────────────────────────────
+    return {"type": "log", "message": stripped}
+```
+
+#### Pattern 1 — Full session with plan confirmation, structured progress, and SSE
+
+This is the recommended pattern for a production UI. It exposes:
+- `POST /review/start` — start a review, get a `session_id`
+- `GET  /review/{id}/stream` — SSE stream of typed events
+- `GET  /review/{id}/progress` — polling snapshot (alternative to SSE)
+- `GET  /review/{id}/plan` — retrieve the generated search plan
+- `POST /review/confirm` — approve / reject / give feedback on the plan
+- `GET  /review/{id}/status` — final result once complete
 
 ```python
 import asyncio
+import json
 import uuid
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel as PydanticBase
 from prisma_review_agent.models import (
     ReviewPlan, ReviewProtocol, PlanRejectedError, MaxIterationsReachedError,
     RubricSectionConfig,
 )
 from prisma_review_agent.pipeline import PRISMAReviewPipeline
+from shared import ReviewRequest, _default_concurrency, parse_progress_message
 
 app = FastAPI()
-
-# In-memory session store — use Redis or a DB in production
 _sessions: dict[str, dict] = {}
 
 
-class ReviewRequest(PydanticBase):
-    title: str
-    inclusion: str = ""
-    exclusion: str = ""
-    section_output_formats: dict[str, str] = {}     # optional per-section formats
-    rubric_section_config: list[dict] = []          # optional full config
+def _new_session() -> dict:
+    return {
+        "status":          "starting",   # starting | running | awaiting_confirmation
+                                          # | complete | rejected | error | timeout
+        "stage":           None,          # current pipeline stage name
+        "stage_total":     0,             # articles in current stage
+        "stage_done":      0,             # articles completed in current stage
+        "stage_remaining": 0,             # articles still pending in current stage
+        "articles_included": 0,           # running count of included articles
+        "plan":            None,          # ReviewPlan dict (set when awaiting confirmation)
+        "events":          [],            # structured event dicts (consumed by SSE)
+        "log":             [],            # raw progress strings (full audit trail)
+        "result":          None,          # PRISMAReviewResult dict once complete
+        "error":           None,
+        # internal only — not serialised to clients
+        "_confirm_event":  asyncio.Event(),
+        "_confirm_response": None,
+    }
 
 
 class ConfirmRequest(PydanticBase):
@@ -781,19 +951,45 @@ class ConfirmRequest(PydanticBase):
     response: str   # "yes" | "no" | feedback text
 
 
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+def _append_event(session: dict, msg: str) -> None:
+    """Parse a progress message, update session state, and append a typed event."""
+    session["log"].append(msg)
+    event = parse_progress_message(msg, session)
+    session["events"].append(event)
+
+    # track running included count from flow summary lines
+    m_inc = __import__("re").search(r"Final included:\s*(\d+)", msg)
+    if m_inc:
+        session["articles_included"] = int(m_inc.group(1))
+
+
+def _public_session(session: dict) -> dict:
+    """Session fields safe to return to the client (no internal asyncio objects)."""
+    return {
+        "status":            session["status"],
+        "stage":             session["stage"],
+        "stage_total":       session["stage_total"],
+        "stage_done":        session["stage_done"],
+        "stage_remaining":   session["stage_remaining"],
+        "articles_included": session["articles_included"],
+        "plan":              session["plan"],
+        "result":            session["result"],
+        "error":             session["error"],
+    }
+
+
+# ── endpoints ─────────────────────────────────────────────────────────────────
+
 @app.post("/review/start")
 async def start_review(req: ReviewRequest):
     session_id = str(uuid.uuid4())
-    confirm_event: asyncio.Event = asyncio.Event()
-    session: dict = {
-        "confirm_event": confirm_event,
-        "confirm_response": None,
-        "plan": None,
-        "progress": [],
-        "status": "starting",
-        "result": None,
-    }
+    session = _new_session()
     _sessions[session_id] = session
+
+    concurrency = min(req.concurrency, 10)   # server-side hard cap
+    timeout     = min(req.assemble_timeout, 7200.0)
 
     rubric_cfg = [RubricSectionConfig(**c) for c in req.rubric_section_config]
     protocol = ReviewProtocol(
@@ -802,6 +998,7 @@ async def start_review(req: ReviewRequest):
         exclusion_criteria=req.exclusion,
         section_output_formats=req.section_output_formats,
         rubric_section_config=rubric_cfg,
+        article_concurrency=concurrency,
     )
     pipeline = PRISMAReviewPipeline(
         api_key="sk-or-v1-...",
@@ -810,41 +1007,103 @@ async def start_review(req: ReviewRequest):
     )
 
     def confirm_callback(plan: ReviewPlan) -> bool | str:
-        """Called by the pipeline when a plan is ready — blocks until UI responds."""
-        session["plan"] = plan.model_dump()
+        session["plan"]   = plan.model_dump()
         session["status"] = "awaiting_confirmation"
-        confirm_event.clear()
-        # Run the event wait in the event loop — pipeline resumes when /confirm fires
-        asyncio.get_event_loop().run_until_complete(confirm_event.wait())
-        return session["confirm_response"]
+        session["_confirm_event"].clear()
+        _append_event(session, f"Plan ready — iteration {plan.iteration}")
+        asyncio.get_event_loop().run_until_complete(session["_confirm_event"].wait())
+        return session["_confirm_response"]
 
-    def progress_callback(message: str) -> None:
-        session["progress"].append(message)
+    def progress_callback(msg: str) -> None:
         session["status"] = "running"
+        _append_event(session, msg)
 
-    asyncio.create_task(_run_pipeline(pipeline, session, confirm_callback, progress_callback))
-    return {"session_id": session_id, "status": "starting"}
+    asyncio.create_task(_run(pipeline, session, confirm_callback, progress_callback, timeout))
+    return {"session_id": session_id, "concurrency": concurrency}
 
 
-async def _run_pipeline(pipeline, session, confirm_cb, progress_cb):
+async def _run(pipeline, session, confirm_cb, progress_cb, timeout: float):
     try:
         result = await pipeline.run(
             confirm_callback=confirm_cb,
             progress_callback=progress_cb,
+            assemble_timeout=timeout,
         )
         session["result"] = result.model_dump(mode="json")
         session["status"] = "complete"
+        session["events"].append({"type": "done", "status": "complete"})
     except PlanRejectedError:
         session["status"] = "rejected"
+        session["events"].append({"type": "done", "status": "rejected"})
+    except asyncio.TimeoutError:
+        session["status"] = "timeout"
+        session["error"]  = f"Assembly exceeded {timeout:.0f}s"
+        session["events"].append({"type": "done", "status": "timeout"})
     except MaxIterationsReachedError as e:
-        session["status"] = f"max_iterations: {e}"
+        session["status"] = f"max_iterations"
+        session["error"]  = str(e)
+        session["events"].append({"type": "done", "status": "max_iterations"})
     except Exception as e:
-        session["status"] = f"error: {e}"
+        session["status"] = "error"
+        session["error"]  = str(e)
+        session["events"].append({"type": "done", "status": "error", "detail": str(e)})
+
+
+@app.get("/review/{session_id}/stream")
+async def stream_events(session_id: str):
+    """SSE stream of typed events. Each event has a named type and a JSON data payload.
+
+    Event types emitted:
+      log            — generic informational line        {"message": "..."}
+      stage_start    — new pipeline stage began          {"stage": "data_charting", "total": 38, ...}
+      article_start  — single article started            {"pmid": "...", "index": 3, "total": 38, "remaining": 35, ...}
+      article_done   — single article finished           {"pmid": "...", "done": 3, "total": 38, "remaining": 35, ...}
+      stage_done     — all articles in stage finished    {"stage": "data_charting", "done": 38, ...}
+      plan_ready     — search plan awaits confirmation   {"plan": {...}}
+      done           — pipeline finished (any outcome)   {"status": "complete"|"error"|"rejected"|...}
+    """
+    session = _sessions.get(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+
+    last_idx = 0
+
+    async def generator():
+        nonlocal last_idx
+        while True:
+            events = session["events"]
+            while last_idx < len(events):
+                ev = events[last_idx]
+                last_idx += 1
+                ev_type = ev.get("type", "log")
+                # emit plan_ready as a named SSE event so the browser can
+                # listen with addEventListener("plan_ready", ...)
+                if ev_type == "log" and session["status"] == "awaiting_confirmation":
+                    yield f"event: plan_ready\ndata: {json.dumps({'plan': session['plan']})}\n\n"
+                else:
+                    yield f"event: {ev_type}\ndata: {json.dumps(ev)}\n\n"
+                if ev_type == "done":
+                    return
+            await asyncio.sleep(0.2)
+
+    return StreamingResponse(generator(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.get("/review/{session_id}/progress")
+async def get_progress(session_id: str):
+    """Polling alternative to SSE — returns current stage snapshot and recent log lines."""
+    session = _sessions.get(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    snap = _public_session(session)
+    snap["recent_log"] = session["log"][-20:]   # last 20 raw lines for debugging
+    return snap
 
 
 @app.get("/review/{session_id}/plan")
 async def get_plan(session_id: str):
-    """Poll until plan is ready (status = 'awaiting_confirmation'), then show it in the UI."""
+    """Returns the generated search plan when status == 'awaiting_confirmation'."""
     session = _sessions.get(session_id)
     if not session:
         raise HTTPException(404, "Session not found")
@@ -855,150 +1114,233 @@ async def get_plan(session_id: str):
 
 @app.post("/review/confirm")
 async def confirm_plan(req: ConfirmRequest):
-    """POST the user's decision here — pipeline unblocks and continues."""
+    """Approve, reject, or give feedback on the search plan."""
     session = _sessions.get(req.session_id)
     if not session:
         raise HTTPException(404, "Session not found")
-    response = req.response.strip()
-    if response.lower() in ("yes", "y", ""):
-        session["confirm_response"] = True
-    elif response.lower() in ("no", "abort"):
-        session["confirm_response"] = False
+    r = req.response.strip()
+    if r.lower() in ("yes", "y", ""):
+        session["_confirm_response"] = True
+    elif r.lower() in ("no", "abort"):
+        session["_confirm_response"] = False
     else:
-        session["confirm_response"] = response  # feedback → plan re-generation
-    session["confirm_event"].set()
+        session["_confirm_response"] = r   # feedback → plan re-generation
+    session["_confirm_event"].set()
     return {"status": "acknowledged"}
 
 
 @app.get("/review/{session_id}/status")
 async def get_status(session_id: str):
-    session = _sessions.get(session_id)
-    if not session:
-        raise HTTPException(404, "Session not found")
-    return {
-        "status": session["status"],
-        "progress": session["progress"],
-        "result": session["result"],
-    }
-```
-
-#### Pattern 2 — Real-time progress with Server-Sent Events (SSE)
-
-For a live progress feed (like a terminal-style log in the UI), replace polling with SSE:
-
-```python
-import asyncio
-from fastapi import FastAPI
-from fastapi.responses import StreamingResponse
-
-app = FastAPI()
-
-@app.get("/review/{session_id}/stream")
-async def stream_progress(session_id: str):
-    """Stream pipeline progress events as SSE to the browser."""
-    session = _sessions.get(session_id)
-    if not session:
-        return StreamingResponse(iter([]), media_type="text/event-stream")
-
-    last_idx = 0
-
-    async def event_generator():
-        nonlocal last_idx
-        while True:
-            messages = session["progress"]
-            if len(messages) > last_idx:
-                for msg in messages[last_idx:]:
-                    yield f"data: {msg}\n\n"
-                last_idx = len(messages)
-            if session["status"] in ("complete", "rejected", "error") or \
-               session["status"].startswith("error") or \
-               session["status"].startswith("max_iterations"):
-                yield f"data: [DONE] {session['status']}\n\n"
-                break
-            if session["status"] == "awaiting_confirmation":
-                yield f"event: plan_ready\ndata: awaiting_confirmation\n\n"
-            await asyncio.sleep(0.5)
-
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
-```
-
-> **Note**: The in-memory `_sessions` dict works for single-process development. In production, use Redis pub/sub (for SSE fan-out) and store session state in a persistent store. The `asyncio.get_event_loop().run_until_complete(event.wait())` call in `confirm_callback` works in a single-threaded asyncio loop; if the pipeline runs in a thread pool, use `loop.call_soon_threadsafe(event.set)` instead.
-
-#### Pattern 3 — Configurable assembly timeout
-
-`pipeline.run()` accepts an `assemble_timeout` parameter (default `3600.0` seconds) that wraps the two-wave LLM gather with `asyncio.wait_for`. Expose it in your API so callers can set shorter timeouts for testing or longer ones for very large reviews:
-
-```python
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel as PydanticBase
-from prisma_review_agent.pipeline import PRISMAReviewPipeline
-from prisma_review_agent.models import ReviewProtocol
-import asyncio, uuid
-
-app = FastAPI()
-_sessions: dict[str, dict] = {}
-
-
-class ReviewRequest(PydanticBase):
-    title: str
-    inclusion: str = ""
-    exclusion: str = ""
-    assemble_timeout: float = 3600.0   # client-supplied; guard against absurd values server-side
-
-
-@app.post("/review/start")
-async def start_review(req: ReviewRequest):
-    # Hard cap: never allow a timeout > 2 hours from an external caller
-    timeout = min(req.assemble_timeout, 7200.0)
-
-    session_id = str(uuid.uuid4())
-    session: dict = {"status": "running", "result": None, "progress": []}
-    _sessions[session_id] = session
-
-    protocol = ReviewProtocol(
-        title=req.title,
-        inclusion_criteria=req.inclusion,
-        exclusion_criteria=req.exclusion,
-    )
-    pipeline = PRISMAReviewPipeline(
-        api_key="sk-or-v1-...",
-        model_name="anthropic/claude-sonnet-4",
-        protocol=protocol,
-    )
-
-    asyncio.create_task(_run_with_timeout(pipeline, session, timeout))
-    return {"session_id": session_id}
-
-
-async def _run_with_timeout(pipeline, session: dict, timeout: float):
-    try:
-        result = await pipeline.run(
-            auto_confirm=True,
-            assemble_timeout=timeout,
-        )
-        session["result"] = result.model_dump(mode="json")
-        session["status"] = "complete"
-    except asyncio.TimeoutError:
-        session["status"] = "timeout"
-        session["error"] = f"Assembly exceeded {timeout:.0f}s limit"
-    except Exception as e:
-        session["status"] = f"error: {e}"
-
-
-@app.get("/review/{session_id}/status")
-async def get_status(session_id: str):
+    """Returns the full result once status == 'complete'."""
     session = _sessions.get(session_id)
     if not session:
         raise HTTPException(404, "Session not found")
     if session["status"] == "timeout":
         raise HTTPException(504, session.get("error", "Assembly timed out"))
-    return {"status": session["status"], "result": session.get("result")}
+    return _public_session(session)
+```
+
+#### Pattern 2 — JavaScript / TypeScript client
+
+Consume the SSE stream and drive a live progress UI. Paste this into any framework (React, Vue, plain JS).
+
+```typescript
+// reviewStream.ts
+export type EventType =
+  | "log" | "stage_start" | "article_start" | "article_done"
+  | "stage_done" | "plan_ready" | "done";
+
+export interface ProgressEvent {
+  type: EventType;
+  message?: string;
+  stage?: string;
+  pmid?: string;
+  index?: number;
+  done?: number;
+  total?: number;
+  remaining?: number;
+  plan?: Record<string, unknown>;
+  status?: string;
+  detail?: string;
+}
+
+export interface ProgressState {
+  status: string;
+  stage: string | null;
+  stageTotal: number;
+  stageDone: number;
+  stageRemaining: number;
+  articlesIncluded: number;
+  log: string[];
+}
+
+export function connectReviewStream(
+  sessionId: string,
+  onEvent: (ev: ProgressEvent, state: ProgressState) => void,
+  onDone: (status: string) => void,
+): () => void {
+  const state: ProgressState = {
+    status: "running",
+    stage: null,
+    stageTotal: 0,
+    stageDone: 0,
+    stageRemaining: 0,
+    articlesIncluded: 0,
+    log: [],
+  };
+
+  const es = new EventSource(`/review/${sessionId}/stream`);
+
+  const handle = (type: EventType) => (raw: MessageEvent) => {
+    const ev: ProgressEvent = { ...JSON.parse(raw.data), type };
+
+    // keep local state in sync
+    if (type === "stage_start") {
+      state.stage         = ev.stage ?? state.stage;
+      state.stageTotal    = ev.total ?? 0;
+      state.stageDone     = 0;
+      state.stageRemaining = ev.total ?? 0;
+    }
+    if (type === "article_done" || type === "stage_done") {
+      state.stageDone      = ev.done      ?? state.stageDone;
+      state.stageRemaining = ev.remaining ?? 0;
+    }
+    if (type === "log" && ev.message) {
+      state.log.push(ev.message);
+      if (state.log.length > 200) state.log.shift();
+      // parse "Final included: N" from log
+      const m = ev.message.match(/Final included:\s*(\d+)/);
+      if (m) state.articlesIncluded = parseInt(m[1], 10);
+    }
+    if (type === "done") {
+      state.status = ev.status ?? "done";
+      es.close();
+      onDone(state.status);
+      return;
+    }
+
+    onEvent(ev, { ...state });
+  };
+
+  // one listener per event type
+  (["log","stage_start","article_start","article_done","stage_done","plan_ready","done"] as EventType[])
+    .forEach(t => es.addEventListener(t, handle(t) as EventListener));
+
+  es.onerror = () => {
+    state.status = "error";
+    es.close();
+    onDone("error");
+  };
+
+  return () => es.close();   // call to disconnect early
+}
+```
+
+**Usage in a React component:**
+
+```tsx
+import { useEffect, useState } from "react";
+import { connectReviewStream, ProgressState, ProgressEvent } from "./reviewStream";
+
+export function ReviewProgress({ sessionId }: { sessionId: string }) {
+  const [state, setState] = useState<ProgressState | null>(null);
+  const [events, setEvents] = useState<ProgressEvent[]>([]);
+
+  useEffect(() => {
+    const disconnect = connectReviewStream(
+      sessionId,
+      (ev, snap) => {
+        setState({ ...snap });
+        setEvents(prev => [...prev.slice(-100), ev]);   // keep last 100
+      },
+      (finalStatus) => console.log("done:", finalStatus),
+    );
+    return disconnect;
+  }, [sessionId]);
+
+  if (!state) return <p>Connecting…</p>;
+
+  const pct = state.stageTotal > 0
+    ? Math.round((state.stageDone / state.stageTotal) * 100)
+    : 0;
+
+  return (
+    <div>
+      <p>Status: {state.status} · Stage: {state.stage ?? "—"}</p>
+      <p>Articles included so far: {state.articlesIncluded}</p>
+
+      {/* progress bar */}
+      {state.stageTotal > 0 && (
+        <div style={{ background: "#eee", borderRadius: 4, height: 8, width: "100%" }}>
+          <div style={{ background: "#4f46e5", width: `${pct}%`, height: "100%", borderRadius: 4 }} />
+        </div>
+      )}
+      <p>{state.stageDone}/{state.stageTotal} done · {state.stageRemaining} remaining</p>
+
+      {/* live log */}
+      <ul style={{ fontFamily: "monospace", fontSize: 12 }}>
+        {state.log.slice(-15).map((line, i) => <li key={i}>{line}</li>)}
+      </ul>
+
+      {/* article cards for done events */}
+      {events.filter(e => e.type === "article_done").slice(-5).map((e, i) => (
+        <div key={i} style={{ border: "1px solid #ccc", padding: 6, marginTop: 4 }}>
+          ✓ {e.pmid} &nbsp;
+          <span style={{ color: "#888" }}>
+            [{e.done}/{e.total}, {e.remaining} remaining]
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+```
+
+#### Pattern 3 — Polling fallback (no SSE)
+
+For environments where SSE is unavailable (some proxies, load balancers), poll `/progress` every 2 seconds instead:
+
+```typescript
+async function pollProgress(sessionId: string, onUpdate: (snap: object) => void) {
+  while (true) {
+    const res  = await fetch(`/review/${sessionId}/progress`);
+    const snap = await res.json();
+    onUpdate(snap);
+    if (["complete","error","rejected","timeout"].includes(snap.status)) break;
+    await new Promise(r => setTimeout(r, 2000));
+  }
+}
+```
+
+`/progress` returns:
+
+```json
+{
+  "status":            "running",
+  "stage":             "data_charting",
+  "stage_total":       38,
+  "stage_done":        12,
+  "stage_remaining":   26,
+  "articles_included": 38,
+  "plan":              null,
+  "result":            null,
+  "error":             null,
+  "recent_log": [
+    "  Charting [11/38, 27 remaining] 28087124…",
+    "  ✓ Charted 28087124 [12/38 done, 26 remaining]",
+    "  Charting [13/38, 25 remaining] 36175756…"
+  ]
+}
 ```
 
 **Key points:**
-- Cap the caller-supplied timeout server-side (`min(req.assemble_timeout, 7200.0)`) to prevent runaway tasks.
-- `asyncio.TimeoutError` is raised inside the background task — catching it there and writing `"timeout"` to the session lets `/status` return a 504.
-- The default `3600.0` s is appropriate for production reviews with 10–50 included studies. Use `30.0`–`120.0` s for smoke-test environments.
+- `parse_progress_message` runs server-side — the UI receives clean typed events and never parses strings.
+- `stage_remaining` counts down to 0 as parallel article tasks complete; the UI can use it to drive a live countdown or progress bar for each stage.
+- `X-Accel-Buffering: no` on the SSE response header is required when running behind nginx so it does not buffer the stream.
+- The in-memory `_sessions` dict works for single-process development. In production use Redis pub/sub for SSE fan-out and a persistent store for session state.
+- `asyncio.get_event_loop().run_until_complete(event.wait())` in `confirm_callback` works in a single-threaded asyncio loop; if the pipeline runs in a thread pool, use `loop.call_soon_threadsafe(event.set)` instead.
+- Server-side cap `min(req.concurrency, 10)` prevents an untrusted caller from flooding the LLM API.
+- `_default_concurrency()` uses `os.cpu_count() * 2`, clamped to 8–10, with a hard fallback of 8 when `cpu_count()` returns `None` (common in Docker with restricted cgroups).
 
 #### Suggested UI for the Plan Confirmation Phase
 
@@ -1208,6 +1550,54 @@ prisma-review --title "..." --export ttl --rdf-store-path review_store.ttl
 
 **Note**: The system processes ALL studies that pass screening criteria through complete data charting and critical appraisal. There are no artificial limits on corpus size — from small pilot reviews (5-10 studies) to comprehensive systematic reviews (50+ studies).
 
+## Performance
+
+Steps 7–15 are fully parallelised with `asyncio` in **both** the standard pipeline and compare mode. Multiple articles are processed concurrently, bounded by a semaphore so you never exceed your LLM provider's rate limit. T/A screening (step 7) and FT screening (step 9) share the same helper functions across both execution paths, so tuning `--concurrency` applies uniformly everywhere.
+
+In compare mode, per-model pipelines run concurrently with each other *and* each pipeline internally parallelises all article-level steps — so the combined speedup compounds.
+
+### Expected speedup
+
+| Articles included | Sequential | Concurrency 5 | Concurrency 10 |
+|:-----------------:|:----------:|:-------------:|:--------------:|
+| 38 | ~70 min | ~15 min | ~8 min |
+| 100 | ~3 h | ~40 min | ~20 min |
+| 1 000 + 10 citation hops | ~15 h | ~3 h | ~1.5 h |
+
+*Times are approximate and depend on model latency and API rate limits. Compare-mode runs see an additional multiplier because each model pipeline is itself fully parallel.*
+
+### Tuning concurrency
+
+**CLI:**
+
+```bash
+# Moderate parallelism (default) — safe for most OpenRouter tiers
+prisma-review --title "..." --concurrency 5
+
+# High parallelism — use if your API tier supports it
+prisma-review --title "..." --concurrency 10
+
+# Sequential (debugging / strict rate-limit compliance)
+prisma-review --title "..." --concurrency 1
+```
+
+**Python API:**
+
+```python
+protocol = ReviewProtocol(
+    title="...",
+    inclusion_criteria="...",
+    exclusion_criteria="...",
+    article_concurrency=10,   # 1–20; default 5
+)
+```
+
+**Guidance:**
+- **Default (5)** — good starting point; respects most provider rate limits.
+- **10** — recommended for large reviews (100+ included articles) when your OpenRouter tier allows higher throughput.
+- **1** — fully sequential; useful for debugging or very strict rate-limit environments.
+- Values above 10 rarely improve wall-clock time because the bottleneck shifts to LLM latency rather than throughput.
+
 ## Pipeline Steps (17-step Enhanced PRISMA)
 
 | Step | Agent | Output Type | Description |
@@ -1218,18 +1608,20 @@ prisma-review --title "..." --export ttl --rdf-store-path review_store.ttl
 | 4. Related Articles | — (HTTP) | `list[str]` | elink neighbor_score |
 | 5. Citation Hops | — (HTTP) | `list[Article]` | Forward (cited-by) + backward navigation |
 | 6. Deduplication | — (logic) | `list[Article]` | DOI/PMID dedup |
-| 7. Title/Abstract Screening | `screening_agent` | `ScreeningBatchResult` | LLM batch screening (inclusive) |
+| 7. Title/Abstract Screening ⚡ | `screening_agent` | `ScreeningBatchResult` | LLM batch screening (inclusive) — parallel batches of 15 |
 | 8. Full-text Retrieval | — (HTTP) | `dict[str, str]` | PMC efetch |
-| 9. Full-text Screening | `screening_agent` | `ScreeningBatchResult` | LLM batch screening (strict) |
-| 10. Evidence Extraction | `evidence_extraction_agent` | `BatchEvidenceExtraction` | LLM identifies claims + evidence spans |
-| 11. Data Extraction | `data_extraction_agent` | `StudyDataExtraction` | Per-study structured data |
-| 12. Risk of Bias | `rob_agent` | `RiskOfBiasResult` | Per-study RoB 2 / ROBINS-I / NOS |
-| 13. Data Charting | `data_charting_agent` | `DataChartingRubric` | Structured charting across 7 sections (A-G) |
-| 14. Critical Appraisal | `critical_appraisal_agent` | `CriticalAppraisalRubric` | Quality assessment across 4 domains |
-| 15. Narrative Rows | `narrative_row_agent` | `PRISMANarrativeRow` | Condensed 6-cell summary format |
+| 9. Full-text Screening ⚡ | `screening_agent` | `ScreeningBatchResult` | LLM batch screening (strict) — parallel batches of 10 |
+| 10. Evidence Extraction ⚡ | `evidence_extraction_agent` | `BatchEvidenceExtraction` | LLM identifies claims + evidence spans — parallel batches of 5 |
+| 11. Data Extraction ⚡ | `data_extraction_agent` | `StudyDataExtraction` | Per-study structured data — fully parallel |
+| 12. Risk of Bias ⚡ | `rob_agent` | `RiskOfBiasResult` | Per-study RoB 2 / ROBINS-I / NOS — fully parallel |
+| 13. Data Charting ⚡ | `data_charting_agent` | `DataChartingRubric` | Structured charting across 7 sections (A-G) — fully parallel |
+| 14. Critical Appraisal ⚡ | `critical_appraisal_agent` | `CriticalAppraisalRubric` | Quality assessment across 4 domains — fully parallel |
+| 15. Narrative Rows ⚡ | `narrative_row_agent` | `PRISMANarrativeRow` | Condensed 6-cell summary format — fully parallel |
 | 16. Synthesis | `synthesis_agent` | `str` | Grounded narrative with PMID citations |
 | 17. Bias + GRADE | `bias_summary_agent` + `grade_agent` | `str` + `GRADEAssessment` | Parallel assessment |
 | 18. Limitations | `limitations_agent` | `str` | Review limitations section |
+
+*⚡ = runs with `asyncio` concurrency bounded by `article_concurrency` (default 5, set via `--concurrency`). Steps 7 and 9 use shared helpers `_parallel_ta_screening` / `_parallel_ft_screening` reused by both the standard pipeline and compare mode.*
 
 ## Agents Reference
 
@@ -1485,6 +1877,7 @@ Pipeline:
   --extract-data       Enable per-study data extraction
   --auto               Skip plan confirmation; run end-to-end without prompts
   --max-plan-iterations  Max plan re-generation attempts before aborting (default: 3)
+  --concurrency N      Max concurrent LLM calls per article step (default: 5, max: 20)
 
 Cache (PostgreSQL):
   --pg-dsn             PostgreSQL DSN (or set PRISMA_PG_DSN env var)

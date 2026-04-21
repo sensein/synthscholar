@@ -389,6 +389,12 @@ class ReviewProtocol(BaseModel):
         ge=0,
         description="Maximum retry attempts for a failed batch before marking the review failed.",
     )
+    article_concurrency: int = Field(
+        default=5,
+        ge=1,
+        le=20,
+        description="Max concurrent LLM calls for per-article steps (extraction, RoB, charting, appraisal, narrative) and screening batches.",
+    )
 
     @model_validator(mode="after")
     def _validate_section_format_values(self) -> "ReviewProtocol":
