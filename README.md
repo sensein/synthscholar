@@ -1,6 +1,8 @@
-# PRISMA Agent — Pydantic AI Systematic Review
+# SynthScholar — PRISMA 2020 Systematic Review Agent
 
 A standalone, agent-based systematic literature review tool following **PRISMA 2020** guidelines. Built with [pydantic-ai](https://ai.pydantic.dev/) for structured LLM interactions and typed outputs via [OpenRouter](https://openrouter.ai/).
+
+> 📚 **Full documentation:** see [`docs/`](docs/) — build with `sphinx-build -b html docs docs/_build/html`. Covers installation, CLI, Python API, compare mode, UI integration, FastAPI patterns, caching, architecture diagrams, and the full API reference.
 
 ## Architecture
 
@@ -8,10 +10,10 @@ A standalone, agent-based systematic literature review tool following **PRISMA 2
 prisma-review-agent/
 ├── models.py           # Pydantic v2 models (Article, Protocol, Evidence, GRADE, etc.)
 ├── clients.py          # HTTP clients: PubMed (NCBI E-utilities), bioRxiv, SQLite cache
-├── agents.py           # 12 pydantic-ai agents with typed outputs + runner functions
+├── agents.py           # 20+ pydantic-ai agents with typed outputs + runner functions
 ├── evidence.py         # Evidence extraction + source grounding validation gate
 ├── validation.py       # Source grounding validator — rapidfuzz fuzzy matching
-├── pipeline.py         # Async orchestrator — 16-step PRISMA pipeline with cache
+├── pipeline.py         # Async orchestrator — 18-step PRISMA pipeline with cache
 ├── compare.py          # Multi-model compare mode — parallel runs + consensus synthesis
 ├── export.py           # Export: Markdown, JSON, BibTeX, CSV formats
 ├── main.py             # Standalone CLI with argparse + interactive mode
@@ -97,6 +99,7 @@ prisma-review \
   --rob-tool "RoB 2" \
   --extract-data \
   --concurrency 10 \
+  --max-articles 200 \
   --export md json bib
 
 # Interactive mode
@@ -180,6 +183,7 @@ protocol = ReviewProtocol(
     max_hops=10,
     rob_tool=RoBTool.NEWCASTLE_OTTAWA,
     article_concurrency=10,   # parallel LLM calls per article step (default: 5)
+    max_articles=200,         # rerank by relevance and cap at N after dedup (default: no limit)
 
     # Domain-specific charting questions — answered per included article and stored
     # in DataChartingRubric.custom_fields (question text → extracted answer).
@@ -1399,9 +1403,10 @@ flowchart TB
             direction TB
             S1["✓  Plan approved — Iteration 1"]
             S2["✓  Searching PubMed — 3 queries sent"]
-            S3["✓  47 records retrieved"]
-            S4["✓  Deduplication — 6 duplicates removed"]
-            S5["⟳  Screening title/abstract — 41 records  in progress"]
+            S3["✓  1 195 records retrieved"]
+            S4["✓  Deduplication — 115 duplicates removed  →  1 080 unique"]
+            S4b["✓  Relevance rerank — top 200 of 1 080 selected  (--max-articles 200)"]
+            S5["⟳  Screening title/abstract — 200 records  in progress"]
 
             subgraph Cards["Per-article decisions  streamed live"]
                 direction LR
@@ -1413,8 +1418,10 @@ flowchart TB
     end
 
     Hdr --> Log
-    S1 --> S2 --> S3 --> S4 --> S5 --> Cards
+    S1 --> S2 --> S3 --> S4 --> S4b --> S5 --> Cards
 ```
+
+> **Note:** The rerank step (S4b) only appears when `--max-articles N` is set. Without it the pipeline proceeds directly from deduplication to title/abstract screening with the full deduplicated pool.
 
 This mirrors the "Running · 0 included" sidebar state in the KSynth screenshot and the evidence card grid in the Evidence tab.
 
@@ -1566,6 +1573,37 @@ In compare mode, per-model pipelines run concurrently with each other *and* each
 
 *Times are approximate and depend on model latency and API rate limits. Compare-mode runs see an additional multiplier because each model pipeline is itself fully parallel.*
 
+### Limiting articles with relevance reranking
+
+When a broad search returns thousands of articles, use `--max-articles N` to rerank by relevance and cap the pool before screening begins. Articles are scored heuristically against your research question using title, abstract, MeSH term, and keyword overlap — no LLM call, runs in milliseconds.
+
+**CLI:**
+
+```bash
+# Keep only the top 200 most relevant articles after deduplication
+prisma-review --title "..." --max-articles 200
+
+# Combine with higher concurrency for fast exploratory runs
+prisma-review --title "..." --max-articles 100 --concurrency 10
+```
+
+**Python API:**
+
+```python
+protocol = ReviewProtocol(
+    title="...",
+    inclusion_criteria="...",
+    exclusion_criteria="...",
+    max_articles=200,   # rerank + cap after dedup; default None (no limit)
+)
+```
+
+**Guidance:**
+- Omit (default) for a full systematic review — all deduplicated articles proceed to screening.
+- Use `200–500` for exploratory reviews or when you want faster turnaround on a large corpus.
+- Use `50–100` for quick test runs to validate your protocol before committing to the full pipeline.
+- The reranker is lexical (keyword overlap), so choose a descriptive `--title` / `question` with domain-specific terms for best results.
+
 ### Tuning concurrency
 
 **CLI:**
@@ -1598,7 +1636,7 @@ protocol = ReviewProtocol(
 - **1** — fully sequential; useful for debugging or very strict rate-limit environments.
 - Values above 10 rarely improve wall-clock time because the bottleneck shifts to LLM latency rather than throughput.
 
-## Pipeline Steps (17-step Enhanced PRISMA)
+## Pipeline Steps (18-step Enhanced PRISMA)
 
 | Step | Agent | Output Type | Description |
 |------|-------|-------------|-------------|
@@ -1878,6 +1916,7 @@ Pipeline:
   --auto               Skip plan confirmation; run end-to-end without prompts
   --max-plan-iterations  Max plan re-generation attempts before aborting (default: 3)
   --concurrency N      Max concurrent LLM calls per article step (default: 5, max: 20)
+  --max-articles N     Rerank by relevance after dedup and keep top N (default: no limit)
 
 Cache (PostgreSQL):
   --pg-dsn             PostgreSQL DSN (or set PRISMA_PG_DSN env var)

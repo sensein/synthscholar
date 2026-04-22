@@ -329,6 +329,51 @@ class AcquisitionResult:
     flow: PRISMAFlowCounts
 
 
+def _rerank_articles(articles: list[Article], question: str, max_n: int) -> list[Article]:
+    """Return the top *max_n* articles ranked by heuristic relevance to *question*.
+
+    Scoring (all normalised to 0-1, then weighted):
+      - Title keyword overlap with question tokens  (weight 3)
+      - Abstract keyword overlap                    (weight 2)
+      - MeSH/keyword overlap                        (weight 1)
+      - Source bonus: primary search > related > hop (weight 0.5)
+    No LLM calls — runs in microseconds per article.
+    """
+    import re
+
+    stop = {
+        "a", "an", "the", "of", "in", "on", "at", "to", "for", "and", "or",
+        "is", "are", "was", "were", "with", "by", "from", "as", "that", "this",
+        "it", "its", "be", "been", "has", "have", "had", "do", "does", "did",
+        "not", "no", "but", "if", "so", "we", "our", "their", "which", "who",
+    }
+
+    def tokens(text: str) -> set[str]:
+        return {w for w in re.findall(r"[a-z]+", text.lower()) if w not in stop and len(w) > 2}
+
+    q_tokens = tokens(question)
+    if not q_tokens:
+        return articles[:max_n]
+
+    source_bonus = {"pubmed_search": 1.0, "biorxiv": 0.9}
+
+    def score(a: Article) -> float:
+        t = tokens(a.title)
+        ab = tokens(a.abstract[:500])
+        mesh = tokens(" ".join(a.mesh_terms + a.keywords))
+
+        title_overlap = len(t & q_tokens) / len(q_tokens) if q_tokens else 0
+        abstract_overlap = len(ab & q_tokens) / len(q_tokens) if q_tokens else 0
+        mesh_overlap = len(mesh & q_tokens) / len(q_tokens) if q_tokens else 0
+
+        src = source_bonus.get(a.source, 0.7) if not a.source.startswith("hop") else 0.5
+
+        return 3 * title_overlap + 2 * abstract_overlap + mesh_overlap + 0.5 * src
+
+    ranked = sorted(articles, key=score, reverse=True)
+    return ranked[:max_n]
+
+
 class PRISMAReviewPipeline:
     """Full PRISMA 2020 pipeline with async agent orchestration."""
 
@@ -635,6 +680,12 @@ class PRISMAReviewPipeline:
                 synthesis_text="No articles found matching the search criteria.",
                 timestamp=datetime.now().isoformat(),
             )
+
+        # ── 6b. Relevance reranking + cap (optional) ──
+        if proto.max_articles and len(deduped) > proto.max_articles:
+            before = len(deduped)
+            deduped = _rerank_articles(deduped, proto.question, proto.max_articles)
+            up(f"Reranked and capped: {before} → {len(deduped)} articles (--max-articles {proto.max_articles})")
 
         # ── 7. Title/abstract screening (LLM agent, batches of 15) ──
         ta_included: list[Article] = []
@@ -1379,6 +1430,12 @@ class PRISMAReviewPipeline:
         flow.duplicates_removed = flow.total_identified - len(deduped)
         flow.after_dedup = len(deduped)
         up(f"After dedup: {flow.after_dedup} (removed {flow.duplicates_removed})")
+
+        if self.protocol.max_articles and len(deduped) > self.protocol.max_articles:
+            before = len(deduped)
+            deduped = _rerank_articles(deduped, self.protocol.question, self.protocol.max_articles)
+            flow.after_dedup = len(deduped)
+            up(f"Reranked and capped: {before} → {len(deduped)} articles (--max-articles {self.protocol.max_articles})")
 
         return AcquisitionResult(deduped=deduped, all_search_queries=all_search_queries, flow=flow)
 

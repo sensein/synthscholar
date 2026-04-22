@@ -79,6 +79,7 @@ def build_protocol_from_args(args: argparse.Namespace) -> ReviewProtocol:
         registration_number=args.registration or "",
         rob_tool=RoBTool(args.rob_tool),
         article_concurrency=args.concurrency,
+        max_articles=args.max_articles if args.max_articles and args.max_articles > 0 else None,
     )
 
 
@@ -392,6 +393,8 @@ Examples:
                         help="Enable per-study data extraction")
     parser.add_argument("--concurrency", type=int, default=5, metavar="N",
                         help="Max concurrent LLM calls for per-article steps (screening, extraction, RoB, charting, appraisal, narrative). Default: 5. Max: 20.")
+    parser.add_argument("--max-articles", type=int, default=None, metavar="N",
+                        help="After deduplication, rerank articles by relevance and keep only the top N. Useful for quick/test runs.")
 
     # Output
     parser.add_argument("--export", "-e", nargs="+", default=["md"],

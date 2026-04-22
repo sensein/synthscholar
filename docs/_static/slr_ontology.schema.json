@@ -1,0 +1,3658 @@
+{
+    "$defs": {
+        "Activity": {
+            "additionalProperties": false,
+            "description": "An action or process that occurred over a period of time.",
+            "properties": {
+                "activity_id": {
+                    "description": "Unique identifier for the activity.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "description": {
+                    "description": "Human-readable description of the activity.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "end_time": {
+                    "description": "Time at which the activity ended.",
+                    "format": "date-time",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "start_time": {
+                    "description": "Time at which the activity started.",
+                    "format": "date-time",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                }
+            },
+            "required": [
+                "activity_id"
+            ],
+            "title": "Activity",
+            "type": "object"
+        },
+        "Agent": {
+            "additionalProperties": false,
+            "description": "A person, organisation, or software responsible for an activity or entity.",
+            "properties": {
+                "agent_id": {
+                    "description": "Unique identifier for the agent.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "name": {
+                    "description": "Human-readable name of the agent.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                }
+            },
+            "required": [
+                "agent_id"
+            ],
+            "title": "Agent",
+            "type": "object"
+        },
+        "AppraisalActivity": {
+            "additionalProperties": false,
+            "description": "A quality appraisal activity for included sources.",
+            "properties": {
+                "activity_id": {
+                    "description": "Unique identifier for the activity.",
+                    "type": "string"
+                },
+                "description": {
+                    "description": "Human-readable description of the activity.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "end_time": {
+                    "description": "Time at which the activity ended.",
+                    "format": "date-time",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "model_invocations": {
+                    "description": "LLM model invocations performed during appraisal.",
+                    "items": {
+                        "$ref": "#/$defs/ModelInvocation"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "review_events": {
+                    "description": "Human review events during appraisal.",
+                    "items": {
+                        "$ref": "#/$defs/ReviewEvent"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "start_time": {
+                    "description": "Time at which the activity started.",
+                    "format": "date-time",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "tool_invocations": {
+                    "description": "Tool invocations performed during appraisal.",
+                    "items": {
+                        "$ref": "#/$defs/ToolInvocation"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "user_inputs": {
+                    "description": "User inputs captured during appraisal.",
+                    "items": {
+                        "$ref": "#/$defs/UserInput"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                }
+            },
+            "required": [
+                "activity_id"
+            ],
+            "title": "AppraisalActivity",
+            "type": "object"
+        },
+        "AppraisalItem": {
+            "additionalProperties": false,
+            "description": "An individual item in a structured quality appraisal checklist.",
+            "properties": {
+                "item_text": {
+                    "description": "Text of the appraisal item or question.",
+                    "type": "string"
+                },
+                "justification": {
+                    "description": "Justification or evidence for the rating.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "rating": {
+                    "$ref": "#/$defs/ItemRatingEnum",
+                    "description": "Rating for this appraisal item."
+                }
+            },
+            "required": [
+                "item_text",
+                "rating"
+            ],
+            "title": "AppraisalItem",
+            "type": "object"
+        },
+        "ArtifactKindEnum": {
+            "description": "Kind of stored artifact.",
+            "enum": [
+                "prompt_text",
+                "model_response",
+                "tool_result",
+                "source_pdf",
+                "source_text_extract",
+                "protocol_document",
+                "skill_file",
+                "template",
+                "configuration",
+                "other"
+            ],
+            "title": "ArtifactKindEnum",
+            "type": "string"
+        },
+        "ArtifactStore": {
+            "additionalProperties": false,
+            "description": "A collection of content-addressed stored artifacts.",
+            "properties": {
+                "artifacts": {
+                    "description": "Artifacts held in this store.",
+                    "items": {
+                        "$ref": "#/$defs/StoredArtifact"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "store_id": {
+                    "description": "Unique identifier for this artifact store.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                }
+            },
+            "required": [
+                "store_id"
+            ],
+            "title": "ArtifactStore",
+            "type": "object"
+        },
+        "BiasTransparencyDomain": {
+            "additionalProperties": false,
+            "description": "Appraisal domain covering bias, transparency, and reporting quality.",
+            "properties": {
+                "items": {
+                    "description": "Individual appraisal items within this domain.",
+                    "items": {
+                        "$ref": "#/$defs/AppraisalItem"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "overall_concern": {
+                    "$ref": "#/$defs/ConcernLevelEnum",
+                    "description": "Overall level of concern for this appraisal domain."
+                }
+            },
+            "title": "BiasTransparencyDomain",
+            "type": "object"
+        },
+        "CertaintyOfEvidenceToolEnum": {
+            "description": "Tool used to assess certainty or quality of evidence.",
+            "enum": [
+                "GRADE",
+                "CERQual",
+                "GRADE_CERQual",
+                "other",
+                "none"
+            ],
+            "title": "CertaintyOfEvidenceToolEnum",
+            "type": "string"
+        },
+        "ChartingActivity": {
+            "additionalProperties": false,
+            "description": "A data charting or extraction activity for included sources.",
+            "properties": {
+                "activity_id": {
+                    "description": "Unique identifier for the activity.",
+                    "type": "string"
+                },
+                "description": {
+                    "description": "Human-readable description of the activity.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "end_time": {
+                    "description": "Time at which the activity ended.",
+                    "format": "date-time",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "model_invocations": {
+                    "description": "LLM model invocations performed during charting.",
+                    "items": {
+                        "$ref": "#/$defs/ModelInvocation"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "review_events": {
+                    "description": "Human review events during charting.",
+                    "items": {
+                        "$ref": "#/$defs/ReviewEvent"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "start_time": {
+                    "description": "Time at which the activity started.",
+                    "format": "date-time",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "tool_invocations": {
+                    "description": "Tool invocations performed during charting.",
+                    "items": {
+                        "$ref": "#/$defs/ToolInvocation"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "user_inputs": {
+                    "description": "User inputs captured during charting.",
+                    "items": {
+                        "$ref": "#/$defs/UserInput"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                }
+            },
+            "required": [
+                "activity_id"
+            ],
+            "title": "ChartingActivity",
+            "type": "object"
+        },
+        "ChartingRecord": {
+            "additionalProperties": false,
+            "description": "A versioned record of data charted from an included source.",
+            "properties": {
+                "generated_at_time": {
+                    "description": "The time at which the entity was generated.",
+                    "format": "date-time",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "is_current": {
+                    "description": "Whether this is the current (latest) version of the charting record.",
+                    "type": [
+                        "boolean",
+                        "null"
+                    ]
+                },
+                "record_id": {
+                    "description": "Unique identifier for this charting record version.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "section_a_publication": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/PublicationInfo"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "description": "Section A \u2014 publication and bibliographic information."
+                },
+                "section_b_design": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/StudyDesignSection"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "description": "Section B \u2014 study design information."
+                },
+                "section_c_primary_sample": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/PrimarySample"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "description": "Section C \u2014 primary sample information."
+                },
+                "section_d_comparison": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/ComparisonGroup"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "description": "Section D \u2014 comparison group information."
+                },
+                "section_e_data_collection": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/DataCollection"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "description": "Section E \u2014 data collection information."
+                },
+                "section_f_methods_results": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/MethodsAndResults"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "description": "Section F \u2014 methods and results information."
+                },
+                "section_g_synthesis": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/SynthesisFields"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "description": "Section G \u2014 synthesis and evidence information."
+                },
+                "version_label": {
+                    "description": "Human-readable version label (e.g., v1.0, draft).",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "version_number": {
+                    "description": "Sequential version number of this charting record.",
+                    "type": "integer"
+                },
+                "was_attributed_to": {
+                    "description": "The agent to whom this entity is attributed.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "was_derived_from": {
+                    "description": "The entity from which this entity was derived.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "was_generated_by": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/ChartingActivity"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "description": "The activity that generated this entity."
+                },
+                "was_revision_of": {
+                    "description": "The prior entity that this entity is a revision of.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                }
+            },
+            "required": [
+                "record_id",
+                "version_number"
+            ],
+            "title": "ChartingRecord",
+            "type": "object"
+        },
+        "ComparisonGroup": {
+            "additionalProperties": false,
+            "description": "Section D \u2014 comparison or control group details.",
+            "properties": {
+                "comparator_description": {
+                    "description": "Description of the comparator or control group.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "comparator_notes": {
+                    "description": "Additional notes on the comparator group.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "comparator_sample_size": {
+                    "description": "Sample size of the comparator group.",
+                    "type": [
+                        "integer",
+                        "null"
+                    ]
+                }
+            },
+            "title": "ComparisonGroup",
+            "type": "object"
+        },
+        "ConcernLevelEnum": {
+            "description": "Level of concern or certainty rating.",
+            "enum": [
+                "low",
+                "some",
+                "high",
+                "unclear"
+            ],
+            "title": "ConcernLevelEnum",
+            "type": "string"
+        },
+        "CriticalAppraisal": {
+            "additionalProperties": false,
+            "description": "A structured quality appraisal of an included source.",
+            "properties": {
+                "appraisal_id": {
+                    "description": "Unique identifier for this appraisal record.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "domain_1_sample": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/SamplePopulationDomain"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "description": "Appraisal domain 1 \u2014 sample and population."
+                },
+                "domain_2_data_collection": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/DataCollectionDomain"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "description": "Appraisal domain 2 \u2014 data collection."
+                },
+                "domain_3_methods": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/MethodsAnalysisDomain"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "description": "Appraisal domain 3 \u2014 methods and analysis."
+                },
+                "domain_4_bias_transparency": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/BiasTransparencyDomain"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "description": "Appraisal domain 4 \u2014 bias and transparency."
+                },
+                "generated_at_time": {
+                    "description": "The time at which the entity was generated.",
+                    "format": "date-time",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "is_current": {
+                    "description": "Whether this is the current (latest) appraisal version.",
+                    "type": [
+                        "boolean",
+                        "null"
+                    ]
+                },
+                "overall_judgment": {
+                    "$ref": "#/$defs/ConcernLevelEnum",
+                    "description": "Overall quality judgment across all appraisal domains."
+                },
+                "tool_used": {
+                    "description": "Name of the appraisal tool or checklist used.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "version_number": {
+                    "description": "Sequential version number of this appraisal.",
+                    "type": "integer"
+                },
+                "was_attributed_to": {
+                    "description": "The agent to whom this entity is attributed.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "was_derived_from": {
+                    "description": "The entity from which this entity was derived.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "was_generated_by": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/Activity"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "description": "The activity that generated this entity."
+                },
+                "was_revision_of_appraisal": {
+                    "description": "Prior appraisal that this appraisal revises.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                }
+            },
+            "required": [
+                "appraisal_id",
+                "version_number"
+            ],
+            "title": "CriticalAppraisal",
+            "type": "object"
+        },
+        "DataCollection": {
+            "additionalProperties": false,
+            "description": "Section E \u2014 data collection and features.",
+            "properties": {
+                "data_quality_notes": {
+                    "description": "Notes on data quality or preprocessing.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "data_types": {
+                    "description": "Types of data collected or used.",
+                    "items": {
+                        "$ref": "#/$defs/DataTypeEnum"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "feature_types": {
+                    "description": "Types of features or variables used.",
+                    "items": {
+                        "$ref": "#/$defs/FeatureTypeEnum"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "ground_truth_method": {
+                    "description": "Method used to establish ground truth or reference standard.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "missing_data_handling": {
+                    "description": "Approach to handling missing data.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                }
+            },
+            "title": "DataCollection",
+            "type": "object"
+        },
+        "DataCollectionDomain": {
+            "additionalProperties": false,
+            "description": "Appraisal domain covering data collection methods and measurement.",
+            "properties": {
+                "items": {
+                    "description": "Individual appraisal items within this domain.",
+                    "items": {
+                        "$ref": "#/$defs/AppraisalItem"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "overall_concern": {
+                    "$ref": "#/$defs/ConcernLevelEnum",
+                    "description": "Overall level of concern for this appraisal domain."
+                }
+            },
+            "title": "DataCollectionDomain",
+            "type": "object"
+        },
+        "DataTypeEnum": {
+            "description": "Type of data used in the study.",
+            "enum": [
+                "tabular",
+                "imaging",
+                "audio",
+                "video",
+                "text",
+                "genomic",
+                "sensor",
+                "mixed",
+                "other"
+            ],
+            "title": "DataTypeEnum",
+            "type": "string"
+        },
+        "DatabaseEnum": {
+            "description": "Bibliographic database or information source searched.",
+            "enum": [
+                "PubMed",
+                "EMBASE",
+                "Cochrane_CENTRAL",
+                "PsycINFO",
+                "CINAHL",
+                "Scopus",
+                "Web_of_Science",
+                "bioRxiv",
+                "medRxiv",
+                "IEEE_Xplore",
+                "ACM_Digital_Library",
+                "arXiv",
+                "grey_literature",
+                "other"
+            ],
+            "title": "DatabaseEnum",
+            "type": "string"
+        },
+        "DirectionOfEffectEnum": {
+            "description": "Direction of the primary effect or outcome.",
+            "enum": [
+                "favors_intervention",
+                "favors_control",
+                "no_difference",
+                "mixed",
+                "not_reported"
+            ],
+            "title": "DirectionOfEffectEnum",
+            "type": "string"
+        },
+        "EffectMeasureEnum": {
+            "description": "Statistical effect measure reported.",
+            "enum": [
+                "OR",
+                "RR",
+                "HR",
+                "RD",
+                "SMD",
+                "WMD",
+                "MD",
+                "NNT",
+                "NNH",
+                "AUC",
+                "Sens_Spec",
+                "other"
+            ],
+            "title": "EffectMeasureEnum",
+            "type": "string"
+        },
+        "EligibilityFrameworkEnum": {
+            "description": "Framework used to define eligibility criteria.",
+            "enum": [
+                "PICO",
+                "PICOS",
+                "PICOT",
+                "SPIDER",
+                "ECLIPSE",
+                "PCC",
+                "other"
+            ],
+            "title": "EligibilityFrameworkEnum",
+            "type": "string"
+        },
+        "ExcludedSource": {
+            "additionalProperties": false,
+            "description": "A source screened and excluded from the review.",
+            "properties": {
+                "abstract": {
+                    "description": "Abstract of the source publication.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "authors": {
+                    "description": "Authors of the source publication.",
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "citation": {
+                    "description": "Full bibliographic citation string.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "database_source": {
+                    "$ref": "#/$defs/DatabaseEnum",
+                    "description": "Database from which this source was retrieved."
+                },
+                "doi": {
+                    "description": "Digital Object Identifier.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "exclusion_notes": {
+                    "description": "Additional notes on the exclusion decision.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "exclusion_reason": {
+                    "$ref": "#/$defs/ExclusionReasonEnum",
+                    "description": "Reason for excluding the source."
+                },
+                "exclusion_stage": {
+                    "$ref": "#/$defs/ScreeningStageEnum",
+                    "description": "Screening stage at which the source was excluded."
+                },
+                "journal": {
+                    "description": "Journal or venue where the source was published.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "keywords": {
+                    "description": "Keywords associated with the source.",
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "pmid": {
+                    "description": "PubMed identifier.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "source_id": {
+                    "description": "Unique identifier for the source.",
+                    "type": "string"
+                },
+                "title": {
+                    "description": "Title of the source publication.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "url": {
+                    "description": "URL of the source publication.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "year": {
+                    "description": "Year of publication.",
+                    "type": [
+                        "integer",
+                        "null"
+                    ]
+                }
+            },
+            "required": [
+                "source_id"
+            ],
+            "title": "ExcludedSource",
+            "type": "object"
+        },
+        "ExclusionReasonEnum": {
+            "description": "Reason for excluding a source from the review.",
+            "enum": [
+                "wrong_population",
+                "wrong_intervention",
+                "wrong_comparator",
+                "wrong_outcome",
+                "wrong_study_design",
+                "wrong_language",
+                "wrong_date",
+                "duplicate",
+                "no_full_text",
+                "conference_abstract_only",
+                "other"
+            ],
+            "title": "ExclusionReasonEnum",
+            "type": "string"
+        },
+        "FeatureTypeEnum": {
+            "description": "Type of features or variables used in the analysis.",
+            "enum": [
+                "clinical",
+                "demographic",
+                "imaging",
+                "genomic",
+                "behavioral",
+                "environmental",
+                "combined",
+                "other"
+            ],
+            "title": "FeatureTypeEnum",
+            "type": "string"
+        },
+        "FlagTypeEnum": {
+            "description": "Type of concern or flag raised about a study.",
+            "enum": [
+                "data_quality",
+                "methodological",
+                "ethical",
+                "reproducibility",
+                "conflict_of_interest",
+                "retraction_risk",
+                "other"
+            ],
+            "title": "FlagTypeEnum",
+            "type": "string"
+        },
+        "IncludedSource": {
+            "additionalProperties": false,
+            "description": "A source that meets eligibility criteria and is included in the review.",
+            "properties": {
+                "abstract": {
+                    "description": "Abstract of the source publication.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "appraisal_history": {
+                    "description": "Historical versions of critical appraisals for this source.",
+                    "items": {
+                        "$ref": "#/$defs/CriticalAppraisal"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "authors": {
+                    "description": "Authors of the source publication.",
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "charting_record": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/ChartingRecord"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "description": "Current data charting record for this source."
+                },
+                "charting_record_history": {
+                    "description": "Historical versions of charting records for this source.",
+                    "items": {
+                        "$ref": "#/$defs/ChartingRecord"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "citation": {
+                    "description": "Full bibliographic citation string.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "critical_appraisal": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/CriticalAppraisal"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "description": "Current critical appraisal for this source."
+                },
+                "database_source": {
+                    "$ref": "#/$defs/DatabaseEnum",
+                    "description": "Database from which this source was retrieved."
+                },
+                "doi": {
+                    "description": "Digital Object Identifier.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "journal": {
+                    "description": "Journal or venue where the source was published.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "keywords": {
+                    "description": "Keywords associated with the source.",
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "pmid": {
+                    "description": "PubMed identifier.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "risk_of_bias": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/RiskOfBiasAssessment"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "description": "Risk of bias assessment for this source."
+                },
+                "source_id": {
+                    "description": "Unique identifier for the source.",
+                    "type": "string"
+                },
+                "title": {
+                    "description": "Title of the source publication.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "url": {
+                    "description": "URL of the source publication.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "was_derived_from": {
+                    "description": "The entity from which this entity was derived.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "year": {
+                    "description": "Year of publication.",
+                    "type": [
+                        "integer",
+                        "null"
+                    ]
+                }
+            },
+            "required": [
+                "source_id"
+            ],
+            "title": "IncludedSource",
+            "type": "object"
+        },
+        "InclusionPolicyEnum": {
+            "description": "Policy governing inclusion of study types in the review.",
+            "enum": [
+                "preregistered_only",
+                "peer_reviewed_only",
+                "include_preprints",
+                "include_grey_literature",
+                "other"
+            ],
+            "title": "InclusionPolicyEnum",
+            "type": "string"
+        },
+        "InformationSourceKindEnum": {
+            "description": "Kind of information source searched or consulted.",
+            "enum": [
+                "bibliographic_database",
+                "preprint_server",
+                "trial_registry",
+                "grey_literature",
+                "citation_search",
+                "expert_contact",
+                "other"
+            ],
+            "title": "InformationSourceKindEnum",
+            "type": "string"
+        },
+        "ItemRatingEnum": {
+            "description": "Rating for an individual appraisal item.",
+            "enum": [
+                "yes",
+                "partial",
+                "no",
+                "not_reported",
+                "not_applicable"
+            ],
+            "title": "ItemRatingEnum",
+            "type": "string"
+        },
+        "MetaAnalysisModelEnum": {
+            "description": "Statistical model used for meta-analysis.",
+            "enum": [
+                "fixed_effect",
+                "random_effects_DL",
+                "random_effects_REML",
+                "Bayesian",
+                "network",
+                "IPD",
+                "other",
+                "none"
+            ],
+            "title": "MetaAnalysisModelEnum",
+            "type": "string"
+        },
+        "MethodCategoryEnum": {
+            "description": "Category of machine learning or analytical method used.",
+            "enum": [
+                "supervised_learning",
+                "unsupervised_learning",
+                "semi_supervised",
+                "self_supervised",
+                "reinforcement_learning",
+                "rule_based",
+                "statistical",
+                "deep_learning",
+                "transformer",
+                "ensemble",
+                "hybrid",
+                "other"
+            ],
+            "title": "MethodCategoryEnum",
+            "type": "string"
+        },
+        "MethodsAnalysisDomain": {
+            "additionalProperties": false,
+            "description": "Appraisal domain covering analytical methods and statistical rigour.",
+            "properties": {
+                "items": {
+                    "description": "Individual appraisal items within this domain.",
+                    "items": {
+                        "$ref": "#/$defs/AppraisalItem"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "overall_concern": {
+                    "$ref": "#/$defs/ConcernLevelEnum",
+                    "description": "Overall level of concern for this appraisal domain."
+                }
+            },
+            "title": "MethodsAnalysisDomain",
+            "type": "object"
+        },
+        "MethodsAndResults": {
+            "additionalProperties": false,
+            "description": "Section F \u2014 methods, model performance and results.",
+            "properties": {
+                "algorithm_names": {
+                    "description": "Names of algorithms or models used.",
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "confidence_interval": {
+                    "description": "Confidence interval for the primary metric (text).",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "direction_of_effect": {
+                    "$ref": "#/$defs/DirectionOfEffectEnum",
+                    "description": "Direction of the primary effect."
+                },
+                "effect_measure": {
+                    "description": "Effect measures reported.",
+                    "items": {
+                        "$ref": "#/$defs/EffectMeasureEnum"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "flags": {
+                    "description": "Methodological or quality flags.",
+                    "items": {
+                        "$ref": "#/$defs/FlagTypeEnum"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "key_results": {
+                    "description": "Key results as text statements.",
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "method_category": {
+                    "$ref": "#/$defs/MethodCategoryEnum",
+                    "description": "Category of the primary analytical method."
+                },
+                "outcome": {
+                    "description": "Outcomes measured or reported.",
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "p_value": {
+                    "description": "P-value associated with the primary result.",
+                    "type": [
+                        "number",
+                        "null"
+                    ]
+                },
+                "primary_metric": {
+                    "$ref": "#/$defs/PerformanceMetricEnum",
+                    "description": "Primary performance metric."
+                },
+                "primary_metric_value": {
+                    "description": "Numeric value of the primary performance metric.",
+                    "type": [
+                        "number",
+                        "null"
+                    ]
+                },
+                "validation_methodology": {
+                    "$ref": "#/$defs/ValidationMethodologyEnum",
+                    "description": "Validation methodology applied."
+                }
+            },
+            "title": "MethodsAndResults",
+            "type": "object"
+        },
+        "ModelConfiguration": {
+            "additionalProperties": false,
+            "description": "Configuration parameters for a language model invocation.",
+            "properties": {
+                "config_id": {
+                    "description": "Unique identifier for this model configuration.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "max_tokens": {
+                    "description": "Maximum tokens to generate.",
+                    "type": [
+                        "integer",
+                        "null"
+                    ]
+                },
+                "model_name": {
+                    "description": "Name of the language model.",
+                    "type": "string"
+                },
+                "model_version": {
+                    "description": "Version of the language model.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "provider": {
+                    "description": "Provider or organisation offering the model.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "seed": {
+                    "description": "Random seed for reproducibility.",
+                    "type": [
+                        "integer",
+                        "null"
+                    ]
+                },
+                "stop_sequences": {
+                    "description": "Stop sequences that terminate generation.",
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "temperature": {
+                    "description": "Sampling temperature parameter.",
+                    "type": [
+                        "number",
+                        "null"
+                    ]
+                },
+                "top_k": {
+                    "description": "Top-k sampling parameter.",
+                    "type": [
+                        "integer",
+                        "null"
+                    ]
+                },
+                "top_p": {
+                    "description": "Top-p (nucleus) sampling parameter.",
+                    "type": [
+                        "number",
+                        "null"
+                    ]
+                }
+            },
+            "required": [
+                "config_id",
+                "model_name"
+            ],
+            "title": "ModelConfiguration",
+            "type": "object"
+        },
+        "ModelInvocation": {
+            "additionalProperties": false,
+            "description": "A single invocation of a language model during the review workflow.",
+            "properties": {
+                "configuration": {
+                    "$ref": "#/$defs/ModelConfiguration",
+                    "description": "Model configuration used in this invocation."
+                },
+                "cost_usd": {
+                    "description": "Estimated cost of this invocation in US dollars.",
+                    "type": [
+                        "number",
+                        "null"
+                    ]
+                },
+                "end_time": {
+                    "description": "Time at which the invocation ended.",
+                    "format": "date-time",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "generated_at_time": {
+                    "description": "The time at which the entity was generated.",
+                    "format": "date-time",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "input_tokens": {
+                    "description": "Number of input tokens consumed.",
+                    "type": [
+                        "integer",
+                        "null"
+                    ]
+                },
+                "invocation_id": {
+                    "description": "Unique identifier for this model invocation.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "on_behalf_of": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/Agent"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "description": "Human agent on whose behalf this invocation was performed."
+                },
+                "output_tokens": {
+                    "description": "Number of output tokens generated.",
+                    "type": [
+                        "integer",
+                        "null"
+                    ]
+                },
+                "performed_by": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/SoftwareAgent"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "description": "Software agent that performed this invocation."
+                },
+                "prompt": {
+                    "$ref": "#/$defs/Prompt",
+                    "description": "Prompt submitted in this invocation."
+                },
+                "response_hash": {
+                    "description": "SHA-256 hash of the response for integrity verification.",
+                    "pattern": "^[a-f0-9]{64}$",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "response_text": {
+                    "description": "Full text of the model response.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "response_uri": {
+                    "description": "URI referencing the stored response artifact.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "start_time": {
+                    "description": "Time at which the invocation started.",
+                    "format": "date-time",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "stop_reason": {
+                    "$ref": "#/$defs/StopReasonEnum",
+                    "description": "Reason the model stopped generating."
+                },
+                "total_tokens": {
+                    "description": "Total tokens (input + output).",
+                    "type": [
+                        "integer",
+                        "null"
+                    ]
+                },
+                "was_attributed_to": {
+                    "description": "The agent to whom this entity is attributed.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "was_derived_from": {
+                    "description": "The entity from which this entity was derived.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "was_generated_by": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/Activity"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "description": "The activity that generated this entity."
+                }
+            },
+            "required": [
+                "invocation_id",
+                "prompt",
+                "configuration"
+            ],
+            "title": "ModelInvocation",
+            "type": "object"
+        },
+        "NarrativeFrameworkEnum": {
+            "description": "Framework used for narrative synthesis or evidence summary.",
+            "enum": [
+                "GRADE",
+                "CERQual",
+                "SWiM",
+                "other",
+                "none"
+            ],
+            "title": "NarrativeFrameworkEnum",
+            "type": "string"
+        },
+        "Organization": {
+            "additionalProperties": false,
+            "description": "An institutional or corporate agent.",
+            "properties": {
+                "agent_id": {
+                    "description": "Unique identifier for the agent.",
+                    "type": "string"
+                },
+                "country": {
+                    "description": "Country where the organisation is located.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "name": {
+                    "description": "Human-readable name of the agent.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "ror_id": {
+                    "description": "Research Organization Registry (ROR) identifier.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                }
+            },
+            "required": [
+                "agent_id"
+            ],
+            "title": "Organization",
+            "type": "object"
+        },
+        "PerformanceMetricEnum": {
+            "description": "Performance metric used to evaluate the model or intervention.",
+            "enum": [
+                "AUROC",
+                "AUPRC",
+                "accuracy",
+                "sensitivity",
+                "specificity",
+                "PPV",
+                "NPV",
+                "F1",
+                "RMSE",
+                "MAE",
+                "R_squared",
+                "calibration",
+                "NRI",
+                "IDI",
+                "other"
+            ],
+            "title": "PerformanceMetricEnum",
+            "type": "string"
+        },
+        "Person": {
+            "additionalProperties": false,
+            "description": "A human agent participating in the systematic review.",
+            "properties": {
+                "affiliation": {
+                    "description": "Institutional affiliation of the person.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "agent_id": {
+                    "description": "Unique identifier for the agent.",
+                    "type": "string"
+                },
+                "email": {
+                    "description": "Email address of the person.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "name": {
+                    "description": "Human-readable name of the agent.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "orcid": {
+                    "description": "ORCID persistent digital identifier for the researcher.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "role": {
+                    "$ref": "#/$defs/ReviewerRoleEnum",
+                    "description": "Role of the person in the systematic review."
+                }
+            },
+            "required": [
+                "agent_id"
+            ],
+            "title": "Person",
+            "type": "object"
+        },
+        "PreWorkflowSession": {
+            "additionalProperties": false,
+            "description": "A pre-workflow session for protocol definition or calibration.",
+            "properties": {
+                "conducted_by": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/Person"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "description": "Lead person who conducted this session."
+                },
+                "decisions_locked": {
+                    "description": "List of decisions or parameters locked during this session.",
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "generated_at_time": {
+                    "description": "The time at which the entity was generated.",
+                    "format": "date-time",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "participants": {
+                    "description": "All participants in this session.",
+                    "items": {
+                        "$ref": "#/$defs/Person"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "resulting_configuration_uri": {
+                    "description": "URI of the configuration artifact produced by this session.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "session_date": {
+                    "description": "Date and time the session was conducted.",
+                    "format": "date-time",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "session_id": {
+                    "description": "Unique identifier for this session.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "session_type": {
+                    "$ref": "#/$defs/PreWorkflowSessionTypeEnum",
+                    "description": "Type of pre-workflow session."
+                },
+                "user_inputs": {
+                    "description": "User inputs captured during this session.",
+                    "items": {
+                        "$ref": "#/$defs/UserInput"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "was_attributed_to": {
+                    "description": "The agent to whom this entity is attributed.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "was_derived_from": {
+                    "description": "The entity from which this entity was derived.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "was_generated_by": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/Activity"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "description": "The activity that generated this entity."
+                }
+            },
+            "required": [
+                "session_id"
+            ],
+            "title": "PreWorkflowSession",
+            "type": "object"
+        },
+        "PreWorkflowSessionTypeEnum": {
+            "description": "Type of pre-workflow calibration or configuration session.",
+            "enum": [
+                "protocol_definition",
+                "search_strategy",
+                "eligibility_calibration",
+                "charting_calibration",
+                "appraisal_calibration",
+                "other"
+            ],
+            "title": "PreWorkflowSessionTypeEnum",
+            "type": "string"
+        },
+        "PrimaryFocusEnum": {
+            "description": "Primary clinical or methodological focus of the review.",
+            "enum": [
+                "diagnostic",
+                "prognostic",
+                "treatment_efficacy",
+                "treatment_safety",
+                "prevalence",
+                "incidence",
+                "cost_effectiveness",
+                "implementation",
+                "methodology",
+                "other"
+            ],
+            "title": "PrimaryFocusEnum",
+            "type": "string"
+        },
+        "PrimarySample": {
+            "additionalProperties": false,
+            "description": "Section C \u2014 primary study population and sample.",
+            "properties": {
+                "age_range": {
+                    "description": "Age range of participants.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "demographics_notes": {
+                    "description": "Additional demographic notes.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "eligibility_criteria": {
+                    "description": "Inclusion and exclusion criteria for the study sample.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "population_studied": {
+                    "description": "Description of the population studied.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "sample_size": {
+                    "description": "Total sample size (numeric).",
+                    "type": [
+                        "integer",
+                        "null"
+                    ]
+                },
+                "sample_size_text": {
+                    "description": "Sample size as reported in text.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "sex_distribution": {
+                    "description": "Sex or gender distribution of participants.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                }
+            },
+            "title": "PrimarySample",
+            "type": "object"
+        },
+        "Prompt": {
+            "additionalProperties": false,
+            "description": "A prompt submitted to a language model, with full text and metadata.",
+            "properties": {
+                "generated_at_time": {
+                    "description": "The time at which the entity was generated.",
+                    "format": "date-time",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "prompt_hash": {
+                    "description": "SHA-256 hash of the prompt content for integrity verification.",
+                    "pattern": "^[a-f0-9]{64}$",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "prompt_id": {
+                    "description": "Unique identifier for this prompt.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "referenced_inputs": {
+                    "description": "URIs of entities referenced in this prompt.",
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "role": {
+                    "$ref": "#/$defs/PromptRoleEnum",
+                    "description": "Role of this message in the conversation."
+                },
+                "system_prompt": {
+                    "description": "System-level prompt text.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "template_id": {
+                    "description": "Identifier of the prompt template used.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "template_version": {
+                    "description": "Version of the prompt template used.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "token_count": {
+                    "description": "Number of tokens in the prompt.",
+                    "type": [
+                        "integer",
+                        "null"
+                    ]
+                },
+                "user_prompt": {
+                    "description": "User-turn prompt text.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "was_attributed_to": {
+                    "description": "The agent to whom this entity is attributed.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "was_derived_from": {
+                    "description": "The entity from which this entity was derived.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "was_generated_by": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/Activity"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "description": "The activity that generated this entity."
+                }
+            },
+            "required": [
+                "prompt_id"
+            ],
+            "title": "Prompt",
+            "type": "object"
+        },
+        "PromptRoleEnum": {
+            "description": "Role of a message in an LLM conversation.",
+            "enum": [
+                "system",
+                "user",
+                "assistant",
+                "tool_result",
+                "other"
+            ],
+            "title": "PromptRoleEnum",
+            "type": "string"
+        },
+        "ProtocolRegistryEnum": {
+            "description": "Registry where the review protocol was prospectively registered.",
+            "enum": [
+                "PROSPERO",
+                "OSF",
+                "INPLASY",
+                "Cochrane",
+                "other",
+                "none"
+            ],
+            "title": "ProtocolRegistryEnum",
+            "type": "string"
+        },
+        "PublicationInfo": {
+            "additionalProperties": false,
+            "description": "Section A \u2014 publication and bibliographic metadata.",
+            "properties": {
+                "conflicts_of_interest": {
+                    "description": "Declared conflicts of interest.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "country_region": {
+                    "description": "Country or region where the study was conducted.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "funding_sources": {
+                    "description": "Funding sources for the study.",
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "language": {
+                    "description": "Language of the publication.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "protocol_id": {
+                    "description": "Registration identifier in the protocol registry.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "protocol_registration": {
+                    "$ref": "#/$defs/ProtocolRegistryEnum",
+                    "description": "Registry where the study protocol was registered."
+                },
+                "publication_type": {
+                    "description": "Type of publication (e.g., journal article, conference paper).",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                }
+            },
+            "title": "PublicationInfo",
+            "type": "object"
+        },
+        "ReportingStandardEnum": {
+            "description": "Reporting standards or guidelines used in the systematic review.",
+            "enum": [
+                "PRISMA_2020",
+                "PRISMA_P",
+                "MOOSE",
+                "STROBE",
+                "CONSORT",
+                "QUORUM",
+                "other"
+            ],
+            "title": "ReportingStandardEnum",
+            "type": "string"
+        },
+        "ReviewDecisionEnum": {
+            "description": "Decision made by a reviewer during a review event.",
+            "enum": [
+                "approved_unchanged",
+                "approved_with_revision",
+                "rejected",
+                "deferred",
+                "flagged_for_discussion"
+            ],
+            "title": "ReviewDecisionEnum",
+            "type": "string"
+        },
+        "ReviewEvent": {
+            "additionalProperties": false,
+            "description": "A human review and decision event on a generated or extracted entity.",
+            "properties": {
+                "decision": {
+                    "$ref": "#/$defs/ReviewDecisionEnum",
+                    "description": "Decision made during this review event."
+                },
+                "event_id": {
+                    "description": "Unique identifier for this review event.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "fields_changed": {
+                    "description": "Names of fields that were changed during this review.",
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "generated_at_time": {
+                    "description": "The time at which the entity was generated.",
+                    "format": "date-time",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "original_values": {
+                    "description": "JSON-serialized map of original field values before review.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "reviewed_at_time": {
+                    "description": "Time at which the review was performed.",
+                    "format": "date-time",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "reviewed_entity": {
+                    "description": "URI of the entity reviewed in this event.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "reviewer": {
+                    "$ref": "#/$defs/Person",
+                    "description": "Person who performed this review."
+                },
+                "reviewer_comment": {
+                    "description": "Free-text comment from the reviewer.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "revised_values": {
+                    "description": "JSON-serialized map of revised field values after review.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "was_attributed_to": {
+                    "description": "The agent to whom this entity is attributed.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "was_derived_from": {
+                    "description": "The entity from which this entity was derived.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "was_generated_by": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/Activity"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "description": "The activity that generated this entity."
+                }
+            },
+            "required": [
+                "event_id",
+                "reviewer",
+                "decision"
+            ],
+            "title": "ReviewEvent",
+            "type": "object"
+        },
+        "ReviewerRoleEnum": {
+            "description": "Role played by a reviewer in the systematic review process.",
+            "enum": [
+                "lead_reviewer",
+                "co_reviewer",
+                "methodologist",
+                "subject_expert",
+                "statistician",
+                "patient_partner",
+                "other"
+            ],
+            "title": "ReviewerRoleEnum",
+            "type": "string"
+        },
+        "RiskOfBiasAssessment": {
+            "additionalProperties": false,
+            "description": "A risk of bias assessment for an included source using a formal tool.",
+            "properties": {
+                "domain_judgments": {
+                    "description": "Domain-level risk of bias judgments.",
+                    "items": {
+                        "$ref": "#/$defs/RoBDomainJudgment"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "generated_at_time": {
+                    "description": "The time at which the entity was generated.",
+                    "format": "date-time",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "overall_judgment": {
+                    "$ref": "#/$defs/ConcernLevelEnum",
+                    "description": "Overall risk of bias judgment."
+                },
+                "rob_id": {
+                    "description": "Unique identifier for this risk of bias assessment.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "summary": {
+                    "description": "Narrative summary of the risk of bias assessment.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "tool_used": {
+                    "$ref": "#/$defs/RoBToolEnum",
+                    "description": "Risk of bias tool used for this assessment."
+                },
+                "was_attributed_to": {
+                    "description": "The agent to whom this entity is attributed.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "was_derived_from": {
+                    "description": "The entity from which this entity was derived.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "was_generated_by": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/Activity"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "description": "The activity that generated this entity."
+                }
+            },
+            "required": [
+                "rob_id",
+                "tool_used"
+            ],
+            "title": "RiskOfBiasAssessment",
+            "type": "object"
+        },
+        "RoBDomainJudgment": {
+            "additionalProperties": false,
+            "description": "A risk of bias judgment for a single domain of a RoB tool.",
+            "properties": {
+                "domain_name": {
+                    "description": "Name of the risk of bias domain.",
+                    "type": "string"
+                },
+                "judgment": {
+                    "$ref": "#/$defs/ConcernLevelEnum",
+                    "description": "Risk of bias judgment for this domain."
+                },
+                "supporting_quote": {
+                    "description": "Quote from the source supporting the judgment.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                }
+            },
+            "required": [
+                "domain_name",
+                "judgment"
+            ],
+            "title": "RoBDomainJudgment",
+            "type": "object"
+        },
+        "RoBToolEnum": {
+            "description": "Tool used for risk of bias assessment.",
+            "enum": [
+                "RoB_2",
+                "ROBINS_I",
+                "ROBINS_E",
+                "QUADAS_2",
+                "CASP",
+                "NOS",
+                "JBI",
+                "Murad",
+                "SYRCLE",
+                "MINORS",
+                "ROBIS",
+                "other"
+            ],
+            "title": "RoBToolEnum",
+            "type": "string"
+        },
+        "SamplePopulationDomain": {
+            "additionalProperties": false,
+            "description": "Appraisal domain covering sample selection and population representativeness.",
+            "properties": {
+                "items": {
+                    "description": "Individual appraisal items within this domain.",
+                    "items": {
+                        "$ref": "#/$defs/AppraisalItem"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "overall_concern": {
+                    "$ref": "#/$defs/ConcernLevelEnum",
+                    "description": "Overall level of concern for this appraisal domain."
+                }
+            },
+            "title": "SamplePopulationDomain",
+            "type": "object"
+        },
+        "ScreeningActivity": {
+            "additionalProperties": false,
+            "description": "A screening activity applied to a set of candidate records.",
+            "properties": {
+                "activity_id": {
+                    "description": "Unique identifier for the activity.",
+                    "type": "string"
+                },
+                "description": {
+                    "description": "Human-readable description of the activity.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "end_time": {
+                    "description": "Time at which the activity ended.",
+                    "format": "date-time",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "records_excluded": {
+                    "description": "Number of records excluded in this activity.",
+                    "type": [
+                        "integer",
+                        "null"
+                    ]
+                },
+                "records_screened": {
+                    "description": "Number of records screened in this activity.",
+                    "type": [
+                        "integer",
+                        "null"
+                    ]
+                },
+                "screener": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/Person"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "description": "Person who performed the screening."
+                },
+                "stage": {
+                    "$ref": "#/$defs/ScreeningStageEnum",
+                    "description": "Stage of screening performed."
+                },
+                "start_time": {
+                    "description": "Time at which the activity started.",
+                    "format": "date-time",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                }
+            },
+            "required": [
+                "activity_id"
+            ],
+            "title": "ScreeningActivity",
+            "type": "object"
+        },
+        "ScreeningStageEnum": {
+            "description": "Stage of screening in the review workflow.",
+            "enum": [
+                "title_abstract",
+                "full_text",
+                "data_extraction",
+                "appraisal"
+            ],
+            "title": "ScreeningStageEnum",
+            "type": "string"
+        },
+        "SearchActivity": {
+            "additionalProperties": false,
+            "description": "A database search activity performed to identify candidate studies.",
+            "properties": {
+                "activity_id": {
+                    "description": "Unique identifier for the activity.",
+                    "type": "string"
+                },
+                "databases_searched": {
+                    "description": "Databases searched during this activity.",
+                    "items": {
+                        "$ref": "#/$defs/DatabaseEnum"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "date_of_search": {
+                    "description": "Date on which the search was performed.",
+                    "format": "date",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "description": {
+                    "description": "Human-readable description of the activity.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "end_time": {
+                    "description": "Time at which the activity ended.",
+                    "format": "date-time",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "queries": {
+                    "description": "Search queries or strings used.",
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "records_retrieved": {
+                    "description": "Total number of records retrieved.",
+                    "type": [
+                        "integer",
+                        "null"
+                    ]
+                },
+                "start_time": {
+                    "description": "Time at which the activity started.",
+                    "format": "date-time",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                }
+            },
+            "required": [
+                "activity_id"
+            ],
+            "title": "SearchActivity",
+            "type": "object"
+        },
+        "SeverityEnum": {
+            "description": "Severity level of an issue or flag.",
+            "enum": [
+                "critical",
+                "major",
+                "minor",
+                "informational"
+            ],
+            "title": "SeverityEnum",
+            "type": "string"
+        },
+        "SoftwareAgent": {
+            "additionalProperties": false,
+            "description": "A software system or AI model acting as an agent.",
+            "properties": {
+                "acted_on_behalf_of": {
+                    "description": "The agent on whose behalf this agent acted.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "agent_id": {
+                    "description": "Unique identifier for the agent.",
+                    "type": "string"
+                },
+                "model_name": {
+                    "description": "Name of the AI model or software.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "model_version": {
+                    "description": "Version string of the AI model or software.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "name": {
+                    "description": "Human-readable name of the agent.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "software_url": {
+                    "description": "URL of the software or model documentation.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                }
+            },
+            "required": [
+                "agent_id"
+            ],
+            "title": "SoftwareAgent",
+            "type": "object"
+        },
+        "Source": {
+            "additionalProperties": false,
+            "description": "A bibliographic source identified during the review process.",
+            "properties": {
+                "abstract": {
+                    "description": "Abstract of the source publication.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "authors": {
+                    "description": "Authors of the source publication.",
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "citation": {
+                    "description": "Full bibliographic citation string.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "database_source": {
+                    "$ref": "#/$defs/DatabaseEnum",
+                    "description": "Database from which this source was retrieved."
+                },
+                "doi": {
+                    "description": "Digital Object Identifier.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "journal": {
+                    "description": "Journal or venue where the source was published.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "keywords": {
+                    "description": "Keywords associated with the source.",
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "pmid": {
+                    "description": "PubMed identifier.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "source_id": {
+                    "description": "Unique identifier for the source.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "title": {
+                    "description": "Title of the source publication.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "url": {
+                    "description": "URL of the source publication.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "year": {
+                    "description": "Year of publication.",
+                    "type": [
+                        "integer",
+                        "null"
+                    ]
+                }
+            },
+            "required": [
+                "source_id"
+            ],
+            "title": "Source",
+            "type": "object"
+        },
+        "StopReasonEnum": {
+            "description": "Reason the model stopped generating tokens.",
+            "enum": [
+                "end_turn",
+                "max_tokens",
+                "stop_sequence",
+                "tool_use",
+                "refusal",
+                "error",
+                "other"
+            ],
+            "title": "StopReasonEnum",
+            "type": "string"
+        },
+        "StoredArtifact": {
+            "additionalProperties": false,
+            "description": "A content-addressed stored artifact identified by its SHA-256 hash.",
+            "properties": {
+                "artifact_kind": {
+                    "$ref": "#/$defs/ArtifactKindEnum",
+                    "description": "Kind of artifact stored."
+                },
+                "content_hash": {
+                    "description": "SHA-256 hash of the artifact content (content-addressed identifier).",
+                    "pattern": "^[a-f0-9]{64}$",
+                    "type": "string"
+                },
+                "content_size_bytes": {
+                    "description": "Size of the artifact content in bytes.",
+                    "type": [
+                        "integer",
+                        "null"
+                    ]
+                },
+                "content_text": {
+                    "description": "Text content of the artifact (if textual).",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "content_uri": {
+                    "description": "URI where the artifact content can be retrieved.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "created_at_time": {
+                    "description": "Time at which the artifact was stored.",
+                    "format": "date-time",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "media_type": {
+                    "description": "IANA media type of the stored artifact.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                }
+            },
+            "required": [
+                "content_hash",
+                "artifact_kind"
+            ],
+            "title": "StoredArtifact",
+            "type": "object"
+        },
+        "StudyDesignEnum": {
+            "description": "Methodological design of a primary study.",
+            "enum": [
+                "RCT",
+                "cluster_RCT",
+                "quasi_experimental",
+                "cohort_prospective",
+                "cohort_retrospective",
+                "case_control",
+                "cross_sectional",
+                "case_series",
+                "case_report",
+                "diagnostic_accuracy",
+                "qualitative",
+                "mixed_methods",
+                "systematic_review",
+                "meta_analysis",
+                "scoping_review",
+                "other"
+            ],
+            "title": "StudyDesignEnum",
+            "type": "string"
+        },
+        "StudyDesignSection": {
+            "additionalProperties": false,
+            "description": "Section B \u2014 study design and methodology.",
+            "properties": {
+                "blinding": {
+                    "$ref": "#/$defs/YesNoNREnum",
+                    "description": "Whether blinding was used."
+                },
+                "follow_up_duration": {
+                    "description": "Duration of follow-up (text description).",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "randomization": {
+                    "$ref": "#/$defs/YesNoNREnum",
+                    "description": "Whether randomization was used."
+                },
+                "study_design": {
+                    "$ref": "#/$defs/StudyDesignEnum",
+                    "description": "Primary study design."
+                },
+                "study_setting": {
+                    "$ref": "#/$defs/StudySettingEnum",
+                    "description": "Setting in which the study was conducted."
+                },
+                "subject_model": {
+                    "$ref": "#/$defs/SubjectModelEnum",
+                    "description": "Type of subject or experimental model."
+                }
+            },
+            "title": "StudyDesignSection",
+            "type": "object"
+        },
+        "StudySettingEnum": {
+            "description": "Clinical or research setting of the study.",
+            "enum": [
+                "academic_medical_center",
+                "community_hospital",
+                "primary_care",
+                "outpatient",
+                "remote_telehealth",
+                "laboratory",
+                "simulation",
+                "other"
+            ],
+            "title": "StudySettingEnum",
+            "type": "string"
+        },
+        "SubjectModelEnum": {
+            "description": "Type of subject or model used in the study.",
+            "enum": [
+                "human",
+                "animal",
+                "in_vitro",
+                "computational",
+                "mixed",
+                "other"
+            ],
+            "title": "SubjectModelEnum",
+            "type": "string"
+        },
+        "SynthesisFields": {
+            "additionalProperties": false,
+            "description": "Section G \u2014 synthesis, meta-analysis and evidence certainty fields.",
+            "properties": {
+                "certainty_of_evidence": {
+                    "$ref": "#/$defs/CertaintyOfEvidenceToolEnum",
+                    "description": "Tool used to assess certainty of evidence."
+                },
+                "certainty_rating": {
+                    "$ref": "#/$defs/ConcernLevelEnum",
+                    "description": "Overall certainty or concern rating."
+                },
+                "effect_ci_lower": {
+                    "description": "Lower bound of the confidence interval for the effect estimate.",
+                    "type": [
+                        "number",
+                        "null"
+                    ]
+                },
+                "effect_ci_upper": {
+                    "description": "Upper bound of the confidence interval for the effect estimate.",
+                    "type": [
+                        "number",
+                        "null"
+                    ]
+                },
+                "effect_estimate": {
+                    "description": "Pooled or summary effect estimate.",
+                    "type": [
+                        "number",
+                        "null"
+                    ]
+                },
+                "heterogeneity_i2": {
+                    "description": "I-squared heterogeneity statistic (0-100).",
+                    "type": [
+                        "number",
+                        "null"
+                    ]
+                },
+                "meta_analysis_model": {
+                    "$ref": "#/$defs/MetaAnalysisModelEnum",
+                    "description": "Meta-analysis model if applicable."
+                },
+                "narrative_framework": {
+                    "$ref": "#/$defs/NarrativeFrameworkEnum",
+                    "description": "Framework used for narrative synthesis."
+                },
+                "reviewer_notes": {
+                    "description": "Additional reviewer notes for synthesis.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "summary_of_findings": {
+                    "description": "Narrative summary of findings for this source.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                }
+            },
+            "title": "SynthesisFields",
+            "type": "object"
+        },
+        "SystematicReview": {
+            "additionalProperties": false,
+            "description": "The top-level container for a complete systematic literature review.",
+            "properties": {
+                "artifact_store": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/ArtifactStore"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "description": "Store of content-addressed artifacts for this review."
+                },
+                "competing_interests": {
+                    "description": "Competing or conflicting interests of the review team.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "databases_searched": {
+                    "description": "Databases searched across all search activities.",
+                    "items": {
+                        "$ref": "#/$defs/DatabaseEnum"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "date_of_last_search": {
+                    "description": "Date of the most recent database search.",
+                    "format": "date",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "eligibility_framework": {
+                    "$ref": "#/$defs/EligibilityFrameworkEnum",
+                    "description": "Framework used to define eligibility criteria."
+                },
+                "excluded_sources": {
+                    "description": "Sources excluded from this review.",
+                    "items": {
+                        "$ref": "#/$defs/ExcludedSource"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "funding": {
+                    "description": "Funding sources for the review.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "generated_at_time": {
+                    "description": "The time at which the entity was generated.",
+                    "format": "date-time",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "included_sources": {
+                    "description": "Sources included in this review.",
+                    "items": {
+                        "$ref": "#/$defs/IncludedSource"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "limitations": {
+                    "description": "Limitations of the systematic review.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "objective": {
+                    "description": "Research objective or question of the review.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "pico_comparison": {
+                    "description": "PICO Comparator element.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "pico_intervention": {
+                    "description": "PICO Intervention element.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "pico_outcome": {
+                    "description": "PICO Outcome element.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "pico_population": {
+                    "description": "PICO Population element.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "pre_workflow_sessions": {
+                    "description": "Pre-workflow calibration and configuration sessions.",
+                    "items": {
+                        "$ref": "#/$defs/PreWorkflowSession"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "primary_focus": {
+                    "$ref": "#/$defs/PrimaryFocusEnum",
+                    "description": "Primary clinical or methodological focus."
+                },
+                "registration_id": {
+                    "description": "Protocol registration identifier.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "registry": {
+                    "$ref": "#/$defs/ProtocolRegistryEnum",
+                    "description": "Registry where the protocol was registered."
+                },
+                "reporting_standard": {
+                    "$ref": "#/$defs/ReportingStandardEnum",
+                    "description": "Reporting standard or guideline followed."
+                },
+                "research_question": {
+                    "description": "Full text of the primary research question.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "review_id": {
+                    "description": "Unique identifier for this systematic review.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "screening_activities": {
+                    "description": "Screening activities performed in this review.",
+                    "items": {
+                        "$ref": "#/$defs/ScreeningActivity"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "search_activities": {
+                    "description": "Database search activities performed in this review.",
+                    "items": {
+                        "$ref": "#/$defs/SearchActivity"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "synthesis_narrative": {
+                    "description": "Narrative synthesis of evidence across included sources.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "title": {
+                    "description": "Title of the systematic review.",
+                    "type": "string"
+                },
+                "total_identified": {
+                    "description": "Total records identified across all searches.",
+                    "type": [
+                        "integer",
+                        "null"
+                    ]
+                },
+                "total_included": {
+                    "description": "Total sources included after all screening stages.",
+                    "type": [
+                        "integer",
+                        "null"
+                    ]
+                },
+                "was_attributed_to": {
+                    "description": "The agent to whom this entity is attributed.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "was_derived_from": {
+                    "description": "The entity from which this entity was derived.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "was_generated_by": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/Activity"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "description": "The activity that generated this entity."
+                }
+            },
+            "required": [
+                "review_id",
+                "title"
+            ],
+            "title": "SystematicReview",
+            "type": "object"
+        },
+        "TaskTypeEnum": {
+            "description": "Machine learning or AI task type addressed by the study.",
+            "enum": [
+                "classification",
+                "regression",
+                "detection",
+                "segmentation",
+                "generation",
+                "retrieval",
+                "ranking",
+                "clustering",
+                "recommendation",
+                "other"
+            ],
+            "title": "TaskTypeEnum",
+            "type": "string"
+        },
+        "ToolCategoryEnum": {
+            "description": "Functional category of a tool invoked during the review.",
+            "enum": [
+                "search",
+                "retrieval",
+                "parsing",
+                "computation",
+                "validation",
+                "writing",
+                "other"
+            ],
+            "title": "ToolCategoryEnum",
+            "type": "string"
+        },
+        "ToolInvocation": {
+            "additionalProperties": false,
+            "description": "A single invocation of a tool during the review workflow.",
+            "properties": {
+                "arguments_json": {
+                    "description": "JSON-serialized arguments passed to the tool.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "end_time": {
+                    "description": "Time at which the tool invocation ended.",
+                    "format": "date-time",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "error_message": {
+                    "description": "Error message if the tool invocation failed.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "generated_at_time": {
+                    "description": "The time at which the entity was generated.",
+                    "format": "date-time",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "parent_invocation": {
+                    "description": "URI of the model invocation that triggered this tool call.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "result_hash": {
+                    "description": "SHA-256 hash of the result for integrity verification.",
+                    "pattern": "^[a-f0-9]{64}$",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "result_text": {
+                    "description": "Text result returned by the tool.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "result_uri": {
+                    "description": "URI referencing the stored result artifact.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "start_time": {
+                    "description": "Time at which the tool invocation started.",
+                    "format": "date-time",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "success": {
+                    "description": "Whether the tool invocation succeeded.",
+                    "type": [
+                        "boolean",
+                        "null"
+                    ]
+                },
+                "tool_category": {
+                    "$ref": "#/$defs/ToolCategoryEnum",
+                    "description": "Functional category of the tool."
+                },
+                "tool_invocation_id": {
+                    "description": "Unique identifier for this tool invocation.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "tool_name": {
+                    "description": "Name of the tool invoked.",
+                    "type": "string"
+                },
+                "was_attributed_to": {
+                    "description": "The agent to whom this entity is attributed.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "was_derived_from": {
+                    "description": "The entity from which this entity was derived.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "was_generated_by": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/Activity"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "description": "The activity that generated this entity."
+                }
+            },
+            "required": [
+                "tool_invocation_id",
+                "tool_name"
+            ],
+            "title": "ToolInvocation",
+            "type": "object"
+        },
+        "UserInput": {
+            "additionalProperties": false,
+            "description": "A structured capture of input provided by a human user.",
+            "properties": {
+                "captured_at_time": {
+                    "description": "Time at which the input was captured.",
+                    "format": "date-time",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "generated_at_time": {
+                    "description": "The time at which the entity was generated.",
+                    "format": "date-time",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "influences": {
+                    "description": "URIs of entities influenced by this user input.",
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "input_id": {
+                    "description": "Unique identifier for this user input record.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "input_type": {
+                    "$ref": "#/$defs/UserInputTypeEnum",
+                    "description": "Type of user input."
+                },
+                "input_value": {
+                    "description": "Value or response provided by the user.",
+                    "type": "string"
+                },
+                "options_presented": {
+                    "description": "Options presented to the user (if applicable).",
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": [
+                        "array",
+                        "null"
+                    ]
+                },
+                "question_asked": {
+                    "description": "Question or prompt presented to the user.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "ui_context": {
+                    "description": "UI or workflow context in which the input was captured.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "was_attributed_to": {
+                    "description": "The agent to whom this entity is attributed.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "was_derived_from": {
+                    "description": "The entity from which this entity was derived.",
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "was_generated_by": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/Activity"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "description": "The activity that generated this entity."
+                }
+            },
+            "required": [
+                "input_id",
+                "input_value"
+            ],
+            "title": "UserInput",
+            "type": "object"
+        },
+        "UserInputTypeEnum": {
+            "description": "Type of input provided by a human user during the review workflow.",
+            "enum": [
+                "elicitation_response",
+                "free_text_instruction",
+                "clarification",
+                "approval",
+                "rejection",
+                "correction",
+                "preference_setting",
+                "file_upload",
+                "other"
+            ],
+            "title": "UserInputTypeEnum",
+            "type": "string"
+        },
+        "ValidationMethodologyEnum": {
+            "description": "Methodology used for model validation.",
+            "enum": [
+                "held_out_test_set",
+                "k_fold_cross_validation",
+                "leave_one_out",
+                "temporal_split",
+                "external_validation",
+                "bootstrapping",
+                "prospective",
+                "other"
+            ],
+            "title": "ValidationMethodologyEnum",
+            "type": "string"
+        },
+        "YesNoNREnum": {
+            "description": "Simple yes/no/not-reported/not-applicable response scale.",
+            "enum": [
+                "yes",
+                "no",
+                "not_reported",
+                "not_applicable"
+            ],
+            "title": "YesNoNREnum",
+            "type": "string"
+        }
+    },
+    "$id": "https://w3id.org/slr-ontology/",
+    "$schema": "https://json-schema.org/draft/2019-09/schema",
+    "additionalProperties": true,
+    "description": "The top-level container for a complete systematic literature review.",
+    "metamodel_version": "1.7.0",
+    "properties": {
+        "artifact_store": {
+            "anyOf": [
+                {
+                    "$ref": "#/$defs/ArtifactStore"
+                },
+                {
+                    "type": "null"
+                }
+            ],
+            "description": "Store of content-addressed artifacts for this review."
+        },
+        "competing_interests": {
+            "description": "Competing or conflicting interests of the review team.",
+            "type": [
+                "string",
+                "null"
+            ]
+        },
+        "databases_searched": {
+            "description": "Databases searched across all search activities.",
+            "items": {
+                "$ref": "#/$defs/DatabaseEnum"
+            },
+            "type": [
+                "array",
+                "null"
+            ]
+        },
+        "date_of_last_search": {
+            "description": "Date of the most recent database search.",
+            "format": "date",
+            "type": [
+                "string",
+                "null"
+            ]
+        },
+        "eligibility_framework": {
+            "$ref": "#/$defs/EligibilityFrameworkEnum",
+            "description": "Framework used to define eligibility criteria."
+        },
+        "excluded_sources": {
+            "description": "Sources excluded from this review.",
+            "items": {
+                "$ref": "#/$defs/ExcludedSource"
+            },
+            "type": [
+                "array",
+                "null"
+            ]
+        },
+        "funding": {
+            "description": "Funding sources for the review.",
+            "type": [
+                "string",
+                "null"
+            ]
+        },
+        "generated_at_time": {
+            "description": "The time at which the entity was generated.",
+            "format": "date-time",
+            "type": [
+                "string",
+                "null"
+            ]
+        },
+        "included_sources": {
+            "description": "Sources included in this review.",
+            "items": {
+                "$ref": "#/$defs/IncludedSource"
+            },
+            "type": [
+                "array",
+                "null"
+            ]
+        },
+        "limitations": {
+            "description": "Limitations of the systematic review.",
+            "type": [
+                "string",
+                "null"
+            ]
+        },
+        "objective": {
+            "description": "Research objective or question of the review.",
+            "type": [
+                "string",
+                "null"
+            ]
+        },
+        "pico_comparison": {
+            "description": "PICO Comparator element.",
+            "type": [
+                "string",
+                "null"
+            ]
+        },
+        "pico_intervention": {
+            "description": "PICO Intervention element.",
+            "type": [
+                "string",
+                "null"
+            ]
+        },
+        "pico_outcome": {
+            "description": "PICO Outcome element.",
+            "type": [
+                "string",
+                "null"
+            ]
+        },
+        "pico_population": {
+            "description": "PICO Population element.",
+            "type": [
+                "string",
+                "null"
+            ]
+        },
+        "pre_workflow_sessions": {
+            "description": "Pre-workflow calibration and configuration sessions.",
+            "items": {
+                "$ref": "#/$defs/PreWorkflowSession"
+            },
+            "type": [
+                "array",
+                "null"
+            ]
+        },
+        "primary_focus": {
+            "$ref": "#/$defs/PrimaryFocusEnum",
+            "description": "Primary clinical or methodological focus."
+        },
+        "registration_id": {
+            "description": "Protocol registration identifier.",
+            "type": [
+                "string",
+                "null"
+            ]
+        },
+        "registry": {
+            "$ref": "#/$defs/ProtocolRegistryEnum",
+            "description": "Registry where the protocol was registered."
+        },
+        "reporting_standard": {
+            "$ref": "#/$defs/ReportingStandardEnum",
+            "description": "Reporting standard or guideline followed."
+        },
+        "research_question": {
+            "description": "Full text of the primary research question.",
+            "type": [
+                "string",
+                "null"
+            ]
+        },
+        "review_id": {
+            "description": "Unique identifier for this systematic review.",
+            "type": [
+                "string",
+                "null"
+            ]
+        },
+        "screening_activities": {
+            "description": "Screening activities performed in this review.",
+            "items": {
+                "$ref": "#/$defs/ScreeningActivity"
+            },
+            "type": [
+                "array",
+                "null"
+            ]
+        },
+        "search_activities": {
+            "description": "Database search activities performed in this review.",
+            "items": {
+                "$ref": "#/$defs/SearchActivity"
+            },
+            "type": [
+                "array",
+                "null"
+            ]
+        },
+        "synthesis_narrative": {
+            "description": "Narrative synthesis of evidence across included sources.",
+            "type": [
+                "string",
+                "null"
+            ]
+        },
+        "title": {
+            "description": "Title of the systematic review.",
+            "type": "string"
+        },
+        "total_identified": {
+            "description": "Total records identified across all searches.",
+            "type": [
+                "integer",
+                "null"
+            ]
+        },
+        "total_included": {
+            "description": "Total sources included after all screening stages.",
+            "type": [
+                "integer",
+                "null"
+            ]
+        },
+        "was_attributed_to": {
+            "description": "The agent to whom this entity is attributed.",
+            "type": [
+                "string",
+                "null"
+            ]
+        },
+        "was_derived_from": {
+            "description": "The entity from which this entity was derived.",
+            "type": [
+                "string",
+                "null"
+            ]
+        },
+        "was_generated_by": {
+            "anyOf": [
+                {
+                    "$ref": "#/$defs/Activity"
+                },
+                {
+                    "type": "null"
+                }
+            ],
+            "description": "The activity that generated this entity."
+        }
+    },
+    "required": [
+        "review_id",
+        "title"
+    ],
+    "title": "slr-ontology",
+    "type": "object",
+    "version": "0.2.0"
+}
+

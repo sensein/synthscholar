@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openrouter import OpenRouterProvider
@@ -107,7 +107,7 @@ Rules:
 - For bioRxiv, simpler keyword queries (2-3 words each)
 - Include relevant MeSH terms and key concepts
 """,
-    retries=2,
+    retries=5,
     name="search_strategy",
     defer_model_check=True,
 )
@@ -143,7 +143,7 @@ and relevance_score (0-1).
 
 You MUST return a decision for EVERY article provided.
 """,
-    retries=2,
+    retries=5,
     name="screener",
     defer_model_check=True,
 )
@@ -171,7 +171,7 @@ For each domain, provide a judgment (Low, Some concerns, High) with
 supporting justification from the study text.
 Provide an overall judgment and brief summary.
 """,
-    retries=2,
+    retries=5,
     name="risk_of_bias",
     defer_model_check=True,
 )
@@ -288,7 +288,7 @@ key findings, effect measures, follow-up duration, and funding.
 Be precise and only report what is stated in the study.
 If information is not available, leave the field empty or "Unknown".
 """,
-    retries=2,
+    retries=5,
     name="data_extractor",
     defer_model_check=True,
 )
@@ -341,7 +341,7 @@ Structured list:
 
 NEVER fabricate data, PMIDs, or quotes. If uncertain, say so.
 """,
-    retries=1,
+    retries=5,
     name="synthesizer",
     defer_model_check=True,
 )
@@ -370,7 +370,7 @@ and explanation.
 Provide overall certainty (High, Moderate, Low, Very Low) and a
 plain-language summary.
 """,
-    retries=2,
+    retries=5,
     name="grade_assessor",
     defer_model_check=True,
 )
@@ -392,7 +392,7 @@ across included studies. Provide:
 
 Be specific and cite study characteristics.
 """,
-    retries=1,
+    retries=5,
     name="bias_summary",
     defer_model_check=True,
 )
@@ -412,7 +412,7 @@ Write the Limitations section for this systematic review. Address:
 5. Review-level limitations (AI-assisted screening)
 Be concise but thorough. 2-3 paragraphs.
 """,
-    retries=1,
+    retries=5,
     name="limitations",
     defer_model_check=True,
 )
@@ -443,7 +443,7 @@ Rules:
 - Extract 2-5 spans per article, prioritizing the most relevant
 - Skip articles with no relevant evidence (return empty evidence list)
 """,
-    retries=2,
+    retries=5,
     name="evidence_extractor",
     defer_model_check=True,
 )
@@ -730,7 +730,7 @@ in the custom_fields dict using the question text verbatim as the key and a
 concise extracted answer as the value. Use "Not Reported" when the article does
 not address the question.
 """,
-    retries=2,
+    retries=5,
     name="data_charter",
     defer_model_check=True,
 )
@@ -752,7 +752,7 @@ charting data. Generate a six-cell summary:
 
 Keep each cell concise (1-2 sentences) but informative.
 """,
-    retries=1,
+    retries=5,
     name="narrative_summarizer",
     defer_model_check=True,
 )
@@ -779,7 +779,7 @@ Then assign overall concern for each domain:
 
 Complete all four domains with item-level ratings and justifications.
 """,
-    retries=2,
+    retries=5,
     name="critical_appraiser",
     defer_model_check=True,
 )
@@ -802,7 +802,7 @@ Cover these four subsections in order:
 Style: past tense for completed work; present for established knowledge. First person plural.
 End with the numbered RQ list.
 """,
-    retries=1,
+    retries=5,
     name="introduction_writer",
     defer_model_check=True,
 )
@@ -834,7 +834,7 @@ Requirements:
 - Summarise what the evidence shows, its certainty level, and key gaps.
 - Close with one forward-looking sentence on priority future research.
 """,
-    retries=1,
+    retries=5,
     name="conclusions_writer",
     defer_model_check=True,
 )
@@ -868,7 +868,7 @@ Follow the PRISMA-Abstract 12-item checklist. Use these exact labelled sub-headi
 
 Total: ≤300 words. Do not cite individual papers by name.
 """,
-    retries=1,
+    retries=5,
     name="abstract_writer",
     defer_model_check=True,
 )
@@ -1380,7 +1380,7 @@ Produce exactly these five fields as coherent prose paragraphs (no bullet points
 
 Do not fabricate statistics or citations not provided in the context.
 """,
-    retries=2,
+    retries=5,
     name="abstract_section",
     defer_model_check=True,
 )
@@ -1430,7 +1430,7 @@ Produce exactly these four fields as coherent prose paragraphs:
 
 Style: past tense for completed work; present for established knowledge.
 """,
-    retries=2,
+    retries=5,
     name="introduction_section",
     defer_model_check=True,
 )
@@ -1477,7 +1477,7 @@ Additionally, based on the output_style instruction at the end of the context:
 
 Do NOT fabricate source_id values. Use only the IDs present in the article list.
 """,
-    retries=2,
+    retries=5,
     name="thematic_synthesis",
     defer_model_check=True,
 )
@@ -1546,7 +1546,7 @@ Produce exactly these five fields as coherent prose paragraphs:
 - implications: three distinct implications — clinical, policy, and research (each a complete sentence)
 - limitations: methodological and evidence limitations from the provided limitations text and themes
 """,
-    retries=2,
+    retries=5,
     name="discussion_section",
     defer_model_check=True,
 )
@@ -1588,7 +1588,7 @@ Produce exactly these three fields as coherent prose paragraphs:
 
 Do not introduce new claims not supported by the provided themes. Do not overstate certainty.
 """,
-    retries=2,
+    retries=5,
     name="conclusion_section",
     defer_model_check=True,
 )
@@ -1627,7 +1627,7 @@ Produce these three fields — set to null if data is insufficient or unavailabl
 
 IMPORTANT: Do NOT fabricate numeric values. Only report what is directly derivable from the provided data.
 """,
-    retries=2,
+    retries=5,
     name="quantitative_analysis",
     defer_model_check=True,
 )
@@ -1938,6 +1938,11 @@ class ConsensusSynthesisOutput(BaseModel):
     consensus_text: str
     divergences: list[SynthesisDivergence]
 
+    @model_validator(mode="after")
+    def _filter_incomplete_divergences(self) -> "ConsensusSynthesisOutput":
+        self.divergences = [d for d in self.divergences if len(d.positions) >= 2]
+        return self
+
 
 consensus_synthesis_agent = Agent(
     output_type=ConsensusSynthesisOutput,
@@ -1954,7 +1959,7 @@ Rules:
 - consensus_text should read as coherent prose, not a list.
 - divergences list may be empty if models substantially agree.
 """,
-    retries=2,
+    retries=5,
     name="consensus_synthesis",
     defer_model_check=True,
 )
@@ -2004,7 +2009,7 @@ Your task: merge them into one coherent, deduplicated narrative synthesis that:
 Return the merged text in synthesis_text. Length should reflect the total evidence,
 not just one chunk.
 """,
-    retries=2,
+    retries=5,
     name="synthesis_merge",
     defer_model_check=True,
 )

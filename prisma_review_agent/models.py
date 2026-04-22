@@ -395,6 +395,11 @@ class ReviewProtocol(BaseModel):
         le=20,
         description="Max concurrent LLM calls for per-article steps (extraction, RoB, charting, appraisal, narrative) and screening batches.",
     )
+    max_articles: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="If set, rerank deduplicated articles by relevance to the research question and keep only the top N before screening.",
+    )
 
     @model_validator(mode="after")
     def _validate_section_format_values(self) -> "ReviewProtocol":
@@ -1066,12 +1071,6 @@ class SynthesisDivergence(BaseModel):
     """A notable point where model syntheses diverge."""
     topic: str
     positions: dict[str, str]  # model_name → position text
-
-    @model_validator(mode="after")
-    def _at_least_two_positions(self) -> "SynthesisDivergence":
-        if len(self.positions) < 2:
-            raise ValueError("SynthesisDivergence requires positions from at least 2 models")
-        return self
 
 
 class ModelReviewRun(BaseModel):
