@@ -69,60 +69,60 @@ vocabularies.
 ```{mermaid}
 classDiagram
     class SystematicReview {
-        +research_question
-        +reporting_standard: PRISMA_2020
-        +total_identified: int
-        +included_synthesis: int
-        +search_query: list
+        research_question
+        reporting_standard
+        total_identified
+        included_synthesis
+        search_query
     }
     class IncludedSource {
-        +title
-        +pmid
-        +doi
-        +year
-        +citation
+        title
+        pmid
+        doi
+        year
+        citation
     }
     class ChartingRecord {
-        +section_b_design
-        +section_c_primary_sample
-        +section_f_methods_results
-        +section_g_synthesis
+        section_b_design
+        section_c_primary_sample
+        section_f_methods_results
+        section_g_synthesis
     }
     class RiskOfBiasAssessment {
-        +tool_used: RoB2|ROBINS-I|...
-        +overall_judgment
-        +domain_judgments
+        tool_used
+        overall_judgment
+        domain_judgments
     }
     class CriticalAppraisal {
-        +domain_1_sample
-        +domain_2_data_collection
-        +domain_3_methods
-        +domain_4_bias_transparency
+        domain_1_sample
+        domain_2_data_collection
+        domain_3_methods
+        domain_4_bias_transparency
     }
     class Annotation {
-        +hasBody: text
-        +hasTarget: IncludedSource
-        +relevance_score
-        +claim_label
+        hasBody
+        hasTarget
+        relevance_score
+        claim_label
     }
     class ModelInvocation {
-        +model_name
-        +prompt
-        +tool_invocations
-        +generatedAtTime
+        model_name
+        prompt
+        tool_invocations
+        generatedAtTime
     }
     class SoftwareAgent {
-        +model_name
-        +name
+        model_name
+        name
     }
 
-    SystematicReview "1" --> "*" IncludedSource : slr:included_sources
-    SystematicReview "1" --> "*" Annotation : slr:evidence_spans
-    SystematicReview "1" --> "1" SoftwareAgent : prov:wasGeneratedBy
-    IncludedSource "1" --> "0..1" ChartingRecord : slr:charting_record
-    IncludedSource "1" --> "0..1" RiskOfBiasAssessment : slr:risk_of_bias_assessment
-    IncludedSource "1" --> "0..1" CriticalAppraisal : slr:appraisal
-    ModelInvocation "*" --> "1" SoftwareAgent : prov:wasAssociatedWith
+    SystematicReview "1" --> "*" IncludedSource : included_sources
+    SystematicReview "1" --> "*" Annotation : evidence_spans
+    SystematicReview "1" --> "1" SoftwareAgent : wasGeneratedBy
+    IncludedSource "1" --> "0..1" ChartingRecord : charting_record
+    IncludedSource "1" --> "0..1" RiskOfBiasAssessment : risk_of_bias
+    IncludedSource "1" --> "0..1" CriticalAppraisal : appraisal
+    ModelInvocation "*" --> "1" SoftwareAgent : wasAssociatedWith
 ```
 
 ## How Pipeline Data Maps to RDF
