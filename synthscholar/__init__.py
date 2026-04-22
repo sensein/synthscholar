@@ -4,7 +4,7 @@ PRISMA Review Agent — Pydantic AI Systematic Literature Review.
 A standalone, agent-based systematic review tool following PRISMA 2020.
 """
 
-from prisma_review_agent.models import (
+from synthscholar.models import (
     Article,
     EvidenceSpan,
     ReviewProtocol,
@@ -66,7 +66,7 @@ from prisma_review_agent.models import (
     MergedReviewResult,
     CompareReviewResult,
 )
-from prisma_review_agent.pipeline import (
+from synthscholar.pipeline import (
     PRISMAReviewPipeline,
     STAGE_TITLE_ABSTRACT,
     STAGE_FULL_TEXT,
@@ -79,9 +79,9 @@ from prisma_review_agent.pipeline import (
     STAGE_SYNTHESIS_MERGE,
     STAGE_ASSEMBLY,
 )
-from prisma_review_agent.cache.models import PipelineCheckpoint, CheckpointStatus, BatchMaxRetriesError
-from prisma_review_agent.agents import default_charting_template, default_appraisal_config
-from prisma_review_agent.export import (
+from synthscholar.cache.models import PipelineCheckpoint, CheckpointStatus, BatchMaxRetriesError
+from synthscholar.agents import default_charting_template, default_appraisal_config
+from synthscholar.export import (
     to_markdown, to_json, to_bibtex, to_turtle, to_jsonld,
     to_rubric_markdown, to_rubric_json,
     # Feature 006
@@ -94,7 +94,7 @@ from prisma_review_agent.export import (
     to_narrative_summary_markdown, to_narrative_summary_json,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.2.9"
 
 __all__ = [
     "Article",

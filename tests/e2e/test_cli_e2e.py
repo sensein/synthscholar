@@ -11,12 +11,12 @@ from pathlib import Path
 
 import pytest
 
-# Project root — needed so the subprocess can import prisma_review_agent
+# Project root — needed so the subprocess can import synthscholar
 _PROJECT_ROOT = Path(__file__).parent.parent.parent
 
 
 def run_cli(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
-    cmd = [sys.executable, "-m", "prisma_review_agent.main"] + args
+    cmd = [sys.executable, "-m", "synthscholar.main"] + args
     env = os.environ.copy()
     env["PYTHONPATH"] = str(_PROJECT_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
     return subprocess.run(

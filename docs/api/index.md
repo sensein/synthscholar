@@ -1,7 +1,7 @@
 # API Reference
 
 Full reference for all public classes, functions, and exceptions in
-`prisma_review_agent`.
+`synthscholar`.
 
 ```{toctree}
 :maxdepth: 1
@@ -15,7 +15,7 @@ agents
 ## Package Overview
 
 ```python
-import prisma_review_agent as pra
+import synthscholar as pra
 
 # Core
 pra.PRISMAReviewPipeline
@@ -48,7 +48,7 @@ pra.BatchMaxRetriesError
 ## Pipeline Stage Constants
 
 ```python
-from prisma_review_agent import (
+from synthscholar import (
     STAGE_TITLE_ABSTRACT,   # "Title/Abstract screening"
     STAGE_FULL_TEXT,        # "Full-text screening"
     STAGE_EXTRACTION,       # "Evidence extraction"

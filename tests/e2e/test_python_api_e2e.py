@@ -8,8 +8,8 @@ from unittest.mock import patch
 
 import pytest
 
-from prisma_review_agent.models import PRISMAReviewResult
-from prisma_review_agent.export import to_json, to_markdown
+from synthscholar.models import PRISMAReviewResult
+from synthscholar.export import to_json, to_markdown
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -17,8 +17,8 @@ from prisma_review_agent.export import to_json, to_markdown
 def _patch_http_clients():
     """Patch PubMed/BioRxiv synchronous search calls to return empty lists."""
     return [
-        patch("prisma_review_agent.clients.PubMedClient.search", return_value=[]),
-        patch("prisma_review_agent.clients.BioRxivClient.search", return_value=[]),
+        patch("synthscholar.clients.PubMedClient.search", return_value=[]),
+        patch("synthscholar.clients.BioRxivClient.search", return_value=[]),
     ]
 
 
@@ -71,7 +71,7 @@ async def test_pipeline_cache_hit_on_second_run(minimal_protocol):
         pytest.skip("PRISMA_TEST_PG_DSN not set")
 
     from pydantic_ai.models.test import TestModel
-    from prisma_review_agent.pipeline import PRISMAReviewPipeline
+    from synthscholar.pipeline import PRISMAReviewPipeline
 
     pipeline = PRISMAReviewPipeline(
         api_key="test-mock-key", model_name="test", pg_dsn=pg_dsn
@@ -96,7 +96,7 @@ async def test_pipeline_smoke_real_api(minimal_protocol):
     if not api_key:
         pytest.skip("OPENROUTER_API_KEY not set")
 
-    from prisma_review_agent.pipeline import PRISMAReviewPipeline
+    from synthscholar.pipeline import PRISMAReviewPipeline
 
     pipeline = PRISMAReviewPipeline(api_key=api_key, protocol=minimal_protocol)
     result = await pipeline.run(auto_confirm=True)

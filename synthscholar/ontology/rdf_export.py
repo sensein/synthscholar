@@ -28,7 +28,7 @@ from .namespaces import (
 )
 
 if TYPE_CHECKING:
-    from prisma_review_agent.models import PRISMAReviewResult, Article, EvidenceSpan
+    from synthscholar.models import PRISMAReviewResult, Article, EvidenceSpan
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────

@@ -16,7 +16,7 @@ except ImportError:
 from .models import CacheUnavailableError, StoredArticle
 
 if TYPE_CHECKING:
-    from prisma_review_agent.models import Article
+    from synthscholar.models import Article
 
 logger = logging.getLogger(__name__)
 
@@ -156,7 +156,7 @@ class ArticleStore:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _row_to_article(row: dict[str, Any]) -> "Article":
-    from prisma_review_agent.models import Article
+    from synthscholar.models import Article
     return Article(
         pmid=row["pmid"],
         title=row.get("title", ""),

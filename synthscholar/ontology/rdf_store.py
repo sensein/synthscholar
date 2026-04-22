@@ -18,7 +18,7 @@ except ImportError as exc:
     ) from exc
 
 if TYPE_CHECKING:
-    from prisma_review_agent.models import PRISMAReviewResult
+    from synthscholar.models import PRISMAReviewResult
 
 
 class SLRStore:

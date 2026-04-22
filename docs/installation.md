@@ -37,7 +37,7 @@ export OPENROUTER_API_KEY="sk-or-..."
 Or pass it at runtime:
 
 ```bash
-prisma-review --api-key sk-or-... --title "..."
+synthscholar --api-key sk-or-... --title "..."
 ```
 
 ## PostgreSQL Setup *(optional)*
@@ -46,7 +46,7 @@ For caching and large-review checkpointing, provide a PostgreSQL DSN.
 Migrations are applied automatically on first run:
 
 ```bash
-prisma-review --pg-dsn "postgresql://user:pass@localhost/prismadb" --title "..."
+synthscholar --pg-dsn "postgresql://user:pass@localhost/prismadb" --title "..."
 ```
 
 The three migrations applied automatically:
@@ -60,10 +60,10 @@ The three migrations applied automatically:
 ## Verifying Installation
 
 ```bash
-prisma-review --help
+synthscholar --help
 ```
 
 ```python
-import prisma_review_agent
-print(prisma_review_agent.__version__)
+import synthscholar
+print(synthscholar.__version__)
 ```

@@ -76,7 +76,7 @@ class CacheStore:
         except Exception as exc:
             raise CacheSchemaError(
                 "review_cache table not found. Run migration: "
-                "psql $PRISMA_PG_DSN -f prisma_review_agent/cache/migrations/001_initial.sql"
+                "psql $PRISMA_PG_DSN -f synthscholar/cache/migrations/001_initial.sql"
             ) from exc
         try:
             async with self._pool.connection() as conn:
@@ -84,7 +84,7 @@ class CacheStore:
         except Exception as exc:
             raise CacheSchemaError(
                 "pipeline_checkpoints table not found. Run migration: "
-                "psql $PRISMA_PG_DSN -f prisma_review_agent/cache/migrations/003_add_pipeline_checkpoints.sql"
+                "psql $PRISMA_PG_DSN -f synthscholar/cache/migrations/003_add_pipeline_checkpoints.sql"
             ) from exc
 
     # ── Lookup ────────────────────────────────────────────────────────────────

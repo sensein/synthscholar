@@ -54,11 +54,11 @@ You can call any agent outside the pipeline:
 
 ```python
 import asyncio
-from prisma_review_agent.agents import (
+from synthscholar.agents import (
     AgentDeps, build_model,
     synthesis_agent,
 )
-from prisma_review_agent import ReviewProtocol
+from synthscholar import ReviewProtocol
 
 async def main():
     protocol = ReviewProtocol(title="ML in ICU", inclusion_criteria="...")
@@ -80,7 +80,7 @@ asyncio.run(main())
 Override the default extraction schema:
 
 ```python
-from prisma_review_agent import (
+from synthscholar import (
     default_charting_template,
     default_appraisal_config,
     ChartingTemplate, ChartingSection, FieldDefinition,

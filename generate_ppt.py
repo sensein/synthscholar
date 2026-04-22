@@ -23,7 +23,7 @@ LGRAY  = RGBColor(0xCC, 0xD6, 0xE0)
 DGRAY  = RGBColor(0x15, 0x2A, 0x3C)
 SLATE  = RGBColor(0x47, 0x55, 0x69)
 
-DIAG = "/Users/tekrajchhetri/Documents/research_codes_papers_writing/prisma-review-agent/PRISMA_Agent_Architecture.png"
+DIAG = "/Users/tekrajchhetri/Documents/research_codes_papers_writing/synthscholar/PRISMA_Agent_Architecture.png"
 
 prs = Presentation()
 prs.slide_width  = Inches(13.33)
@@ -795,10 +795,10 @@ txt(s,"ReviewProtocol  ->  Agent 1 (search queries)  ->  PubMed + bioRxiv Tools 
     "Agents 9/4/3 per article  ->  asyncio.gather Agents 5/7/6/8  ->  PRISMAReviewResult  ->  PRISMA 2020 Report",
     0.35,5.62,12.65,0.68,size=10.5,color=WHITE,align=PP_ALIGN.CENTER)
 
-txt(s,"PRISMA Review Agent v1.0.0   |   Tek Raj Chhetri   |   Apache 2.0   |   2026   |   pip install prisma-review-agent",
+txt(s,"PRISMA Review Agent v1.0.0   |   Tek Raj Chhetri   |   Apache 2.0   |   2026   |   pip install synthscholar",
     0.3,6.6,12.7,0.38,size=12,color=LBLUE,align=PP_ALIGN.CENTER)
 bar(s)
 
-OUT="/Users/tekrajchhetri/Documents/research_codes_papers_writing/prisma-review-agent/PRISMA_Agent_Architecture.pptx"
+OUT="/Users/tekrajchhetri/Documents/research_codes_papers_writing/synthscholar/PRISMA_Agent_Architecture.pptx"
 prs.save(OUT)
 print(f"Saved: {OUT}  ({len(prs.slides)} slides)")

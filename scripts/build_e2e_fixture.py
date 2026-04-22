@@ -19,9 +19,9 @@ from pathlib import Path
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
-from prisma_review_agent.models import ReviewProtocol
-from prisma_review_agent.pipeline import PRISMAReviewPipeline
-from prisma_review_agent.export import to_json
+from synthscholar.models import ReviewProtocol
+from synthscholar.pipeline import PRISMAReviewPipeline
+from synthscholar.export import to_json
 
 
 async def main() -> None:

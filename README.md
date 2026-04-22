@@ -7,7 +7,7 @@ A standalone, agent-based systematic literature review tool following **PRISMA 2
 ## Architecture
 
 ```
-prisma-review-agent/
+synthscholar/
 ├── models.py           # Pydantic v2 models (Article, Protocol, Evidence, GRADE, etc.)
 ├── clients.py          # HTTP clients: PubMed (NCBI E-utilities), bioRxiv, SQLite cache
 ├── agents.py           # 20+ pydantic-ai agents with typed outputs + runner functions
@@ -17,7 +17,7 @@ prisma-review-agent/
 ├── compare.py          # Multi-model compare mode — parallel runs + consensus synthesis
 ├── export.py           # Export: Markdown, JSON, BibTeX, CSV formats
 ├── main.py             # Standalone CLI with argparse + interactive mode
-└── prisma_review_agent/
+└── synthscholar/
     └── cache/          # PostgreSQL cache sub-package
         ├── models.py        # CacheEntry, SimilarityConfig, StoredArticle, PipelineCheckpoint
         ├── similarity.py    # SHA-256 fingerprinting + weighted fuzzy scoring
@@ -43,14 +43,14 @@ prisma-review-agent/
 ### From PyPI (recommended)
 
 ```bash
-pip install prisma-review-agent
+pip install synthscholar
 ```
 
 ### From source
 
 ```bash
-git clone https://github.com/tekrajchhetri/prisma-review-agent.git
-cd prisma-review-agent
+git clone https://github.com/tekrajchhetri/synthscholar.git
+cd synthscholar
 python -m pip install uv
 uv install
 ```
@@ -69,22 +69,22 @@ export NCBI_API_KEY="your-ncbi-key"
 Alternatively, pass the key inline with `--api-key` (takes precedence over the env var):
 
 ```bash
-prisma-review --title "CRISPR gene therapy" --api-key "sk-or-v1-..."
+synthscholar --title "CRISPR gene therapy" --api-key "sk-or-v1-..."
 ```
 
 ### CLI — installed package
 
-After `pip install prisma-review-agent` the `prisma-review` command is available globally:
+After `pip install synthscholar` the `synthscholar` command is available globally:
 
 ```bash
 # Simple review
-prisma-review \
+synthscholar \
   --title "CRISPR gene therapy efficacy" \
   --inclusion "Clinical trials, human subjects, English" \
   --exclusion "Animal-only studies, reviews, commentaries"
 
 # Full PICO specification
-prisma-review \
+synthscholar \
   --title "GLP-1 agonists for type 2 diabetes: a systematic review" \
   --objective "Evaluate efficacy of GLP-1 RAs vs placebo for glycemic control" \
   --population "Adults with type 2 diabetes mellitus" \
@@ -103,7 +103,7 @@ prisma-review \
   --export md json bib
 
 # Interactive mode
-prisma-review --interactive
+synthscholar --interactive
 ```
 
 ### CLI — from source (without installing)
@@ -118,19 +118,19 @@ By default, the pipeline pauses after generating the search strategy, shows the 
 
 ```bash
 # Default — prompts for confirmation when running in a terminal
-prisma-review \
+synthscholar \
   --title "CRISPR gene therapy efficacy" \
   --inclusion "Clinical trials, human subjects" \
   --exclusion "Animal-only studies"
 
 # Auto mode — no prompt (for scripts, CI, batch jobs)
-prisma-review \
+synthscholar \
   --title "CRISPR gene therapy efficacy" \
   --auto \
   --export ttl jsonld
 
 # Limit re-generation attempts to 2
-prisma-review \
+synthscholar \
   --title "CRISPR gene therapy efficacy" \
   --max-plan-iterations 2
 ```
@@ -163,7 +163,7 @@ Confirm plan? [yes / no / <feedback>]:
 ```python
 import asyncio
 from pathlib import Path
-from prisma_review_agent import (
+from synthscholar import (
     PRISMAReviewPipeline,
     ReviewProtocol,
     RoBTool,
@@ -236,9 +236,9 @@ Use the `confirm_callback` parameter to intercept the generated plan from any Py
 
 ```python
 import asyncio
-from prisma_review_agent.models import ReviewPlan, PlanRejectedError, MaxIterationsReachedError
-from prisma_review_agent.pipeline import PRISMAReviewPipeline
-from prisma_review_agent.models import ReviewProtocol
+from synthscholar.models import ReviewPlan, PlanRejectedError, MaxIterationsReachedError
+from synthscholar.pipeline import PRISMAReviewPipeline
+from synthscholar.models import ReviewProtocol
 
 protocol = ReviewProtocol(
     title="CRISPR gene therapy efficacy",
@@ -298,7 +298,7 @@ The "Generated Search Plan" review/approve/revise gate works **identically** in 
 Omit `--auto` to see the prompt. The same three-way response applies:
 
 ```bash
-prisma-review \
+synthscholar \
   --title "CRISPR gene therapy efficacy" \
   --inclusion "Clinical trials, human subjects" \
   --exclusion "Animal-only studies" \
@@ -347,7 +347,7 @@ Confirm plan? [yes / no / <feedback>]:
 **CLI — skip confirmation (unattended / CI)**
 
 ```bash
-prisma-review \
+synthscholar \
   --title "CRISPR gene therapy efficacy" \
   --compare-models anthropic/claude-sonnet-4 openai/gpt-4o \
   --auto
@@ -360,12 +360,12 @@ Requires at least 2 models; up to 5 supported per run.
 ```python
 import asyncio
 from pathlib import Path
-from prisma_review_agent import (
+from synthscholar import (
     PRISMAReviewPipeline, ReviewProtocol,
     to_compare_markdown, to_compare_json,
     to_compare_charting_markdown, to_compare_charting_json,
 )
-from prisma_review_agent.models import ReviewPlan, PlanRejectedError, MaxIterationsReachedError
+from synthscholar.models import ReviewPlan, PlanRejectedError, MaxIterationsReachedError
 
 protocol = ReviewProtocol(
     title="CRISPR gene therapy efficacy",
@@ -462,8 +462,8 @@ Every successful run with at least one included study produces a `PrismaReview` 
 
 ```python
 import asyncio
-from prisma_review_agent.models import ReviewProtocol
-from prisma_review_agent.pipeline import PRISMAReviewPipeline
+from synthscholar.models import ReviewProtocol
+from synthscholar.pipeline import PRISMAReviewPipeline
 
 async def run():
     protocol = ReviewProtocol(
@@ -528,7 +528,7 @@ Configure how each data charting section (A–G + custom) renders its answer. Fi
 **Simple API — `section_output_formats` dict:**
 
 ```python
-from prisma_review_agent.models import ReviewProtocol
+from synthscholar.models import ReviewProtocol
 
 protocol = ReviewProtocol(
     title="Digital biomarkers for Parkinson's disease",
@@ -556,7 +556,7 @@ for rubric in result.data_charting_rubrics:
 **Full config API — custom titles, ordering, and formats:**
 
 ```python
-from prisma_review_agent.models import ReviewProtocol, RubricSectionConfig
+from synthscholar.models import ReviewProtocol, RubricSectionConfig
 
 protocol = ReviewProtocol(
     title="Emotion recognition from physiological signals",
@@ -575,7 +575,7 @@ protocol = ReviewProtocol(
 **Export per-rubric outputs:**
 
 ```python
-from prisma_review_agent.export import to_rubric_markdown, to_rubric_json
+from synthscholar.export import to_rubric_markdown, to_rubric_json
 
 # Markdown: one heading per study, one sub-heading per section
 Path("rubric_extraction.md").write_text(to_rubric_markdown(result))
@@ -595,8 +595,8 @@ Configure per-field answer constraints (enumerated options, yes/no, free text, n
 **Zero-config — built-in defaults:**
 
 ```python
-from prisma_review_agent import PRISMAReviewPipeline, ReviewProtocol
-from prisma_review_agent.export import to_charting_markdown, to_charting_json, to_appraisal_markdown, to_appraisal_json
+from synthscholar import PRISMAReviewPipeline, ReviewProtocol
+from synthscholar.export import to_charting_markdown, to_charting_json, to_appraisal_markdown, to_appraisal_json
 from pathlib import Path
 
 protocol = ReviewProtocol(
@@ -636,7 +636,7 @@ for appraisal in result.prisma_review.methods.critical_appraisal_results:
 **Customise a single field's options:**
 
 ```python
-from prisma_review_agent.agents import default_charting_template
+from synthscholar.agents import default_charting_template
 
 template = default_charting_template()
 custom = template.override_field(
@@ -650,7 +650,7 @@ protocol = ReviewProtocol(..., charting_template=custom)
 **Fully custom charting template:**
 
 ```python
-from prisma_review_agent.models import ChartingTemplate, ChartingSection, FieldDefinition
+from synthscholar.models import ChartingTemplate, ChartingSection, FieldDefinition
 
 template = ChartingTemplate(sections=[
     ChartingSection(
@@ -699,7 +699,7 @@ protocol = ReviewProtocol(..., charting_template=template)
 **Custom critical appraisal instrument:**
 
 ```python
-from prisma_review_agent.models import CriticalAppraisalConfig, AppraisalDomainSpec, AppraisalItemSpec
+from synthscholar.models import CriticalAppraisalConfig, AppraisalDomainSpec, AppraisalItemSpec
 
 config = CriticalAppraisalConfig(domains=[
     AppraisalDomainSpec(
@@ -732,8 +732,8 @@ protocol = ReviewProtocol(..., critical_appraisal_config=config)
 
 ```python
 from pathlib import Path
-from prisma_review_agent.models import ChartingTemplate
-from prisma_review_agent.agents import default_charting_template
+from synthscholar.models import ChartingTemplate
+from synthscholar.agents import default_charting_template
 
 template = default_charting_template()
 Path("my_template.json").write_text(template.model_dump_json(indent=2))
@@ -919,11 +919,11 @@ import uuid
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel as PydanticBase
-from prisma_review_agent.models import (
+from synthscholar.models import (
     ReviewPlan, ReviewProtocol, PlanRejectedError, MaxIterationsReachedError,
     RubricSectionConfig,
 )
-from prisma_review_agent.pipeline import PRISMAReviewPipeline
+from synthscholar.pipeline import PRISMAReviewPipeline
 from shared import ReviewRequest, _default_concurrency, parse_progress_message
 
 app = FastAPI()
@@ -1474,25 +1474,25 @@ The enhanced format produces publication-ready SLR briefs with professional styl
 
 ```bash
 # Default enhanced format
-prisma-review --title "..." --export enhanced_md
+synthscholar --title "..." --export enhanced_md
 
 # All structured formats
-prisma-review --title "..." --export enhanced_md charting_csv narrative_csv appraisal_csv
+synthscholar --title "..." --export enhanced_md charting_csv narrative_csv appraisal_csv
 
 # Individual formats
-prisma-review --title "..." --export charting narrative appraisal json
+synthscholar --title "..." --export charting narrative appraisal json
 
 # Compare-mode exports (after running with --compare-models)
-prisma-review --title "..." --compare-models anthropic/claude-sonnet-4 openai/gpt-4o \
+synthscholar --title "..." --compare-models anthropic/claude-sonnet-4 openai/gpt-4o \
   --auto --export md json
 
 # RDF / Linked Data formats
-prisma-review --title "..." --export ttl           # Turtle RDF
-prisma-review --title "..." --export jsonld        # JSON-LD
-prisma-review --title "..." --export ttl jsonld md # all three together
+synthscholar --title "..." --export ttl           # Turtle RDF
+synthscholar --title "..." --export jsonld        # JSON-LD
+synthscholar --title "..." --export ttl jsonld md # all three together
 
 # Persist a queryable pyoxigraph store
-prisma-review --title "..." --export ttl --rdf-store-path review.ttl
+synthscholar --title "..." --export ttl --rdf-store-path review.ttl
 ```
 
 ### RDF / Linked Data Export
@@ -1514,7 +1514,7 @@ Export results as RDF using the [SLR Ontology](https://w3id.org/slr-ontology/) (
 **Python API:**
 
 ```python
-from prisma_review_agent.export import to_turtle, to_jsonld
+from synthscholar.export import to_turtle, to_jsonld
 
 turtle_str = to_turtle(result)
 jsonld_str = to_jsonld(result)
@@ -1525,7 +1525,7 @@ jsonld_str = to_jsonld(result)
 For in-process SPARQL queries, load the result directly into a [pyoxigraph](https://pyoxigraph.readthedocs.io/) store:
 
 ```python
-from prisma_review_agent.export import to_oxigraph_store
+from synthscholar.export import to_oxigraph_store
 
 store = to_oxigraph_store(result)
 
@@ -1552,7 +1552,7 @@ store.save("review_store.ttl")
 Or from the CLI — pass `--rdf-store-path` to write the store after export:
 
 ```bash
-prisma-review --title "..." --export ttl --rdf-store-path review_store.ttl
+synthscholar --title "..." --export ttl --rdf-store-path review_store.ttl
 ```
 
 **Note**: The system processes ALL studies that pass screening criteria through complete data charting and critical appraisal. There are no artificial limits on corpus size — from small pilot reviews (5-10 studies) to comprehensive systematic reviews (50+ studies).
@@ -1581,10 +1581,10 @@ When a broad search returns thousands of articles, use `--max-articles N` to rer
 
 ```bash
 # Keep only the top 200 most relevant articles after deduplication
-prisma-review --title "..." --max-articles 200
+synthscholar --title "..." --max-articles 200
 
 # Combine with higher concurrency for fast exploratory runs
-prisma-review --title "..." --max-articles 100 --concurrency 10
+synthscholar --title "..." --max-articles 100 --concurrency 10
 ```
 
 **Python API:**
@@ -1610,13 +1610,13 @@ protocol = ReviewProtocol(
 
 ```bash
 # Moderate parallelism (default) — safe for most OpenRouter tiers
-prisma-review --title "..." --concurrency 5
+synthscholar --title "..." --concurrency 5
 
 # High parallelism — use if your API tier supports it
-prisma-review --title "..." --concurrency 10
+synthscholar --title "..." --concurrency 10
 
 # Sequential (debugging / strict rate-limit compliance)
-prisma-review --title "..." --concurrency 1
+synthscholar --title "..." --concurrency 1
 ```
 
 **Python API:**
@@ -1699,16 +1699,16 @@ Pass any [OpenRouter model ID](https://openrouter.ai/models) via `--model` on th
 **CLI**
 ```bash
 # Claude Sonnet 4 (default)
-prisma-review --title "..." --model anthropic/claude-sonnet-4
+synthscholar --title "..." --model anthropic/claude-sonnet-4
 
 # Gemini 2.5 Pro
-prisma-review --title "..." --model google/gemini-2.5-pro
+synthscholar --title "..." --model google/gemini-2.5-pro
 
 # GPT-4o
-prisma-review --title "..." --model openai/gpt-4o
+synthscholar --title "..." --model openai/gpt-4o
 
 # DeepSeek (cost-effective)
-prisma-review --title "..." --model deepseek/deepseek-chat
+synthscholar --title "..." --model deepseek/deepseek-chat
 ```
 
 **Python API**
@@ -1722,7 +1722,7 @@ pipeline = PRISMAReviewPipeline(
 
 **Interactive mode** — prompts you to type a model name at startup:
 ```bash
-prisma-review --interactive
+synthscholar --interactive
 # Enter model ID when prompted, or press Enter for the default
 ```
 
@@ -1798,7 +1798,7 @@ When `--pg-dsn` is provided, completed review results are cached in PostgreSQL. 
 
 ```bash
 # Run with PostgreSQL cache
-prisma-review \
+synthscholar \
   --title "GLP-1 agonists for type 2 diabetes" \
   --inclusion "RCTs, English, 2019-2024" \
   --pg-dsn "postgresql://user:pass@localhost/prisma_db" \
@@ -1806,19 +1806,19 @@ prisma-review \
   --export md
 
 # Force a fresh run (bypass cache)
-prisma-review --title "..." --pg-dsn "..." --force-refresh
+synthscholar --title "..." --pg-dsn "..." --force-refresh
 ```
 
 **Setup** — run the migration once before first use:
 
 ```bash
-psql "$PRISMA_PG_DSN" -f prisma_review_agent/cache/migrations/001_initial.sql
+psql "$PRISMA_PG_DSN" -f synthscholar/cache/migrations/001_initial.sql
 ```
 
 Or set the DSN via environment variable:
 ```bash
 export PRISMA_PG_DSN="postgresql://user:pass@localhost/prisma_db"
-prisma-review --title "..."
+synthscholar --title "..."
 ```
 
 The Markdown export includes a cache banner when a result is served from cache:
@@ -1838,21 +1838,21 @@ For reviews with hundreds of included articles, the pipeline automatically proce
 **Setup** — run the migration once:
 
 ```bash
-psql "$PRISMA_PG_DSN" -f prisma_review_agent/cache/migrations/003_add_pipeline_checkpoints.sql
+psql "$PRISMA_PG_DSN" -f synthscholar/cache/migrations/003_add_pipeline_checkpoints.sql
 ```
 
 **CLI:**
 
 ```bash
 # Run a large review with a stable review ID so it can be resumed
-prisma-review \
+synthscholar \
   --title "CRISPR gene editing: systematic review" \
   --pg-dsn "postgresql://user:pass@localhost/prisma_db" \
   --review-id "crispr-2026-001" \
   --synthesis-batch-size 20
 
 # If interrupted, re-run the same command — completed batches are skipped automatically
-prisma-review --title "..." --pg-dsn "..." --review-id "crispr-2026-001"
+synthscholar --title "..." --pg-dsn "..." --review-id "crispr-2026-001"
 ```
 
 **Python API:**
@@ -1886,7 +1886,7 @@ result = await pipeline.run(protocol)
 ## CLI Reference
 
 ```
-prisma-review [OPTIONS]
+synthscholar [OPTIONS]
 
 Protocol:
   --title, -t          Review title / research question

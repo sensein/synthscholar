@@ -6,8 +6,8 @@ import json
 
 import pytest
 
-from prisma_review_agent.models import PRISMAReviewResult
-from prisma_review_agent.export import (
+from synthscholar.models import PRISMAReviewResult
+from synthscholar.export import (
     to_markdown,
     to_json,
     to_bibtex,

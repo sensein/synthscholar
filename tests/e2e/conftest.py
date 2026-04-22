@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from prisma_review_agent.models import ReviewProtocol, PRISMAReviewResult
-from prisma_review_agent.pipeline import PRISMAReviewPipeline
+from synthscholar.models import ReviewProtocol, PRISMAReviewResult
+from synthscholar.pipeline import PRISMAReviewPipeline
 
 
 @pytest.fixture

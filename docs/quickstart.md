@@ -3,7 +3,7 @@
 ## CLI — One Command
 
 ```bash
-prisma-review \
+synthscholar \
   --title "Machine learning for sepsis prediction in ICU" \
   --inclusion "adult ICU patients, ML/AI methods, mortality or sepsis outcome" \
   --exclusion "pediatric, reviews, non-English" \
@@ -24,7 +24,7 @@ review_output.json
 
 ```python
 import asyncio
-from prisma_review_agent import PRISMAReviewPipeline, ReviewProtocol
+from synthscholar import PRISMAReviewPipeline, ReviewProtocol
 
 protocol = ReviewProtocol(
     title="Machine learning for sepsis prediction in ICU",
@@ -60,7 +60,7 @@ for field, agreement in result.merged.field_agreement.items():
 Or via CLI:
 
 ```bash
-prisma-review \
+synthscholar \
   --title "..." \
   --inclusion "..." \
   --exclusion "..." \
@@ -71,7 +71,7 @@ prisma-review \
 ## Export Formats
 
 ```python
-from prisma_review_agent import to_markdown, to_json, to_bibtex, to_turtle
+from synthscholar import to_markdown, to_json, to_bibtex, to_turtle
 
 md   = to_markdown(result)
 js   = to_json(result)

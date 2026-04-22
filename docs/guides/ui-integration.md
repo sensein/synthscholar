@@ -69,7 +69,7 @@ Everything you already render in non-compare mode lives inside
 
 ```python
 from fastapi import FastAPI
-from prisma_review_agent import PRISMAReviewPipeline, ReviewProtocol
+from synthscholar import PRISMAReviewPipeline, ReviewProtocol
 
 app = FastAPI()
 
@@ -231,7 +231,7 @@ Use the existing compare-mode exporters — they already handle per-model
 sections and the merged consensus:
 
 ```python
-from prisma_review_agent import (
+from synthscholar import (
     to_compare_markdown,        # full PRISMA per model + consensus
     to_compare_json,            # complete structured JSON
     to_compare_charting_markdown,

@@ -1,6 +1,6 @@
 -- Migration 001: review_cache and article_store tables
 -- Run against your PostgreSQL 15+ database before using the cache feature.
--- Example: psql "$PRISMA_PG_DSN" -f prisma_review_agent/cache/migrations/001_initial.sql
+-- Example: psql "$PRISMA_PG_DSN" -f synthscholar/cache/migrations/001_initial.sql
 
 -- ── Review result cache ───────────────────────────────────────────────────────
 

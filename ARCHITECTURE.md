@@ -60,7 +60,7 @@ Export: Markdown (PRISMA 2020 report) / JSON / BibTeX
 The codebase maps to this flow as follows:
 
 ```
-prisma_review_agent/
+synthscholar/
   main.py       -- CLI entry point (argparse + interactive mode)
   pipeline.py   -- PRISMAReviewPipeline: 15-step async orchestrator
   agents.py     -- 9 pydantic-ai LLM agents + runner functions
@@ -76,7 +76,7 @@ prisma_review_agent/
 
 ### Step 1 — Researcher defines a ReviewProtocol
 
-Everything starts with a `ReviewProtocol` Pydantic object. The researcher provides this either through the CLI (`prisma-review --title "..." --population "..." ...`) or programmatically in Python. The protocol carries:
+Everything starts with a `ReviewProtocol` Pydantic object. The researcher provides this either through the CLI (`synthscholar --title "..." --population "..." ...`) or programmatically in Python. The protocol carries:
 
 - **`title`** — the research question in full (e.g., "Effectiveness of BDNF-targeted therapies in major depressive disorder")
 - **`objective`** — a more detailed statement of what the review aims to establish

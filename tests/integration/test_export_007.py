@@ -3,7 +3,7 @@
 import json
 import pytest
 
-from prisma_review_agent.models import (
+from synthscholar.models import (
     CompareReviewResult,
     FieldAgreement,
     MergedReviewResult,
@@ -12,7 +12,7 @@ from prisma_review_agent.models import (
     ReviewProtocol,
     SynthesisDivergence,
 )
-from prisma_review_agent.export import (
+from synthscholar.export import (
     to_compare_markdown,
     to_compare_json,
     to_compare_charting_markdown,

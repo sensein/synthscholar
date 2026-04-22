@@ -7,7 +7,7 @@ near-duplicate research questions.
 ## Setup
 
 ```bash
-prisma-review \
+synthscholar \
   --title "..." \
   --pg-dsn "postgresql://user:pass@localhost/reviews" \
   --auto
@@ -43,7 +43,7 @@ pipeline = PRISMAReviewPipeline(
 Bypass the cache and recompute even when a matching entry exists:
 
 ```bash
-prisma-review --pg-dsn "..." --force-refresh --title "..."
+synthscholar --pg-dsn "..." --force-refresh --title "..."
 ```
 
 ```python
@@ -66,7 +66,7 @@ with tsvector indexing, enabling fast re-use across reviews that share overlappi
 literature.
 
 ```python
-from prisma_review_agent.cache import ArticleStore
+from synthscholar.cache import ArticleStore
 
 store = ArticleStore(dsn="postgresql://...")
 articles = await store.search("sepsis machine learning", limit=50)
@@ -75,7 +75,7 @@ articles = await store.search("sepsis machine learning", limit=50)
 ## Cache Administration
 
 ```python
-from prisma_review_agent.cache import CacheStore
+from synthscholar.cache import CacheStore
 
 store = CacheStore(dsn="postgresql://...")
 

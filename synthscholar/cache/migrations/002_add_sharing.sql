@@ -1,6 +1,6 @@
 -- Migration 002: add ownership columns to review_cache
 -- Run after 001_initial.sql. Safe to run multiple times (IF NOT EXISTS / IF NOT EXISTS).
--- Example: psql "$PRISMA_PG_DSN" -f prisma_review_agent/cache/migrations/002_add_sharing.sql
+-- Example: psql "$PRISMA_PG_DSN" -f synthscholar/cache/migrations/002_add_sharing.sql
 
 ALTER TABLE review_cache
     ADD COLUMN IF NOT EXISTS review_id VARCHAR(128) NOT NULL DEFAULT '',

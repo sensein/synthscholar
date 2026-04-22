@@ -1,9 +1,9 @@
 # CLI Reference
 
-`prisma-review` is the command-line interface for running systematic reviews.
+`synthscholar` is the command-line interface for running systematic reviews.
 
 ```bash
-prisma-review [OPTIONS]
+synthscholar [OPTIONS]
 ```
 
 ## Protocol Arguments
@@ -80,7 +80,7 @@ These define **what** to review.
 
 **Basic automated review:**
 ```bash
-prisma-review \
+synthscholar \
   --title "Deep learning in radiology" \
   --inclusion "CNN, diagnostic imaging, AUC reported" \
   --exclusion "non-English, conference abstracts" \
@@ -89,7 +89,7 @@ prisma-review \
 
 **Full PICO with custom model and concurrency:**
 ```bash
-prisma-review \
+synthscholar \
   --title "SGLT2 inhibitors in heart failure" \
   --population "adults with HFrEF" \
   --intervention "SGLT2 inhibitor" \
@@ -103,7 +103,7 @@ prisma-review \
 
 **Compare mode:**
 ```bash
-prisma-review \
+synthscholar \
   --title "..." \
   --inclusion "..." \
   --exclusion "..." \
@@ -114,7 +114,7 @@ prisma-review \
 
 **With PostgreSQL cache:**
 ```bash
-prisma-review \
+synthscholar \
   --title "..." \
   --pg-dsn "postgresql://user:pass@localhost/reviews" \
   --cache-ttl-days 60 \
@@ -123,5 +123,5 @@ prisma-review \
 
 **Interactive mode:**
 ```bash
-prisma-review --interactive
+synthscholar --interactive
 ```

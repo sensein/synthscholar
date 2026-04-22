@@ -474,6 +474,6 @@ for i,(fc,ec,label) in enumerate(legend):
     txt(lx+0.44,0.21,label,fs=8.5,color=DARK,ha="left")
 
 plt.tight_layout(pad=0)
-out="/Users/tekrajchhetri/Documents/research_codes_papers_writing/prisma-review-agent/PRISMA_Agent_Architecture.png"
+out="/Users/tekrajchhetri/Documents/research_codes_papers_writing/synthscholar/PRISMA_Agent_Architecture.png"
 fig.savefig(out,dpi=155,bbox_inches="tight",facecolor=BG)
 print(f"Saved: {out}")

@@ -61,7 +61,7 @@ graph TD
 ## Repository Layout
 
 ```
-prisma-review-agent/
+synthscholar/
 ├── main.py               # CLI entry point (argparse)
 ├── pipeline.py           # Core async orchestrator (PRISMAReviewPipeline)
 ├── compare.py            # Multi-model compare: run_compare(), _run_model_pipeline(), _compute_field_agreement()
@@ -72,7 +72,7 @@ prisma-review-agent/
 ├── validation.py         # Source grounding validator (rapidfuzz)
 ├── export.py             # to_markdown(), to_json(), to_bibtex(), to_compare_markdown(), to_compare_json(), ...
 ├── __init__.py           # Root package (dev use)
-├── prisma_review_agent/  # Installable package
+├── synthscholar/  # Installable package
 │   ├── __init__.py       # Public API re-exports
 │   ├── ontology/         # SLR Ontology integration — LinkML schema + RDF export
 │   │   ├── __init__.py       # Re-exports to_turtle, to_jsonld
@@ -97,7 +97,7 @@ prisma-review-agent/
 └── developer.md          # This file
 ```
 
-The `prisma_review_agent/` package is the installable form; root-level `.py` files are for direct development. Both contain the same code.
+The `synthscholar/` package is the installable form; root-level `.py` files are for direct development. Both contain the same code.
 
 ---
 
@@ -996,8 +996,8 @@ The `criteria_fingerprint` is the bridge: the RDF graph URI `urn:slr:review:{fin
 **Step 1 — look up by fingerprint (exact match)**
 
 ```python
-from prisma_review_agent.cache.store import CacheStore
-from prisma_review_agent.cache.similarity import compute_fingerprint
+from synthscholar.cache.store import CacheStore
+from synthscholar.cache.similarity import compute_fingerprint
 
 async with CacheStore(pg_dsn) as store:
     fingerprint = compute_fingerprint(protocol)
@@ -1019,7 +1019,7 @@ async with CacheStore(pg_dsn) as store:
 The `result_json` snapshot includes article metadata but may not include `full_text` (large blobs are trimmed in some export paths). Re-attach full text from the article library:
 
 ```python
-from prisma_review_agent.cache.article_store import ArticleStore
+from synthscholar.cache.article_store import ArticleStore
 
 async with ArticleStore(pg_dsn) as astore:
     pmids = [a.pmid for a in result.included_articles]
@@ -1033,7 +1033,7 @@ async with ArticleStore(pg_dsn) as astore:
 **Step 4 — re-attach RDF provenance**
 
 ```python
-from prisma_review_agent.ontology.rdf_store import SLRStore
+from synthscholar.ontology.rdf_store import SLRStore
 
 store = SLRStore(path="review_store.oxigraph")
 store.load_from_file("prior_review.ttl")
@@ -1124,7 +1124,7 @@ The "Reconstruct" action re-runs the pipeline using the stored `criteria_json` a
 ```python
 # Minimal reconstruct from a stored criteria_json
 import json
-from prisma_review_agent import PRISMAReviewPipeline, ReviewProtocol
+from synthscholar import PRISMAReviewPipeline, ReviewProtocol
 
 raw = json.loads(cache_entry.criteria_json)
 protocol = ReviewProtocol.model_validate(raw)
@@ -1164,7 +1164,7 @@ pipeline_checkpoints (
 );
 ```
 
-Run before first use: `psql $PRISMA_PG_DSN -f prisma_review_agent/cache/migrations/003_add_pipeline_checkpoints.sql`
+Run before first use: `psql $PRISMA_PG_DSN -f synthscholar/cache/migrations/003_add_pipeline_checkpoints.sql`
 
 ### New `ReviewProtocol` Fields
 
@@ -1254,7 +1254,7 @@ Identical criteria are fingerprinted with SHA-256 (normalised, lowercase, sorted
 
 ### 13. LinkML schema as the canonical RDF vocabulary
 
-`prisma_review_agent/ontology/slr_ontology.yaml` is a [LinkML](https://linkml.io/) schema (v0.2.0) that defines the complete class hierarchy for systematic reviews. It generates `slr_ontology.schema.json` (JSON Schema) and `slr_ontology.owl.ttl` (OWL/Turtle) as derived artifacts via `gen-json-schema` and `gen-owl`. The Python export code (`rdf_export.py`) does not import linkml at runtime — it uses `rdflib` directly with the URI constants specified in the schema, keeping the runtime dependency minimal. Regenerate derived artifacts with `linkml-lint slr_ontology.yaml && gen-json-schema slr_ontology.yaml > slr_ontology.schema.json && gen-owl slr_ontology.yaml > slr_ontology.owl.ttl`.
+`synthscholar/ontology/slr_ontology.yaml` is a [LinkML](https://linkml.io/) schema (v0.2.0) that defines the complete class hierarchy for systematic reviews. It generates `slr_ontology.schema.json` (JSON Schema) and `slr_ontology.owl.ttl` (OWL/Turtle) as derived artifacts via `gen-json-schema` and `gen-owl`. The Python export code (`rdf_export.py`) does not import linkml at runtime — it uses `rdflib` directly with the URI constants specified in the schema, keeping the runtime dependency minimal. Regenerate derived artifacts with `linkml-lint slr_ontology.yaml && gen-json-schema slr_ontology.yaml > slr_ontology.schema.json && gen-owl slr_ontology.yaml 2>/dev/null > slr_ontology.owl.ttl` — the `2>/dev/null` is important: `gen-owl` writes non-fatal `Ambiguous attribute` warnings to stderr, and without redirecting them the shell can mix them into the file and break Turtle parsing.
 
 ### 14. Pyoxigraph store via Turtle round-trip
 
@@ -1328,7 +1328,7 @@ This avoids re-fetching articles N times while ensuring each model applies its o
 
 4. **Call it in** [pipeline.py](pipeline.py) at the appropriate step; store result on the article or result object.
 
-5. **Re-export** from `prisma_review_agent/__init__.py` if it is part of the public API.
+5. **Re-export** from `synthscholar/__init__.py` if it is part of the public API.
 
 ---
 
@@ -1381,7 +1381,7 @@ ReviewProtocol(
 Before first use, run:
 
 ```bash
-psql "$PRISMA_PG_DSN" -f prisma_review_agent/cache/migrations/001_initial.sql
+psql "$PRISMA_PG_DSN" -f synthscholar/cache/migrations/001_initial.sql
 ```
 
 This creates `review_cache` and `article_store` tables with all required indexes.

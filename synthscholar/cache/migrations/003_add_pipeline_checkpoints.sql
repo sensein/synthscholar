@@ -3,7 +3,7 @@
 -- Stores per-batch results for each pipeline stage, keyed by (review_id, stage_name, batch_index).
 -- Enables crash recovery and resumption without reprocessing completed batches.
 --
--- Run:  psql "$DATABASE_URL" -f prisma_review_agent/cache/migrations/003_add_pipeline_checkpoints.sql
+-- Run:  psql "$DATABASE_URL" -f synthscholar/cache/migrations/003_add_pipeline_checkpoints.sql
 
 CREATE TABLE IF NOT EXISTS pipeline_checkpoints (
     id            BIGSERIAL PRIMARY KEY,

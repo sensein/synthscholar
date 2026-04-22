@@ -25,7 +25,7 @@ from .models import Article
 
 NCBI_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 BIORXIV_API = "https://api.biorxiv.org/details/biorxiv"
-NCBI_TOOL = "prisma_review_agent"
+NCBI_TOOL = "synthscholar"
 NCBI_EMAIL = "user@example.com"
 RATE_LIMIT_DELAY = 0.35
 

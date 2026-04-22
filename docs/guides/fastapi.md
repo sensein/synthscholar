@@ -18,7 +18,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from prisma_review_agent import (
+from synthscholar import (
     PRISMAReviewPipeline,
     ReviewProtocol,
     CompareReviewResult,
@@ -144,7 +144,7 @@ Run it:
 
 ```bash
 export OPENROUTER_API_KEY="sk-or-..."
-pip install fastapi uvicorn prisma-review-agent
+pip install fastapi uvicorn synthscholar
 uvicorn app:app --reload
 ```
 
@@ -169,7 +169,7 @@ For Python consumers, skip HTTP entirely and use the library directly:
 
 ```python
 import asyncio
-from prisma_review_agent import PRISMAReviewPipeline, ReviewProtocol
+from synthscholar import PRISMAReviewPipeline, ReviewProtocol
 
 async def main():
     protocol = ReviewProtocol(
@@ -260,7 +260,7 @@ When you don't pass `auto=True`, the pipeline pauses after generating a search
 plan and waits for user approval. Use this pattern to wire it through HTTP:
 
 ```python
-from prisma_review_agent import ReviewPlan
+from synthscholar import ReviewPlan
 
 pending_plans: dict[str, ReviewPlan] = {}
 plan_decisions: dict[str, bool] = {}

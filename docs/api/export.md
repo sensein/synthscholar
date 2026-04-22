@@ -6,7 +6,7 @@ All export functions are pure — they take a result object and return a string
 ## Import
 
 ```python
-from prisma_review_agent import (
+from synthscholar import (
     to_markdown, to_json, to_bibtex,
     to_turtle, to_jsonld,
     to_charting_markdown, to_charting_json,
@@ -68,7 +68,7 @@ store.dump("output.ttl", "text/turtle")
 
 ```python
 from pathlib import Path
-from prisma_review_agent import to_markdown, to_json, to_bibtex, to_turtle
+from synthscholar import to_markdown, to_json, to_bibtex, to_turtle
 
 base = Path("review_output")
 base.with_suffix(".md").write_text(to_markdown(result))

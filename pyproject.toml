@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "prisma-review-agent"
+name = "synthscholar"
 version = "0.2.9"
-description = "PRISMA 2020 systematic literature review agent powered by Pydantic AI"
+description = "SynthScholar — PRISMA 2020 systematic literature review agent powered by Pydantic AI"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.11"
@@ -55,10 +55,11 @@ dev = [
 ]
 
 [project.scripts]
-prisma-review = "prisma_review_agent.main:main"
+synthscholar = "synthscholar.main:main"
 
 [project.urls]
-Repository = "https://github.com/tekrajchhetri/prisma-review-agent"
+Repository = "https://github.com/tekrajchhetri/synthscholar"
+Documentation = "https://tekrajchhetri.github.io/synthscholar/"
 
 [tool.ruff]
 target-version = "py311"

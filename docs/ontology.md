@@ -6,7 +6,7 @@ a stable, machine-readable, linked-data representation.
 
 - **Namespace:** `https://w3id.org/slr-ontology/` (prefix `slr:`)
 - **Version:** 0.2.0
-- **Source:** [`prisma_review_agent/ontology/slr_ontology.yaml`](https://github.com/tekrajchhetri/synthscholar/blob/main/prisma_review_agent/ontology/slr_ontology.yaml)
+- **Source:** [`synthscholar/ontology/slr_ontology.yaml`](https://github.com/tekrajchhetri/synthscholar/blob/main/synthscholar/ontology/slr_ontology.yaml)
 - **Serialisations:** LinkML YAML · OWL/Turtle · JSON Schema
 
 ## Downloads
@@ -180,8 +180,8 @@ log.
 ### From Python
 
 ```python
-from prisma_review_agent import PRISMAReviewPipeline, ReviewProtocol
-from prisma_review_agent.ontology import to_turtle, to_jsonld
+from synthscholar import PRISMAReviewPipeline, ReviewProtocol
+from synthscholar.ontology import to_turtle, to_jsonld
 
 protocol = ReviewProtocol(title="...", inclusion_criteria="...", exclusion_criteria="...")
 pipeline = PRISMAReviewPipeline(protocol=protocol, api_key="sk-or-...")
@@ -201,7 +201,7 @@ Path("review.jsonld").write_text(jsonld)
 ### From the CLI
 
 ```bash
-prisma-review --title "..." --inclusion "..." --exclusion "..." \
+synthscholar --title "..." --inclusion "..." --exclusion "..." \
   --export md json ttl jsonld \
   --auto
 ```
@@ -209,7 +209,7 @@ prisma-review --title "..." --inclusion "..." --exclusion "..." \
 ### Into an RDF store
 
 ```python
-from prisma_review_agent import to_oxigraph_store
+from synthscholar import to_oxigraph_store
 
 store = to_oxigraph_store(result)     # returns pyoxigraph.Store
 store.dump("review.ttl", "text/turtle")
@@ -268,7 +268,7 @@ for row in store.query("""
 ## Schema Artefacts
 
 All three artefacts ship inside the Python package at
-`prisma_review_agent/ontology/`:
+`synthscholar/ontology/`:
 
 | File | Format | Use |
 |------|--------|-----|
@@ -279,8 +279,10 @@ All three artefacts ship inside the Python package at
 The OWL and JSON-Schema files are generated from the LinkML source with:
 
 ```bash
-gen-owl       prisma_review_agent/ontology/slr_ontology.yaml > slr_ontology.owl.ttl
-gen-json-schema prisma_review_agent/ontology/slr_ontology.yaml > slr_ontology.schema.json
+gen-owl       synthscholar/ontology/slr_ontology.yaml 2>/dev/null > slr_ontology.owl.ttl
+gen-json-schema synthscholar/ontology/slr_ontology.yaml > slr_ontology.schema.json
+# Note: redirecting stderr (2>/dev/null) is required — gen-owl writes non-fatal
+# warnings to stderr that otherwise get mixed into the file and break Turtle parsing.
 ```
 
 ## Further Reading

@@ -25,7 +25,7 @@ then measures where the models agree and diverge — giving you a cross-model co
 
 ```python
 import asyncio
-from prisma_review_agent import PRISMAReviewPipeline, ReviewProtocol
+from synthscholar import PRISMAReviewPipeline, ReviewProtocol
 
 protocol = ReviewProtocol(
     title="Machine learning for sepsis prediction in ICU",
@@ -63,7 +63,7 @@ asyncio.run(main())
 ## CLI
 
 ```bash
-prisma-review \
+synthscholar \
   --title "Machine learning for sepsis prediction" \
   --inclusion "adult ICU patients, ML methods" \
   --exclusion "reviews, non-English" \
@@ -96,7 +96,7 @@ class MergedReviewResult:
 ## Exporting Compare Results
 
 ```python
-from prisma_review_agent import (
+from synthscholar import (
     to_compare_markdown, to_compare_json,
     to_compare_charting_markdown,
 )

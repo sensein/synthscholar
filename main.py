@@ -37,14 +37,14 @@ from pathlib import Path
 from datetime import datetime
 
 try:
-    # Installed package (pip install prisma-review-agent)
-    from prisma_review_agent import __version__
-    from prisma_review_agent.models import ReviewProtocol, RoBTool
-    from prisma_review_agent.pipeline import PRISMAReviewPipeline
-    from prisma_review_agent.export import to_markdown, to_bibtex, to_json
+    # Installed package (pip install synthscholar)
+    from synthscholar import __version__
+    from synthscholar.models import ReviewProtocol, RoBTool
+    from synthscholar.pipeline import PRISMAReviewPipeline
+    from synthscholar.export import to_markdown, to_bibtex, to_json
 except ImportError:
     # Running directly from source: python main.py
-    from prisma_review_agent import __version__  # type: ignore[no-redef]
+    from synthscholar import __version__  # type: ignore[no-redef]
     from models import ReviewProtocol, RoBTool  # type: ignore[no-redef]
     from pipeline import PRISMAReviewPipeline  # type: ignore[no-redef]
     from export import to_markdown, to_bibtex, to_json, to_data_charting_csv, to_narrative_csv, to_appraisal_csv, to_enhanced_markdown, to_source_json  # type: ignore[no-redef]
@@ -301,17 +301,17 @@ async def run_review(args: argparse.Namespace):
 
 def main():
     parser = argparse.ArgumentParser(
-        prog="prisma-review",
+        prog="synthscholar",
         description="PRISMA 2020 Systematic Review Agent (Pydantic AI)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Examples:
-  prisma-review --title "CRISPR gene therapy" --inclusion "Clinical trials" --exclusion "Reviews"
-  prisma-review --interactive
-  prisma-review --title "ML drug discovery" --model google/gemini-2.5-pro --export enhanced_md charting_csv appraisal_csv
+  synthscholar --title "CRISPR gene therapy" --inclusion "Clinical trials" --exclusion "Reviews"
+  synthscholar --interactive
+  synthscholar --title "ML drug discovery" --model google/gemini-2.5-pro --export enhanced_md charting_csv appraisal_csv
 
   # Enhanced formats with data charting:
-  prisma-review --title "Speech analysis in Parkinson's" --export enhanced_md charting narrative appraisal
+  synthscholar --title "Speech analysis in Parkinson's" --export enhanced_md charting narrative appraisal
 
   # Or from source:
   python main.py --title "CRISPR gene therapy" --interactive

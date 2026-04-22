@@ -259,7 +259,7 @@ arr(SYN_X + SYN_W, SYN_Y + SYN_H * 0.55,
 # SAVE
 # ══════════════════════════════════════════════════════════════════
 out = ("/Users/tekrajchhetri/Documents/research_codes_papers_writing"
-       "/prisma-review-agent/simplified_arch.png")
+       "/synthscholar/simplified_arch.png")
 plt.tight_layout()
 fig.savefig(out, dpi=180, bbox_inches="tight", facecolor="white")
 print(f"Saved: {out}")

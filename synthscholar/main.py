@@ -36,9 +36,9 @@ import argparse
 from pathlib import Path
 from datetime import datetime
 
-from prisma_review_agent.models import ReviewProtocol, RoBTool, ReviewPlan, PlanRejectedError, MaxIterationsReachedError
-from prisma_review_agent.pipeline import PRISMAReviewPipeline
-from prisma_review_agent.export import (
+from synthscholar.models import ReviewProtocol, RoBTool, ReviewPlan, PlanRejectedError, MaxIterationsReachedError
+from synthscholar.pipeline import PRISMAReviewPipeline
+from synthscholar.export import (
     to_markdown, to_bibtex, to_json, to_turtle, to_jsonld, to_oxigraph_store,
     to_compare_markdown, to_compare_json,
 )
@@ -56,7 +56,7 @@ def get_api_key(cli_value: str = "") -> str:
     if not key:
         print("ERROR: Set OPENROUTER_API_KEY environment variable or pass --api-key.")
         print("  export OPENROUTER_API_KEY='sk-or-v1-...'")
-        print("  prisma-review --title '...' --api-key 'sk-or-v1-...'")
+        print("  synthscholar --title '...' --api-key 'sk-or-v1-...'")
         sys.exit(1)
     return key
 
