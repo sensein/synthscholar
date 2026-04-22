@@ -620,6 +620,7 @@ graph TD
     subgraph L4["Layer 4 · PostgreSQL  optional  PRISMA_PG_DSN"]
         PG1["review_cache table\ncriteria_fingerprint · model_name\ncriteria_json · result_json\ncreated_at · expires_at"]
         PG2["article_store table\npmid UNIQUE · title · abstract\nfull_text · tsvector search_vector\nGIN index for full-text search"]
+        PG3["pipeline_checkpoints table (feature 010)\nreview_id · stage_name · batch_index UNIQUE\nstatus · result_json JSONB · retries\nUNIQUE (review_id, stage_name, batch_index)"]
     end
 
     EXT["External APIs\nNCBI E-utilities · bioRxiv REST"]
@@ -1138,6 +1139,66 @@ result = await pipeline.run(progress_callback=emit_to_websocket)
 ```
 
 The `charting_template` and `critical_appraisal_config` stored in the original `ReviewProtocol` are automatically carried forward during reconstruct, ensuring the same field schema is applied to the new run.
+
+---
+
+## Feature 010 — Iterative Large-Review Processing
+
+### New `pipeline_checkpoints` Table
+
+Migration `003_add_pipeline_checkpoints.sql` adds:
+
+```sql
+pipeline_checkpoints (
+    id BIGSERIAL PRIMARY KEY,
+    review_id     TEXT  NOT NULL,
+    stage_name    TEXT  NOT NULL,
+    batch_index   INTEGER NOT NULL,
+    status        TEXT  NOT NULL CHECK (status IN ('pending','in_progress','complete','failed')),
+    result_json   JSONB NOT NULL DEFAULT '{}',
+    error_message TEXT  NOT NULL DEFAULT '',
+    retries       INTEGER NOT NULL DEFAULT 0,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_pipeline_checkpoint UNIQUE (review_id, stage_name, batch_index)
+);
+```
+
+Run before first use: `psql $PRISMA_PG_DSN -f prisma_review_agent/cache/migrations/003_add_pipeline_checkpoints.sql`
+
+### New `ReviewProtocol` Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `synthesis_batch_size` | `int` (≥ 1) | `20` | Max articles per synthesis chunk |
+| `max_batch_retries` | `int` (≥ 0) | `3` | Max retry attempts per failed batch |
+
+### `CacheStore` Checkpoint Methods
+
+| Method | Description |
+|--------|-------------|
+| `save_checkpoint(ckpt)` | Upsert by `(review_id, stage_name, batch_index)`; returns row with DB id |
+| `load_checkpoint(review_id, stage, idx)` | Load one checkpoint or None |
+| `load_checkpoints(review_id, stage)` | All checkpoints for a stage ordered by batch_index |
+| `load_completed_stages(review_id)` | Stage names where every batch is `complete` |
+| `mark_stage_complete(review_id, stage)` | Flip all `in_progress` batches to `complete` |
+| `clear_checkpoints(review_id, stage?)` | Delete checkpoints (optionally stage-scoped) |
+
+### `run_synthesis_merge_agent` (agents.py)
+
+```python
+async def run_synthesis_merge_agent(partial_syntheses: list[str], deps: AgentDeps) -> str:
+    """Merge N partial synthesis texts into one coherent narrative."""
+```
+
+Called automatically when `len(included_articles) > synthesis_batch_size`. Returns a single merged synthesis string. Short-circuits when there is only one chunk (no LLM call).
+
+### Resume Behaviour
+
+On each `pipeline.run()` call with a `review_id`:
+1. Calls `load_completed_stages(review_id)` — returns stages where all batches are `complete`
+2. Skips those stages entirely without calling any agents
+3. `force_refresh=True` clears all checkpoints before querying
 
 ---
 

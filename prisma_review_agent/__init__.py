@@ -66,7 +66,20 @@ from prisma_review_agent.models import (
     MergedReviewResult,
     CompareReviewResult,
 )
-from prisma_review_agent.pipeline import PRISMAReviewPipeline
+from prisma_review_agent.pipeline import (
+    PRISMAReviewPipeline,
+    STAGE_TITLE_ABSTRACT,
+    STAGE_FULL_TEXT,
+    STAGE_EXTRACTION,
+    STAGE_CHARTING,
+    STAGE_ROB,
+    STAGE_APPRAISAL,
+    STAGE_NARRATIVE,
+    STAGE_SYNTHESIS,
+    STAGE_SYNTHESIS_MERGE,
+    STAGE_ASSEMBLY,
+)
+from prisma_review_agent.cache.models import PipelineCheckpoint, CheckpointStatus, BatchMaxRetriesError
 from prisma_review_agent.agents import default_charting_template, default_appraisal_config
 from prisma_review_agent.export import (
     to_markdown, to_json, to_bibtex, to_turtle, to_jsonld,
@@ -164,4 +177,18 @@ __all__ = [
     "to_compare_charting_json",
     "to_narrative_summary_markdown",
     "to_narrative_summary_json",
+    # Feature 010
+    "PipelineCheckpoint",
+    "CheckpointStatus",
+    "BatchMaxRetriesError",
+    "STAGE_TITLE_ABSTRACT",
+    "STAGE_FULL_TEXT",
+    "STAGE_EXTRACTION",
+    "STAGE_CHARTING",
+    "STAGE_ROB",
+    "STAGE_APPRAISAL",
+    "STAGE_NARRATIVE",
+    "STAGE_SYNTHESIS",
+    "STAGE_SYNTHESIS_MERGE",
+    "STAGE_ASSEMBLY",
 ]

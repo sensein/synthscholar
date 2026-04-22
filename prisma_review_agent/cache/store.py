@@ -15,7 +15,14 @@ try:
 except ImportError:
     _PSYCOPG = False
 
-from .models import CacheEntry, CacheLookupResult, CacheUnavailableError, CacheSchemaError, SimilarityConfig
+from .models import (
+    CacheEntry,
+    CacheLookupResult,
+    CacheUnavailableError,
+    CacheSchemaError,
+    SimilarityConfig,
+    PipelineCheckpoint,
+)
 from .similarity import compute_fingerprint, compute_similarity
 
 logger = logging.getLogger(__name__)
@@ -65,13 +72,19 @@ class CacheStore:
         assert self._pool
         try:
             async with self._pool.connection() as conn:
-                await conn.execute(
-                    "SELECT 1 FROM review_cache LIMIT 1"
-                )
+                await conn.execute("SELECT 1 FROM review_cache LIMIT 1")
         except Exception as exc:
             raise CacheSchemaError(
                 "review_cache table not found. Run migration: "
                 "psql $PRISMA_PG_DSN -f prisma_review_agent/cache/migrations/001_initial.sql"
+            ) from exc
+        try:
+            async with self._pool.connection() as conn:
+                await conn.execute("SELECT 1 FROM pipeline_checkpoints LIMIT 1")
+        except Exception as exc:
+            raise CacheSchemaError(
+                "pipeline_checkpoints table not found. Run migration: "
+                "psql $PRISMA_PG_DSN -f prisma_review_agent/cache/migrations/003_add_pipeline_checkpoints.sql"
             ) from exc
 
     # ── Lookup ────────────────────────────────────────────────────────────────
@@ -266,6 +279,125 @@ class CacheStore:
             result = await conn.execute("DELETE FROM review_cache")
         return result.pgresult.command_tuples or 0
 
+    # ── Pipeline checkpoint methods (feature 010) ─────────────────────────────
+
+    async def save_checkpoint(self, ckpt: PipelineCheckpoint) -> PipelineCheckpoint:
+        """Upsert a pipeline checkpoint by (review_id, stage_name, batch_index).
+
+        Returns the checkpoint with the DB-assigned id and updated_at timestamp.
+        """
+        assert self._pool
+        async with self._pool.connection() as conn:
+            conn.row_factory = dict_row
+            row = await conn.fetchrow(
+                """
+                INSERT INTO pipeline_checkpoints
+                    (review_id, stage_name, batch_index, status,
+                     result_json, error_message, retries, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, now())
+                ON CONFLICT (review_id, stage_name, batch_index)
+                DO UPDATE SET
+                    status        = EXCLUDED.status,
+                    result_json   = EXCLUDED.result_json,
+                    error_message = EXCLUDED.error_message,
+                    retries       = EXCLUDED.retries,
+                    updated_at    = now()
+                RETURNING *
+                """,
+                ckpt.review_id,
+                ckpt.stage_name,
+                ckpt.batch_index,
+                ckpt.status,
+                json.dumps(ckpt.result_json),
+                ckpt.error_message,
+                ckpt.retries,
+            )
+        return _row_to_checkpoint(row)
+
+    async def load_checkpoint(
+        self, review_id: str, stage_name: str, batch_index: int
+    ) -> PipelineCheckpoint | None:
+        """Load one specific checkpoint, or None if it does not exist."""
+        assert self._pool
+        async with self._pool.connection() as conn:
+            conn.row_factory = dict_row
+            row = await conn.fetchrow(
+                """
+                SELECT * FROM pipeline_checkpoints
+                WHERE review_id = %s AND stage_name = %s AND batch_index = %s
+                """,
+                review_id, stage_name, batch_index,
+            )
+        return _row_to_checkpoint(row) if row else None
+
+    async def load_checkpoints(
+        self, review_id: str, stage_name: str
+    ) -> list[PipelineCheckpoint]:
+        """Return all checkpoints for a stage ordered by batch_index."""
+        assert self._pool
+        async with self._pool.connection() as conn:
+            conn.row_factory = dict_row
+            rows = await conn.fetch(
+                """
+                SELECT * FROM pipeline_checkpoints
+                WHERE review_id = %s AND stage_name = %s
+                ORDER BY batch_index
+                """,
+                review_id, stage_name,
+            )
+        return [_row_to_checkpoint(r) for r in rows]
+
+    async def load_completed_stages(self, review_id: str) -> set[str]:
+        """Return stage names where every batch is 'complete'.
+
+        Used by the pipeline at startup to skip already-finished stages.
+        """
+        assert self._pool
+        async with self._pool.connection() as conn:
+            conn.row_factory = dict_row
+            rows = await conn.fetch(
+                """
+                SELECT stage_name,
+                       COUNT(*) FILTER (WHERE status != 'complete') AS incomplete
+                FROM pipeline_checkpoints
+                WHERE review_id = %s
+                GROUP BY stage_name
+                HAVING COUNT(*) FILTER (WHERE status != 'complete') = 0
+                """,
+                review_id,
+            )
+        return {r["stage_name"] for r in rows}
+
+    async def mark_stage_complete(self, review_id: str, stage_name: str) -> None:
+        """Mark all in_progress batches for a stage as complete."""
+        assert self._pool
+        async with self._pool.connection() as conn:
+            await conn.execute(
+                """
+                UPDATE pipeline_checkpoints
+                SET status = 'complete', updated_at = now()
+                WHERE review_id = %s AND stage_name = %s AND status = 'in_progress'
+                """,
+                review_id, stage_name,
+            )
+
+    async def clear_checkpoints(
+        self, review_id: str, stage_name: str | None = None
+    ) -> None:
+        """Delete checkpoints for a review, optionally scoped to one stage."""
+        assert self._pool
+        async with self._pool.connection() as conn:
+            if stage_name is not None:
+                await conn.execute(
+                    "DELETE FROM pipeline_checkpoints WHERE review_id = %s AND stage_name = %s",
+                    review_id, stage_name,
+                )
+            else:
+                await conn.execute(
+                    "DELETE FROM pipeline_checkpoints WHERE review_id = %s",
+                    review_id,
+                )
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -291,3 +423,18 @@ def _is_expired(entry: CacheEntry) -> bool:
     if exp.tzinfo is None:
         exp = exp.replace(tzinfo=timezone.utc)
     return now > exp
+
+
+def _row_to_checkpoint(row: dict) -> PipelineCheckpoint:
+    return PipelineCheckpoint(
+        id=row["id"],
+        review_id=row["review_id"],
+        stage_name=row["stage_name"],
+        batch_index=row["batch_index"],
+        status=row["status"],
+        result_json=row["result_json"] if isinstance(row["result_json"], dict) else {},
+        error_message=row.get("error_message", ""),
+        retries=row.get("retries", 0),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )

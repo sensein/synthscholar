@@ -9,7 +9,7 @@ the OpenAIChatModel + OpenRouterProvider.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from pydantic import BaseModel
 from pydantic_ai import Agent, RunContext
@@ -74,6 +74,7 @@ class AgentDeps:
     protocol: ReviewProtocol
     api_key: str = ""
     model_name: str = "anthropic/claude-sonnet-4"
+    model: object = field(default=None, repr=False)
 
 
 def build_model(api_key: str, model_name: str = "anthropic/claude-sonnet-4") -> OpenAIChatModel:
@@ -455,7 +456,7 @@ async def _evidence_context(ctx: RunContext[AgentDeps]) -> str:
 async def run_search_strategy(deps: AgentDeps, user_feedback: str = "") -> SearchStrategy:
     """Generate search strategy using LLM agent."""
     # api_key from deps; same for both initial and re-generation calls
-    model = build_model(deps.api_key, deps.model_name)
+    model = deps.model or build_model(deps.api_key, deps.model_name)
     prompt = "Generate a comprehensive search strategy for this systematic review."
     if user_feedback:
         prompt += (
@@ -478,7 +479,7 @@ async def run_screening(
         f"Year: {a.year} | Journal: {a.journal}"
         for i, a in enumerate(articles)
     )
-    model = build_model(deps.api_key, deps.model_name)
+    model = deps.model or build_model(deps.api_key, deps.model_name)
     result = await screening_agent.run(
         f"Stage: {stage}\n\n"
         f"=== ARTICLES TO SCREEN ({len(articles)}) ===\n{articles_text}",
@@ -490,7 +491,7 @@ async def run_screening(
 
 async def run_risk_of_bias(article: Article, deps: AgentDeps) -> RiskOfBiasResult:
     """Assess risk of bias for a single study."""
-    model = build_model(deps.api_key, deps.model_name)
+    model = deps.model or build_model(deps.api_key, deps.model_name)
     result = await rob_agent.run(
         f"Title: {article.title}\n"
         f"Abstract: {article.abstract[:2000]}\n"
@@ -507,7 +508,7 @@ async def run_data_extraction(
     deps: AgentDeps,
 ) -> StudyDataExtraction:
     """Extract structured data from a study."""
-    model = build_model(deps.api_key, deps.model_name)
+    model = deps.model or build_model(deps.api_key, deps.model_name)
     result = await data_extraction_agent.run(
         f"Title: {article.title}\n"
         f"Abstract: {article.abstract[:2500]}\n"
@@ -537,7 +538,7 @@ async def run_synthesis(
         ]
         ev_text = "\n\n== EXTRACTED EVIDENCE SPANS ==\n" + "\n".join(ev_lines)
 
-    model = build_model(deps.api_key, deps.model_name)
+    model = deps.model or build_model(deps.api_key, deps.model_name)
     result = await synthesis_agent.run(
         f"PRISMA Flow: {flow_text}\n\n"
         f"=== INCLUDED ARTICLES ===\n"
@@ -558,7 +559,7 @@ async def run_grade(
         f"- {a.title} ({a.year}): RoB={a.risk_of_bias.overall if a.risk_of_bias else '?'}"
         for a in articles[:20]
     )
-    model = build_model(deps.api_key, deps.model_name)
+    model = deps.model or build_model(deps.api_key, deps.model_name)
     result = await grade_agent.run(
         f"Outcome: {outcome}\nStudies ({len(articles)}):\n{studies_text}",
         deps=deps,
@@ -573,7 +574,7 @@ async def run_bias_summary(articles: list[Article], deps: AgentDeps) -> str:
         f"- {a.title} ({a.year}, {a.journal}) [PMID:{a.pmid}]"
         for a in articles[:30]
     )
-    model = build_model(deps.api_key, deps.model_name)
+    model = deps.model or build_model(deps.api_key, deps.model_name)
     result = await bias_summary_agent.run(
         f"Included studies:\n{articles_text}",
         deps=deps,
@@ -589,7 +590,7 @@ async def run_limitations(
 ) -> str:
     """Generate limitations section."""
     p = deps.protocol
-    model = build_model(deps.api_key, deps.model_name)
+    model = deps.model or build_model(deps.api_key, deps.model_name)
     result = await limitations_agent.run(
         f"Question: {p.question}\n"
         f"Databases: {', '.join(p.databases)}\n"
@@ -612,7 +613,7 @@ async def run_evidence_extraction(
     into a flat list of EvidenceSpan objects.
     """
     all_spans: list[EvidenceSpan] = []
-    model = build_model(deps.api_key, deps.model_name)
+    model = deps.model or build_model(deps.api_key, deps.model_name)
 
     for batch_start in range(0, len(articles), batch_size):
         batch = articles[batch_start:batch_start + batch_size]
@@ -974,7 +975,7 @@ async def run_data_charting(
     """
     import logging as _logging
     import re as _re
-    model = build_model(deps.api_key, deps.model_name)
+    model = deps.model or build_model(deps.api_key, deps.model_name)
 
     custom_block = ""
     if charting_questions:
@@ -1092,7 +1093,7 @@ async def run_data_charting(
 
 async def run_narrative_row(charting: DataChartingRubric, appraisal: CriticalAppraisalRubric, deps: AgentDeps) -> PRISMANarrativeRow:
     """Generate narrative row from charting data and appraisal."""
-    model = build_model(deps.api_key, deps.model_name)
+    model = deps.model or build_model(deps.api_key, deps.model_name)
     result = await narrative_row_agent.run(
         f"Data Charting Rubric:\n{charting.model_dump_json(indent=2)}\n\n"
         f"Critical Appraisal:\n{appraisal.model_dump_json(indent=2)}",
@@ -1121,7 +1122,7 @@ async def run_critical_appraisal(
     import logging as _logging
     import json as _json
     _log = _logging.getLogger(__name__)
-    model = build_model(deps.api_key, deps.model_name)
+    model = deps.model or build_model(deps.api_key, deps.model_name)
 
     domain_labels = list(_DEFAULT_APPRAISAL_DOMAINS)
     if appraisal_domains:
@@ -1226,7 +1227,7 @@ async def run_grounding_validation(
     deps: AgentDeps,
 ) -> GroundingValidationResult:
     """Validate grounding of AI-generated systematic review text against source corpus."""
-    model = build_model(deps.api_key, deps.model_name)
+    model = deps.model or build_model(deps.api_key, deps.model_name)
 
     corpus_summary = "\n\n".join([
         f"=== {key} ===\n{text[:2000]}..."
@@ -1247,14 +1248,14 @@ async def run_grounding_validation(
 
 async def run_introduction(deps: AgentDeps) -> str:
     """Generate Introduction section."""
-    model = build_model(deps.api_key, deps.model_name)
+    model = deps.model or build_model(deps.api_key, deps.model_name)
     result = await introduction_agent.run("Write the Introduction section.", deps=deps, model=model)
     return result.output
 
 
 async def run_conclusions(synthesis: str, grade_summary: str, deps: AgentDeps) -> str:
     """Generate Conclusions section."""
-    model = build_model(deps.api_key, deps.model_name)
+    model = deps.model or build_model(deps.api_key, deps.model_name)
     result = await conclusions_agent.run(
         f"Synthesis summary:\n{synthesis[:2000]}\n\nGRADE certainty:\n{grade_summary}",
         deps=deps,
@@ -1266,7 +1267,7 @@ async def run_conclusions(synthesis: str, grade_summary: str, deps: AgentDeps) -
 async def run_abstract(flow_text: str, synthesis: str, deps: AgentDeps) -> str:
     """Generate structured abstract."""
     p = deps.protocol
-    model = build_model(deps.api_key, deps.model_name)
+    model = deps.model or build_model(deps.api_key, deps.model_name)
     result = await abstract_agent.run(
         f"Review: {p.title}\n"
         f"PICO: {p.pico_text}\n"
@@ -1313,7 +1314,7 @@ async def run_abstract_section(
     bias_summary: str,
 ) -> Abstract:
     """Generate five-part structured abstract from review outcomes."""
-    model = build_model(deps.api_key, deps.model_name)
+    model = deps.model or build_model(deps.api_key, deps.model_name)
     theme_block = "\n".join(
         f"- {t.theme_name}: {'; '.join(t.key_findings[:2])}" for t in themes[:5]
     )
@@ -1357,7 +1358,7 @@ Style: past tense for completed work; present for established knowledge.
 
 async def run_introduction_section(deps: AgentDeps, protocol: ReviewProtocol) -> Introduction:
     """Generate four-section introduction from review protocol."""
-    model = build_model(deps.api_key, deps.model_name)
+    model = deps.model or build_model(deps.api_key, deps.model_name)
     result = await introduction_section_agent.run(
         f"Review Title: {protocol.title}\n"
         f"Objective: {protocol.objective}\n"
@@ -1410,7 +1411,7 @@ async def run_thematic_synthesis(
     output_style: str = "paragraph",
 ) -> ThematicSynthesisResult:
     """Generate thematic synthesis from included articles."""
-    model = build_model(deps.api_key, deps.model_name)
+    model = deps.model or build_model(deps.api_key, deps.model_name)
 
     article_blocks = "\n\n".join(
         a.to_context_block(i) for i, a in enumerate(articles[:20])
@@ -1478,7 +1479,7 @@ async def run_discussion_section(
     limitations_text: str,
 ) -> Discussion:
     """Generate interpretive discussion from themes and protocol context."""
-    model = build_model(deps.api_key, deps.model_name)
+    model = deps.model or build_model(deps.api_key, deps.model_name)
     theme_block = "\n".join(
         f"- {t.theme_name}: {t.description} Key findings: {'; '.join(t.key_findings[:3])}"
         for t in themes[:6]
@@ -1519,7 +1520,7 @@ async def run_conclusion_section(
     themes: list,
 ) -> Conclusion:
     """Generate terminal synthesis from themes and protocol objectives."""
-    model = build_model(deps.api_key, deps.model_name)
+    model = deps.model or build_model(deps.api_key, deps.model_name)
     theme_block = "\n".join(
         f"- {t.theme_name}: {'; '.join(t.key_findings[:2])}" for t in themes[:6]
     )
@@ -1564,7 +1565,7 @@ async def run_quantitative_analysis(
     if len(quantitative) < 3:
         return None
 
-    model = build_model(deps.api_key, deps.model_name)
+    model = deps.model or build_model(deps.api_key, deps.model_name)
     data_block = "\n".join(
         f"[{a.pmid}] {a.title[:60]}: effects={'; '.join(a.extracted_data.effect_measures[:3])}; "
         f"findings={'; '.join(a.extracted_data.key_findings[:2])}"
@@ -1893,7 +1894,66 @@ async def run_consensus_synthesis(
         "list material divergences (divergences)."
     )
     prompt = "\n".join(lines)
-    model = build_model(deps.api_key, deps.model_name)
+    model = deps.model or build_model(deps.api_key, deps.model_name)
     result = await consensus_synthesis_agent.run(prompt, deps=deps, model=model)
     return result.output
+
+
+# ────────────────── Feature 010: Synthesis Merge Agent ──────────────────────
+
+
+class MergedSynthesisOutput(BaseModel):
+    """Merged output from the synthesis merge agent."""
+    synthesis_text: str
+
+
+_synthesis_merge_agent = Agent(
+    output_type=MergedSynthesisOutput,
+    deps_type=AgentDeps,
+    system_prompt="""\
+You are a systematic review expert. You receive multiple partial synthesis texts,
+each covering a different subset of included articles from the same review.
+
+Your task: merge them into one coherent, deduplicated narrative synthesis that:
+- Covers all articles across all partial texts
+- Eliminates redundancy (do not repeat the same finding multiple times)
+- Maintains academic prose appropriate for a PRISMA 2020 systematic review
+- Preserves all unique findings, effect estimates, and conclusions from every partial text
+- Does NOT invent findings not present in the partial texts
+
+Return the merged text in synthesis_text. Length should reflect the total evidence,
+not just one chunk.
+""",
+    retries=2,
+    name="synthesis_merge",
+    defer_model_check=True,
+)
+
+
+async def run_synthesis_merge_agent(
+    partial_syntheses: list[str],
+    deps: AgentDeps,
+) -> str:
+    """Merge N partial synthesis texts into one coherent narrative.
+
+    Used by the iterative pipeline when synthesis is split across multiple chunks.
+    Returns the merged synthesis as a plain string (same type as run_synthesis output).
+    """
+    if not partial_syntheses:
+        return ""
+    if len(partial_syntheses) == 1:
+        return partial_syntheses[0]
+
+    lines = [f"## {len(partial_syntheses)} Partial Synthesis Texts to Merge\n"]
+    for i, text in enumerate(partial_syntheses, 1):
+        lines.append(f"### Chunk {i} of {len(partial_syntheses)}\n{text}\n")
+    lines.append(
+        "\n## Task\n"
+        "Merge the above partial synthesis texts into one comprehensive, "
+        "deduplicated narrative synthesis covering all chunks."
+    )
+    prompt = "\n".join(lines)
+    model = deps.model or build_model(deps.api_key, deps.model_name)
+    result = await _synthesis_merge_agent.run(prompt, deps=deps, model=model)
+    return result.output.synthesis_text
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -87,3 +87,36 @@ class StoredArticle(BaseModel):
     keywords: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+CheckpointStatus = Literal["pending", "in_progress", "complete", "failed"]
+
+
+class PipelineCheckpoint(BaseModel):
+    """Persisted result of one batch within one pipeline stage.
+
+    Keyed by (review_id, stage_name, batch_index) in the pipeline_checkpoints table.
+    """
+
+    id: int = 0
+    review_id: str
+    stage_name: str
+    batch_index: int
+    status: CheckpointStatus = "pending"
+    result_json: dict[str, Any] = Field(default_factory=dict)
+    error_message: str = ""
+    retries: int = 0
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class BatchMaxRetriesError(RuntimeError):
+    """Raised when a pipeline batch exceeds max_batch_retries."""
+
+    def __init__(self, stage: str, batch_index: int, retries: int) -> None:
+        super().__init__(
+            f"Stage '{stage}' batch {batch_index} failed after {retries} retries."
+        )
+        self.stage = stage
+        self.batch_index = batch_index
+        self.retries = retries

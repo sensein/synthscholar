@@ -17,7 +17,7 @@ prisma-review-agent/
 ├── main.py             # Standalone CLI with argparse + interactive mode
 └── prisma_review_agent/
     └── cache/          # PostgreSQL cache sub-package
-        ├── models.py        # CacheEntry, SimilarityConfig, StoredArticle
+        ├── models.py        # CacheEntry, SimilarityConfig, StoredArticle, PipelineCheckpoint
         ├── similarity.py    # SHA-256 fingerprinting + weighted fuzzy scoring
         ├── store.py         # CacheStore — async PostgreSQL CRUD
         ├── article_store.py # ArticleStore — article persistence + full-text search
@@ -1317,6 +1317,58 @@ The Markdown export includes a cache banner when a result is served from cache:
 ### Article Store (PostgreSQL)
 
 All fetched articles are persisted to the `article_store` table (same PostgreSQL connection). Full-text content is indexed with a GIN/tsvector index for fast retrieval. On subsequent runs, stored full text is used as the primary source before falling back to live PubMed fetch — reducing API calls and improving reproducibility.
+
+### Iterative Large-Review Processing (PostgreSQL)
+
+For reviews with hundreds of included articles, the pipeline automatically processes each stage in batches and checkpoints results to a `pipeline_checkpoints` table after every batch. If the process crashes or times out, re-running with the same `review_id` resumes from the last completed batch rather than restarting from scratch.
+
+**Setup** — run the migration once:
+
+```bash
+psql "$PRISMA_PG_DSN" -f prisma_review_agent/cache/migrations/003_add_pipeline_checkpoints.sql
+```
+
+**CLI:**
+
+```bash
+# Run a large review with a stable review ID so it can be resumed
+prisma-review \
+  --title "CRISPR gene editing: systematic review" \
+  --pg-dsn "postgresql://user:pass@localhost/prisma_db" \
+  --review-id "crispr-2026-001" \
+  --synthesis-batch-size 20
+
+# If interrupted, re-run the same command — completed batches are skipped automatically
+prisma-review --title "..." --pg-dsn "..." --review-id "crispr-2026-001"
+```
+
+**Python API:**
+
+```python
+protocol = ReviewProtocol(
+    title="CRISPR gene editing: systematic review",
+    pg_dsn="postgresql://user:pass@localhost/prisma_db",
+    review_id="crispr-2026-001",   # stable ID enables resume
+    synthesis_batch_size=20,        # articles per synthesis chunk (default: 20)
+    max_batch_retries=3,            # retries per failed batch (default: 3)
+)
+result = await pipeline.run(protocol)
+
+# Re-run with same review_id → completed stages are skipped
+result = await pipeline.run(protocol)
+
+# Force a complete re-run
+protocol.force_refresh = True
+result = await pipeline.run(protocol)
+```
+
+**How it works:**
+
+- Each pipeline stage (screening, charting, RoB, appraisal, narrative, synthesis) writes per-batch results to `pipeline_checkpoints` keyed by `(review_id, stage_name, batch_index)`.
+- Synthesis is split into chunks of `synthesis_batch_size` articles. If there is more than one chunk, a dedicated merge agent combines the partial syntheses into a single coherent output — replacing the previous hardcoded top-20 limit.
+- `CacheStore.load_completed_stages(review_id)` returns all stages where every batch is `complete`; the pipeline skips those stages on startup.
+- `BatchMaxRetriesError` is raised if a batch exceeds `max_batch_retries` consecutive failures.
+- When `pg_dsn` is not set, checkpointing is silently skipped and the pipeline runs as before.
 
 ## CLI Reference
 
