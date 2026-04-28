@@ -2,8 +2,57 @@ name: smoke
 
 # Live end-to-end smoke tests against real APIs (OpenRouter, NCBI, Europe PMC,
 # Unpaywall, OpenAlex, Semantic Scholar). Each smoke test makes real LLM calls
-# and consumes OpenRouter credit, so we only trigger this manually or on a
-# weekly schedule — never on every push.
+# and consumes OpenRouter credit, so triggers are intentionally narrow:
+# PR open / reopen / ready_for_review, push to main, and manual dispatch.
+# (Synchronize / push-during-review is excluded.)
+#
+# ─── Required GitHub Secret ───────────────────────────────────────────────
+#
+#   Add at: https://github.com/sensein/synthscholar/settings/secrets/actions
+#   (Repository → Settings → Secrets and variables → Actions → New repository
+#   secret)
+#
+#   Name: OPENROUTER_API_KEY
+#     Source: https://openrouter.ai/keys → "Create Key"
+#     Required for every LLM-driven smoke test. Without it, the OA-resolver
+#     smoke test still runs (it makes no LLM calls) but the full-pipeline
+#     CLI smoke test skips with "RUN_E2E set but OPENROUTER_API_KEY missing".
+#
+# ─── Optional GitHub Secrets ──────────────────────────────────────────────
+#
+#   Set these in the same Secrets UI to exercise the full auth surface.
+#   Each is silently skipped when unset — no failure.
+#
+#   SYNTHSCHOLAR_EMAIL          — recommended. Polite-pool contact email.
+#                                 Used in User-Agent on every OA HTTP call
+#                                 and as the required `email=` parameter on
+#                                 Unpaywall. Example value: name@org.edu
+#
+#   NCBI_API_KEY                — optional. Lifts PubMed E-utilities rate
+#                                 limit from 3 → 10 req/s.
+#                                 Source: https://www.ncbi.nlm.nih.gov/account/
+#
+#   SEMANTIC_SCHOLAR_API_KEY    — optional. Higher Semantic Scholar rate
+#                                 limits + more reliable DOI lookups in the
+#                                 full-text resolver chain.
+#                                 Source: https://www.semanticscholar.org/product/api
+#
+#   CORE_API_KEY                — optional. Enables the CORE OA aggregator
+#                                 in OAFetcher.search_all() (silent without).
+#                                 Source: https://core.ac.uk/services/api
+#
+# ─── Forks ────────────────────────────────────────────────────────────────
+#
+#   PRs from forks cannot read repository secrets (GitHub security design).
+#   The job-level `if` below skips the workflow on fork PRs rather than
+#   failing on empty secrets. Internal PRs and pushes to main run normally.
+#
+# ─── Cost ─────────────────────────────────────────────────────────────────
+#
+#   Each PR-open + post-merge cycle issues ~2 paid runs at ~$0.30–$0.50 each
+#   (≈ $1 per merged PR). Re-runs during review require explicit action
+#   (close+reopen, or "Re-run jobs" from the Actions tab) so flaky upstreams
+#   never auto-burn budget.
 
 on:
   # Run when a PR is opened, reopened, or marked ready-for-review.
