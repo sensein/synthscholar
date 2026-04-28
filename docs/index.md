@@ -8,10 +8,9 @@ myst:
 
 ```{raw} html
 <div class="hero">
-  <h1 class="hero-title">Automated. Rigorous.<br>PRISMA-Compliant.</h1>
+  <h1 class="hero-title">Automated. Rigorous.<br>PRISMA-Guided.</h1>
   <p class="hero-tagline">
-    AI-powered systematic literature review — from research question to
-    publication-ready PRISMA 2020 document in minutes.
+    AI-powered PRISMA-guided systematic multi-agent systems literature review.
   </p>
   <div class="hero-install">pip install synthscholar</div>
   <div class="hero-cta">
@@ -56,24 +55,21 @@ myst:
 
 ## What is SynthScholar?
 
-**SynthScholar** is a production-grade Python library that automates
-[PRISMA 2020](https://www.prisma-statement.org/) systematic literature reviews using
-large language models via [pydantic-ai](https://ai.pydantic.dev/).
+**SynthScholar** is a multi-agent system for systematic literature review. It follows 
+[PRISMA 2020](https://www.prisma-statement.org/) guidelines for systematic literature. It provides [risk of bias (ROB) assessment](https://www.cochrane.org/authors/handbooks-and-manuals/handbook/current/chapter-08), data charting, critical
+appraisal, narrative synthesis, and GRADE rating — producing structured outputs, which can be exported into different format: (i) markdown; (ii) JSON; and (iii) Turtle and JSON-LD. 
 
-It handles every step of the review workflow — literature search, deduplication,
-screening, evidence extraction, risk-of-bias assessment, data charting, critical
-appraisal, narrative synthesis, and GRADE rating — producing structured, validated
-outputs backed by 40+ Pydantic models.
 
 ## Highlights
-
-- **18-step async pipeline** with per-article parallelism (up to 20 concurrent LLM calls)
-- **Multi-model compare mode** — run any two OpenRouter models head-to-head
-- **PostgreSQL caching** — skip repeated LLM calls for similar protocols (≥ 95% match)
-- **Source grounding validation** — every evidence span fuzzy-matched back to its source
-- **Configurable RoB tools** — RoB 2, ROBINS-I, Newcastle-Ottawa, QUADAS-2, CASP, JBI
-- **RDF/Linked Data** export — Turtle + JSON-LD using the SLR Ontology
-- **FastAPI-ready** — SSE streaming, plan-confirmation HTTP callbacks
+ 
+- **Multi-model compare mode** — run parallel literature reviews across multiple LLMs, producing separate analyses for side-by-side comparison.
+- **PostgreSQL caching** — skip repeated LLM calls for similar protocols (≥ 95% match). Can be forced to run fresh reviews.
+- **Human-in-the-loop**  — provides human-in-loop features for revising and approving the auto generated search strategy.
+- **Source grounding validation** — every evidence span fuzzy-matched back to its source.
+- **Data charting and critical appraisal** - supports the data charting and critical apprisal synthesis.
+- **Configurable RoB tools** — RoB 2, ROBINS-I, Newcastle-Ottawa, QUADAS-2.
+- **Multiple format** export — Turtle + JSON-LD using the SLR Ontology, JSON and Markdown format.
+- **API Integration Ready** — Provides features such as SSE streaming so that it can be integrated to FastAPI/UI.
 
 ---
 
@@ -103,4 +99,11 @@ guides/fastapi
 :caption: API Reference
 
 api/index
+```
+
+```{toctree}
+:maxdepth: 1
+:caption: Known Limitations
+
+limitations/index
 ```

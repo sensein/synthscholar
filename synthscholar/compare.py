@@ -55,9 +55,17 @@ async def _run_model_pipeline(
         if progress_callback:
             progress_callback(f"[{model_name}] {msg}")
 
+    # Inherit the parent's resolved ncbi_api_key, email, and OA api_keys so
+    # each sub-pipeline uses the same polite-pool credentials (whether the
+    # parent picked them up from env vars, explicit constructor args, or the
+    # SYNTHSCHOLAR_EMAIL / NCBI_EMAIL fallback). The parent's PubMedClient
+    # and FullTextResolver already hold the resolved values.
     sub = PRISMAReviewPipeline(
         api_key=pipeline.deps.api_key,
         model_name=model_name,
+        ncbi_api_key=pipeline.pubmed.api_key,
+        email=pipeline.full_text_resolver.email,
+        api_keys=pipeline.full_text_resolver.api_keys,
         protocol=pipeline.protocol,
         enable_cache=False,
         max_per_query=pipeline.max_per_query,

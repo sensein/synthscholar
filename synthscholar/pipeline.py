@@ -60,7 +60,13 @@ from .models import (
     GroundingValidationResult,
     RiskOfBiasResult,
 )
-from .clients import Cache, PubMedClient, BioRxivClient
+from .clients import (
+    Cache,
+    PubMedClient,
+    BioRxivClient,
+    MedRxivClient,
+    FullTextResolver,
+)
 from .evidence import extract_evidence
 from .agents import (
     AgentDeps,
@@ -382,15 +388,26 @@ class PRISMAReviewPipeline:
         api_key: str,
         model_name: str = "anthropic/claude-sonnet-4",
         ncbi_api_key: str = "",
+        email: str = "",
+        api_keys: Optional[dict[str, str]] = None,
         protocol: Optional[ReviewProtocol] = None,
         enable_cache: bool = True,
         max_per_query: int = 20,
         related_depth: int = 1,
         biorxiv_days: int = 180,
     ):
+        # `email` and entries in `api_keys` fall back to environment variables
+        # inside FullTextResolver. Specifically:
+        #   - email      → SYNTHSCHOLAR_EMAIL env var, then NCBI_EMAIL default
+        #   - api_keys   → SEMANTIC_SCHOLAR_API_KEY / CORE_API_KEY env vars
+        # Explicit constructor arguments always win over the env vars.
         self.cache = Cache() if enable_cache else None
         self.pubmed = PubMedClient(api_key=ncbi_api_key, cache=self.cache)
         self.biorxiv = BioRxivClient(self.cache)
+        self.medrxiv = MedRxivClient(self.cache)
+        self.full_text_resolver = FullTextResolver(
+            email=email, api_keys=api_keys, cache=self.cache,
+        )
         self.protocol = protocol or ReviewProtocol()
         self.max_per_query = max_per_query
         self.related_depth = related_depth
@@ -587,7 +604,7 @@ class PRISMAReviewPipeline:
             1 for a in all_articles.values() if a.source == "pubmed_search"
         )
 
-        # ── 3. bioRxiv search ──
+        # ── 3. bioRxiv / medRxiv search ──
         if "bioRxiv" in proto.databases and biorxiv_queries:
             for bq in biorxiv_queries[:3]:
                 up(f"bioRxiv search: {bq[:60]}...")
@@ -599,6 +616,15 @@ class PRISMAReviewPipeline:
         flow.db_biorxiv = sum(
             1 for a in all_articles.values() if a.source == "biorxiv"
         )
+
+        if "medRxiv" in proto.databases and biorxiv_queries:
+            for bq in biorxiv_queries[:3]:
+                up(f"medRxiv search: {bq[:60]}...")
+                mx_arts = self.medrxiv.search(bq, 10, self.biorxiv_days)
+                for a in mx_arts:
+                    if a.pmid not in all_articles:
+                        all_articles[a.pmid] = a
+                up(f"  Found {len(mx_arts)} preprints")
 
         # ── 4. Related articles ──
         pm_pmids = [
@@ -746,6 +772,21 @@ class PRISMAReviewPipeline:
                 if a.pmc_id in texts:
                     a.full_text = texts[a.pmc_id]
             up(f"  Retrieved {len(texts)} full texts")
+
+        # 8a. Multi-source full-text resolver for articles still missing full text.
+        # Tries Europe PMC OA full text → preprint PDFs (bioRxiv/medRxiv) →
+        # DOI chain (Unpaywall → OpenAlex → Semantic Scholar) → marker-pdf parse.
+        unresolved = [a for a in ta_included if not a.full_text]
+        if unresolved:
+            up(f"Resolving full text for {len(unresolved)} remaining articles via OA chain...")
+            resolved = 0
+            for a in unresolved:
+                try:
+                    if await asyncio.to_thread(self.full_text_resolver.resolve, a):
+                        resolved += 1
+                except Exception as exc:
+                    logger.info("Full-text resolver error on %s: %s", a.pmid, exc)
+            up(f"  Resolver retrieved {resolved}/{len(unresolved)} additional full texts")
 
         # 8b. Persist all fetched articles to ArticleStore for future reuse
         if art_store:
@@ -1162,9 +1203,11 @@ class PRISMAReviewPipeline:
             bias_task = run_bias_summary(ft_included, self.deps)
             outcome_text = proto.pico_outcome or "Primary outcome"
             outcomes = [o.strip() for o in outcome_text.split(",") if o.strip()]
+            # Run GRADE for every PICO outcome — already gathered concurrently
+            # below, so all outcomes complete in roughly one round-trip.
             grade_tasks = {
                 outcome: run_grade(outcome, ft_included, self.deps)
-                for outcome in outcomes[:3]
+                for outcome in outcomes
             }
             limitations_task = run_limitations(flow_text, ft_included, self.deps)
 
@@ -1601,7 +1644,7 @@ class PRISMAReviewPipeline:
         )
         outcome_text = proto.pico_outcome or "Primary outcome"
         outcomes = [o.strip() for o in outcome_text.split(",") if o.strip()]
-        grade_tasks = {outcome: run_grade(outcome, ft_included, self.deps) for outcome in outcomes[:3]}
+        grade_tasks = {outcome: run_grade(outcome, ft_included, self.deps) for outcome in outcomes}
         up(f"Synthesizing {len(ft_included)} articles (+ bias, GRADE, limitations in parallel)...")
         (
             synthesis_raw,

@@ -219,10 +219,23 @@ async def run_review(args: argparse.Namespace):
     print(f"  Concurrency: {protocol.article_concurrency} parallel LLM calls")
     print("=" * 60 + "\n")
 
+    # Auth resolution: CLI flag wins, otherwise fall back to env var. The
+    # pipeline's own _resolve_*() helpers apply the same precedence, but we
+    # do it here too so the env-var lookup happens once at the entry point.
+    ncbi_key = args.ncbi_api_key or os.environ.get("NCBI_API_KEY", "")
+    email = args.email or os.environ.get("SYNTHSCHOLAR_EMAIL", "")
+    cli_oa_keys: dict[str, str] = {}
+    if args.semantic_scholar_key:
+        cli_oa_keys["semantic_scholar"] = args.semantic_scholar_key
+    if args.core_key:
+        cli_oa_keys["core"] = args.core_key
+
     pipeline = PRISMAReviewPipeline(
         api_key=api_key,
         model_name=args.model,
-        ncbi_api_key=os.environ.get("NCBI_API_KEY", ""),
+        ncbi_api_key=ncbi_key,
+        email=email,
+        api_keys=cli_oa_keys or None,  # None → resolver reads env vars itself
         protocol=protocol,
         enable_cache=not args.no_cache,
         max_per_query=args.max_results,
@@ -410,6 +423,18 @@ Examples:
                         help="Interactive protocol setup")
     parser.add_argument("--api-key", type=str, default="",
                         help="OpenRouter API key (overrides OPENROUTER_API_KEY env var)")
+    parser.add_argument("--ncbi-api-key", type=str, default="",
+                        help="NCBI E-utilities API key (overrides NCBI_API_KEY env var) — "
+                             "lifts PubMed rate limit 3 → 10 req/s")
+    parser.add_argument("--email", type=str, default="",
+                        help="Polite-pool contact email (overrides SYNTHSCHOLAR_EMAIL env var) — "
+                             "used in User-Agent and as Unpaywall's required email parameter")
+    parser.add_argument("--semantic-scholar-key", type=str, default="",
+                        help="Semantic Scholar API key (overrides SEMANTIC_SCHOLAR_API_KEY env var) — "
+                             "raises rate limits in the DOI resolver chain")
+    parser.add_argument("--core-key", type=str, default="",
+                        help="CORE API key (overrides CORE_API_KEY env var) — "
+                             "enables the CORE OA aggregator (silent without a key)")
     parser.add_argument("--auto", action="store_true", default=False,
                         help="Skip plan confirmation and run pipeline end-to-end without prompts")
     parser.add_argument("--max-plan-iterations", type=int, default=3,

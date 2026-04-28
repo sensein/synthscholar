@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.abspath(".."))
 
 # ── Project info ────────────────────────────────────────────────────────────
 project = "SynthScholar"
-copyright = "2024, Tek Raj Chhetri"
+copyright = "2026, Senseable Intelligence Group - https://sensein.group | PI: satra at mit dot edu"
 author = "Tek Raj Chhetri"
 release = "0.2.9"
 

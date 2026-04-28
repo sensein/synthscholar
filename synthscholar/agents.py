@@ -8,6 +8,7 @@ the OpenAIChatModel + OpenRouterProvider.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from dataclasses import dataclass, field
@@ -89,6 +90,61 @@ def build_model(api_key: str, model_name: str = "anthropic/claude-sonnet-4"):
         return TestModel()
     provider = OpenRouterProvider(api_key=api_key)
     return OpenAIChatModel(model_name, provider=provider)
+
+
+# ────────────────────── Map-Reduce Batching ────────────────────────────
+#
+# Per-article context blocks (title + abstract + full-text excerpt + RoB +
+# findings) typically run 1.5–3 KB each. To keep prompts well within any
+# major model's context window, the synthesis-style agents shard the corpus
+# into char-budgeted batches, run partial generations in parallel, then
+# merge. The budgets below leave generous headroom for the system prompt,
+# evidence spans, and the model's own response.
+
+SYNTHESIS_BATCH_CHARS = 80_000   # ~25–35 articles per batch in practice
+THEMATIC_BATCH_CHARS = 60_000    # smaller — thematic also includes rubrics + spans
+
+
+def _chunk_articles_by_budget(
+    articles: list,
+    blocks: list[str],
+    budget: int,
+) -> list[list]:
+    """Group articles into batches whose article-block char totals stay under budget.
+
+    Each batch contains at least one article; oversized single articles are
+    placed alone in their own batch (they will fail downstream if truly
+    larger than the model's window — the caller should prefer larger
+    models in that case).
+    """
+    if not articles:
+        return []
+    batches: list[list] = []
+    current: list = []
+    current_chars = 0
+    for art, block in zip(articles, blocks):
+        block_len = len(block)
+        if current and current_chars + block_len > budget:
+            batches.append(current)
+            current = []
+            current_chars = 0
+        current.append(art)
+        current_chars += block_len
+    if current:
+        batches.append(current)
+    return batches
+
+
+def _format_evidence_spans(spans: list, head_label: str = "EXTRACTED EVIDENCE SPANS") -> str:
+    """Render evidence spans as a labelled, numbered prompt section."""
+    if not spans:
+        return ""
+    lines = [
+        f'  [{i}] (PMID:{e.paper_pmid}, score:{getattr(e, "relevance_score", 0):.2f}) '
+        f'"{e.text[:400]}"'
+        for i, e in enumerate(spans)
+    ]
+    return f"\n\n== {head_label} ==\n" + "\n".join(lines)
 
 
 # ────────────────────── 1. Search Strategy Agent ───────────────────────
@@ -534,27 +590,59 @@ async def run_synthesis(
     flow_text: str,
     deps: AgentDeps,
 ) -> str:
-    """Generate grounded narrative synthesis."""
-    article_blocks = [a.to_context_block(i + 1) for i, a in enumerate(articles[:25])]
+    """Generate grounded narrative synthesis over the full included corpus.
 
-    ev_text = ""
-    if evidence_spans:
-        ev_lines = [
-            f'  [{i}] (PMID:{e.paper_pmid}, score:{e.relevance_score:.2f}) '
-            f'"{e.text[:400]}"'
-            for i, e in enumerate(evidence_spans[:20])
-        ]
-        ev_text = "\n\n== EXTRACTED EVIDENCE SPANS ==\n" + "\n".join(ev_lines)
+    For corpora that fit ``SYNTHESIS_BATCH_CHARS`` of article-block context, a
+    single LLM call produces the synthesis. For larger corpora, articles are
+    sharded into char-budgeted batches, partial syntheses run **in parallel**,
+    and the partials are merged via :func:`run_synthesis_merge_agent` into one
+    coherent narrative covering every included article.
+    """
+    if not articles:
+        return ""
 
+    blocks = [a.to_context_block(i + 1) for i, a in enumerate(articles)]
     model = deps.model or build_model(deps.api_key, deps.model_name)
-    result = await synthesis_agent.run(
-        f"PRISMA Flow: {flow_text}\n\n"
-        f"=== INCLUDED ARTICLES ===\n"
-        + "\n\n".join(article_blocks) + ev_text,
-        deps=deps,
-        model=model,
+    total_block_chars = sum(len(b) for b in blocks)
+
+    # Single-pass when the corpus fits the budget.
+    if total_block_chars <= SYNTHESIS_BATCH_CHARS:
+        prompt = (
+            f"PRISMA Flow: {flow_text}\n\n"
+            f"=== INCLUDED ARTICLES ({len(articles)}) ===\n"
+            + "\n\n".join(blocks)
+            + _format_evidence_spans(evidence_spans)
+        )
+        result = await synthesis_agent.run(prompt, deps=deps, model=model)
+        return result.output
+
+    # Map-reduce: shard articles, distribute spans by PMID, run in parallel.
+    batches = _chunk_articles_by_budget(articles, blocks, SYNTHESIS_BATCH_CHARS)
+    spans_by_pmid: dict[str, list] = {}
+    for e in evidence_spans:
+        spans_by_pmid.setdefault(e.paper_pmid, []).append(e)
+
+    async def _partial(batch_idx: int, batch_articles: list) -> str:
+        batch_blocks = [
+            a.to_context_block(i + 1) for i, a in enumerate(batch_articles)
+        ]
+        batch_spans: list = []
+        for a in batch_articles:
+            batch_spans.extend(spans_by_pmid.get(a.pmid, []))
+        prompt = (
+            f"PRISMA Flow: {flow_text}\n\n"
+            f"=== INCLUDED ARTICLES (batch {batch_idx + 1} of {len(batches)}, "
+            f"{len(batch_articles)} of {len(articles)} total articles) ===\n"
+            + "\n\n".join(batch_blocks)
+            + _format_evidence_spans(batch_spans)
+        )
+        partial_result = await synthesis_agent.run(prompt, deps=deps, model=model)
+        return partial_result.output
+
+    partials = await asyncio.gather(
+        *(_partial(i, b) for i, b in enumerate(batches))
     )
-    return result.output
+    return await run_synthesis_merge_agent(list(partials), deps)
 
 
 async def run_grade(
@@ -565,7 +653,7 @@ async def run_grade(
     """Run GRADE assessment for an outcome."""
     studies_text = "\n".join(
         f"- {a.title} ({a.year}): RoB={a.risk_of_bias.overall if a.risk_of_bias else '?'}"
-        for a in articles[:20]
+        for a in articles
     )
     model = deps.model or build_model(deps.api_key, deps.model_name)
     result = await grade_agent.run(
@@ -580,7 +668,7 @@ async def run_bias_summary(articles: list[Article], deps: AgentDeps) -> str:
     """Generate overall bias assessment."""
     articles_text = "\n".join(
         f"- {a.title} ({a.year}, {a.journal}) [PMID:{a.pmid}]"
-        for a in articles[:30]
+        for a in articles
     )
     model = deps.model or build_model(deps.api_key, deps.model_name)
     result = await bias_summary_agent.run(
@@ -603,7 +691,7 @@ async def run_limitations(
         f"Question: {p.question}\n"
         f"Databases: {', '.join(p.databases)}\n"
         f"Flow summary: {flow_text}\n"
-        f"Study types: {', '.join(set(a.journal for a in articles[:20]))}",
+        f"Study types: {', '.join(set(a.journal for a in articles))}",
         deps=deps,
         model=model,
     )
@@ -1483,6 +1571,104 @@ Do NOT fabricate source_id values. Use only the IDs present in the article list.
 )
 
 
+def _merge_thematic_results(
+    partials: list[ThematicSynthesisResult],
+) -> ThematicSynthesisResult:
+    """Deterministically combine partial thematic syntheses into one result.
+
+    Strategy:
+      * **themes** — dedupe by ``theme_name`` (case-insensitive). When the
+        same theme appears in multiple partials, union the
+        ``supporting_studies`` and ``key_findings`` lists (preserving order
+        of first occurrence).
+      * **paragraph_summary** / **question_answer_summary** — concatenated
+        in batch order.
+      * **bias_assessment** — common_biases unioned, overall_quality joined
+        as paragraphs, risk_level promoted to the most severe across
+        partials (``high`` > ``moderate`` > ``low``).
+    """
+    if not partials:
+        # Surface an empty-but-valid skeleton rather than failing.
+        return ThematicSynthesisResult(
+            themes=[],
+            bias_assessment=BiasAssessment(
+                overall_quality="No articles synthesised.",
+                common_biases=[],
+                risk_level="moderate",
+            ),
+        )
+    if len(partials) == 1:
+        return partials[0]
+
+    # Themes — dedupe by lowercased name, union sub-lists.
+    theme_index: dict[str, Theme] = {}
+    for p in partials:
+        for t in p.themes:
+            key = t.theme_name.strip().lower()
+            if key not in theme_index:
+                theme_index[key] = Theme(
+                    theme_name=t.theme_name,
+                    description=t.description,
+                    supporting_studies=list(t.supporting_studies),
+                    key_findings=list(t.key_findings),
+                )
+                continue
+            existing = theme_index[key]
+            seen_studies = set(existing.supporting_studies)
+            for s in t.supporting_studies:
+                if s not in seen_studies:
+                    existing.supporting_studies.append(s)
+                    seen_studies.add(s)
+            seen_findings = set(existing.key_findings)
+            for f in t.key_findings:
+                if f not in seen_findings:
+                    existing.key_findings.append(f)
+                    seen_findings.add(f)
+
+    # Paragraph / Q&A summaries — concatenate.
+    paragraphs: list = []
+    qa_items: list = []
+    for p in partials:
+        if p.paragraph_summary:
+            paragraphs.extend(p.paragraph_summary)
+        if p.question_answer_summary:
+            qa_items.extend(p.question_answer_summary)
+
+    # Bias assessment — promote risk level, union biases, join quality prose.
+    severity = {"low": 0, "moderate": 1, "high": 2}
+    quality_lines: list[str] = []
+    biases_seen: set[str] = set()
+    biases_merged: list[str] = []
+    worst_severity = -1
+    worst_label = "moderate"
+    for p in partials:
+        ba = p.bias_assessment
+        if ba.overall_quality:
+            quality_lines.append(ba.overall_quality.strip())
+        for b in ba.common_biases:
+            key = b.strip().lower()
+            if key and key not in biases_seen:
+                biases_seen.add(key)
+                biases_merged.append(b)
+        sev = severity.get(ba.risk_level.strip().lower(), 1)
+        if sev > worst_severity:
+            worst_severity = sev
+            worst_label = ba.risk_level.strip().lower()
+
+    merged_bias = BiasAssessment(
+        overall_quality="\n\n".join(quality_lines) or "Cross-batch bias summary unavailable.",
+        common_biases=biases_merged,
+        risk_level=worst_label if worst_label in {"low", "moderate", "high"} else "moderate",
+    )
+
+    return ThematicSynthesisResult(
+        themes=list(theme_index.values()),
+        paragraph_summary=paragraphs or None,
+        question_answer_summary=qa_items or None,
+        bias_assessment=merged_bias,
+    )
+
+
 async def run_thematic_synthesis(
     deps: AgentDeps,
     articles: list,
@@ -1490,47 +1676,99 @@ async def run_thematic_synthesis(
     charting_rubrics: list,
     output_style: str = "paragraph",
 ) -> ThematicSynthesisResult:
-    """Generate thematic synthesis from included articles."""
+    """Generate thematic synthesis over the full included corpus.
+
+    Single-pass when the corpus fits ``THEMATIC_BATCH_CHARS`` of article-block
+    context. For larger corpora, articles + their associated charting rubrics
+    + evidence spans are sharded into char-budgeted batches, partial thematic
+    syntheses run **in parallel**, and the structured partials are merged
+    deterministically via :func:`_merge_thematic_results`.
+    """
+    if not articles:
+        return _merge_thematic_results([])
+
     model = deps.model or build_model(deps.api_key, deps.model_name)
 
-    article_blocks = "\n\n".join(
-        a.to_context_block(i) for i, a in enumerate(articles[:20])
-    )
-    rubric_block = ""
-    if charting_rubrics:
-        rubric_summaries = []
-        for r in charting_rubrics[:10]:
-            rubric_summaries.append(
-                f"[{r.source_id}] {r.title[:60]} — Design: {r.study_design} — "
-                f"Key findings: {r.summary_key_findings[:200]}"
-            )
-        rubric_block = "\n".join(rubric_summaries)
-
-    # Build pmid→source_id map using the same formula as run_extract_study(), so
-    # the evidence block uses consistent IDs that the LLM can cross-reference with
-    # the charting rubric summaries above. Without this, the LLM sees PMID:XXX in
-    # evidence spans but R-XXX in rubric summaries and produces orphaned IDs.
     pmid_to_source_id = {
-        a.pmid: (f"M-{a.pmid[-3:]}" if a.pmid.startswith("biorxiv_") else f"R-{a.pmid[-3:]}")
+        a.pmid: (
+            f"M-{a.pmid[-3:]}" if a.pmid.startswith("biorxiv_")
+            else f"R-{a.pmid[-3:]}"
+        )
         for a in articles
     }
-    evidence_block = ""
-    if evidence_spans:
+
+    def _build_prompt(
+        batch_articles: list,
+        batch_rubrics: list,
+        batch_spans: list,
+        batch_idx: int = 0,
+        n_batches: int = 1,
+    ) -> str:
+        article_blocks = "\n\n".join(
+            a.to_context_block(i) for i, a in enumerate(batch_articles)
+        )
+        rubric_block = "\n".join(
+            f"[{r.source_id}] {r.title[:60]} — Design: {r.study_design} — "
+            f"Key findings: {r.summary_key_findings[:200]}"
+            for r in batch_rubrics
+        )
         evidence_block = "\n".join(
             f"- {pmid_to_source_id.get(e.paper_pmid, f'PMID:{e.paper_pmid}')}: {e.text[:150]}"
-            for e in evidence_spans[:15]
+            for e in batch_spans
+        )
+        header = (
+            f"INCLUDED ARTICLES ({len(batch_articles)})"
+            if n_batches == 1
+            else f"INCLUDED ARTICLES (batch {batch_idx + 1} of {n_batches}, "
+                 f"{len(batch_articles)} of {len(articles)} total)"
+        )
+        return (
+            f"Research Question: {deps.protocol.question}\n\n"
+            f"{header}:\n{article_blocks}\n\n"
+            + (f"CHARTING SUMMARIES:\n{rubric_block}\n\n" if rubric_block else "")
+            + (f"EVIDENCE SPANS:\n{evidence_block}\n\n" if evidence_block else "")
+            + f"OUTPUT_STYLE: {output_style}"
         )
 
-    result = await thematic_synthesis_agent.run(
-        f"Research Question: {deps.protocol.question}\n\n"
-        f"INCLUDED ARTICLES ({len(articles)}):\n{article_blocks}\n\n"
-        + (f"CHARTING SUMMARIES:\n{rubric_block}\n\n" if rubric_block else "")
-        + (f"EVIDENCE SPANS:\n{evidence_block}\n\n" if evidence_block else "")
-        + f"OUTPUT_STYLE: {output_style}",
-        deps=deps,
-        model=model,
+    blocks = [a.to_context_block(i) for i, a in enumerate(articles)]
+    total_block_chars = sum(len(b) for b in blocks)
+
+    # Single-pass when the corpus fits the budget.
+    if total_block_chars <= THEMATIC_BATCH_CHARS:
+        prompt = _build_prompt(articles, charting_rubrics, evidence_spans)
+        result = await thematic_synthesis_agent.run(prompt, deps=deps, model=model)
+        return result.output
+
+    # Map-reduce: shard articles, distribute rubrics + spans by source_id /
+    # PMID, run partial thematic syntheses in parallel, merge structurally.
+    batches = _chunk_articles_by_budget(articles, blocks, THEMATIC_BATCH_CHARS)
+    rubrics_by_source_id = {r.source_id: r for r in charting_rubrics}
+    spans_by_pmid: dict[str, list] = {}
+    for e in evidence_spans:
+        spans_by_pmid.setdefault(e.paper_pmid, []).append(e)
+
+    async def _partial(batch_idx: int, batch_articles: list) -> ThematicSynthesisResult:
+        batch_source_ids = {pmid_to_source_id.get(a.pmid) for a in batch_articles}
+        batch_rubrics = [
+            rubrics_by_source_id[sid] for sid in batch_source_ids
+            if sid and sid in rubrics_by_source_id
+        ]
+        batch_spans: list = []
+        for a in batch_articles:
+            batch_spans.extend(spans_by_pmid.get(a.pmid, []))
+        prompt = _build_prompt(
+            batch_articles, batch_rubrics, batch_spans,
+            batch_idx=batch_idx, n_batches=len(batches),
+        )
+        partial_result = await thematic_synthesis_agent.run(
+            prompt, deps=deps, model=model
+        )
+        return partial_result.output
+
+    partials = await asyncio.gather(
+        *(_partial(i, b) for i, b in enumerate(batches))
     )
-    return result.output
+    return _merge_thematic_results(list(partials))
 
 
 discussion_section_agent = Agent(

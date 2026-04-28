@@ -1,0 +1,93 @@
+name: smoke
+
+# Live end-to-end smoke tests against real APIs (OpenRouter, NCBI, Europe PMC,
+# Unpaywall, OpenAlex, Semantic Scholar). Each smoke test makes real LLM calls
+# and consumes OpenRouter credit, so we only trigger this manually or on a
+# weekly schedule — never on every push.
+
+on:
+  # Run when a PR is opened, reopened, or marked ready-for-review.
+  # NOT on every push to a PR branch ("synchronize" is excluded) — that
+  # would re-run the paid smoke tests on every commit during review.
+  pull_request:
+    types: [opened, reopened, ready_for_review]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "specs/**"
+      - "scripts/**"
+      - "LICENSE"
+      - ".gitignore"
+
+  # Post-merge regression check.
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "specs/**"
+      - "scripts/**"
+      - "LICENSE"
+      - ".gitignore"
+
+  # Manual escape hatch — useful for ad-hoc validation or rerunning after
+  # rotating an API key.
+  workflow_dispatch:
+
+# When new commits land on the same PR or branch, cancel the in-flight
+# smoke run and start a fresh one (so we never waste budget on a superseded
+# revision).
+concurrency:
+  group: smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    # PRs from forks cannot access repository secrets (GitHub security
+    # design). Skip the run cleanly in that case rather than failing with
+    # an empty OPENROUTER_API_KEY. Internal PRs and pushes to main hit the
+    # second/third clauses and run normally.
+    if: >-
+      github.event_name != 'pull_request'
+      || github.event.pull_request.head.repo.full_name == github.repository
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install dependencies (incl. fulltext extras)
+        run: uv sync --extra fulltext --extra dev
+
+      - name: Run smoke tests
+        env:
+          RUN_E2E: "1"
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          NCBI_API_KEY: ${{ secrets.NCBI_API_KEY }}
+          SYNTHSCHOLAR_EMAIL: ${{ secrets.SYNTHSCHOLAR_EMAIL }}
+          SEMANTIC_SCHOLAR_API_KEY: ${{ secrets.SEMANTIC_SCHOLAR_API_KEY }}
+          CORE_API_KEY: ${{ secrets.CORE_API_KEY }}
+        run: uv run pytest -m smoke -v --tb=short
+
+      - name: Upload review artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-outputs
+          path: |
+            prisma_results/
+            tests/**/prisma_results/
+          retention-days: 14
+          if-no-files-found: ignore
