@@ -1319,3 +1319,84 @@ class SearchIteration(BaseModel):
 
 # Rebuild PRISMAReviewResult one final time to resolve PrismaReview forward reference
 PRISMAReviewResult.model_rebuild()
+
+
+# ─── Feature 007: Multi-Model Compare Mode ────────────────────────────────────
+
+class FieldAgreement(BaseModel):
+    """Per-field agreement record across multiple model runs."""
+    field_name: str
+    section_key: str
+    source_id: str
+    agreed: bool
+    values: dict[str, str] = Field(
+        default_factory=dict,
+        description="{model_name: extracted_value}",
+    )
+    answer_type: str = "free_text"
+
+
+class SynthesisDivergence(BaseModel):
+    """A notable point where model syntheses diverge."""
+    topic: str
+    positions: dict[str, str] = Field(
+        default_factory=dict,
+        description="{model_name: position_summary}",
+    )
+
+    @model_validator(mode="after")
+    def _validate_positions(self) -> "SynthesisDivergence":
+        if len(self.positions) < 2:
+            raise ValueError("SynthesisDivergence requires positions from at least 2 models")
+        return self
+
+
+class MergedReviewResult(BaseModel):
+    """Aggregated comparison output from all successful ModelReviewRun entries."""
+    consensus_synthesis: str = ""
+    field_agreement: dict[str, FieldAgreement] = Field(default_factory=dict)
+    synthesis_divergences: list[SynthesisDivergence] = Field(default_factory=list)
+    models_included: list[str] = Field(default_factory=list)
+    models_failed: list[str] = Field(default_factory=list)
+
+
+class ModelReviewRun(BaseModel):
+    """Pairs a model identifier with a PRISMAReviewResult or an error string."""
+    model_name: str
+    result: Optional[PRISMAReviewResult] = None
+    error: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _validate_exactly_one(self) -> "ModelReviewRun":
+        if self.result is None and self.error is None:
+            raise ValueError("ModelReviewRun requires exactly one of 'result' or 'error'")
+        if self.result is not None and self.error is not None:
+            raise ValueError("ModelReviewRun cannot have both 'result' and 'error'")
+        return self
+
+    @property
+    def succeeded(self) -> bool:
+        return self.result is not None
+
+
+class CompareReviewResult(BaseModel):
+    """Top-level container for a compare-mode review run."""
+    protocol: ReviewProtocol = Field(default_factory=ReviewProtocol)
+    compare_models: list[str] = Field(default_factory=list)
+    model_results: list[ModelReviewRun] = Field(default_factory=list)
+    merged: MergedReviewResult = Field(default_factory=MergedReviewResult)
+    timestamp: str = ""
+
+    @model_validator(mode="after")
+    def _validate_compare_models(self) -> "CompareReviewResult":
+        unique = list(dict.fromkeys(self.compare_models))
+        if len(unique) < 2:
+            raise ValueError(
+                "CompareReviewResult requires at least 2 unique models in compare_models"
+            )
+        if len(unique) > 5:
+            raise ValueError("CompareReviewResult supports at most 5 models")
+        return self
+
+
+CompareReviewResult.model_rebuild()
