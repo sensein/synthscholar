@@ -13,8 +13,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from prisma_review_agent.cache.models import PipelineCheckpoint, BatchMaxRetriesError
-from prisma_review_agent.cache.store import CacheStore, _row_to_checkpoint
+from synthscholar.cache.models import PipelineCheckpoint, BatchMaxRetriesError
+from synthscholar.cache.store import CacheStore, _row_to_checkpoint
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────

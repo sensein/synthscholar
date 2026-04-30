@@ -3,7 +3,7 @@
 import json
 import pytest
 
-from prisma_review_agent.models import (
+from synthscholar.models import (
     PRISMAReviewResult,
     PrismaReview,
     Methods,
@@ -23,7 +23,7 @@ from prisma_review_agent.models import (
     DomainAppraisal,
     ItemRating,
 )
-from prisma_review_agent.export import (
+from synthscholar.export import (
     to_charting_markdown,
     to_charting_json,
     to_appraisal_markdown,

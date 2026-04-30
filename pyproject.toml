@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "prisma-review-agent"
-version = "0.2.4"
-description = "PRISMA 2020 systematic literature review agent powered by Pydantic AI"
+name = "synthscholar"
+version = "0.0.1"
+description = "SynthScholar — PRISMA 2020 guided multi-agent systems for systematic literature review."
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.11"
@@ -25,9 +25,11 @@ keywords = [
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
-    "Intended Audience :: Healthcare Industry",
-    "Topic :: Scientific/Engineering :: Bio-Informatics",
-    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+    "Intended Audience :: Education",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Text Processing :: Linguistic",
+    "Topic :: Text Processing :: General",
+    "Topic :: Utilities",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
@@ -53,12 +55,39 @@ dev = [
     "ruff",
     "mypy",
 ]
+fulltext = [
+    "pymupdf>=1.24",
+    "feedparser>=6.0",
+]
+semantic = [
+    "sentence-transformers>=2.2",
+]
 
 [project.scripts]
-prisma-review = "prisma_review_agent.main:main"
+synthscholar = "synthscholar.main:main"
+synthscholar-search = "synthscholar.search_cli:main"
 
 [project.urls]
-Repository = "https://github.com/tekrajchhetri/prisma-review-agent"
+Repository = "https://github.com/sensein/synthscholar"
+Documentation = "https://github.com/sensein/synthscholar/tree/main/docs"
+Issues = "https://github.com/sensein/synthscholar/issues"
+
+# ── Build configuration ──────────────────────────────────────────────────
+# Wheel: ship only the `synthscholar` package. Root-level shim files
+# (pipeline.py, agents.py, etc.) and dev tooling are excluded.
+[tool.hatch.build.targets.wheel]
+packages = ["synthscholar"]
+
+# Sdist: include the package, README, LICENSE, and pyproject only.
+# Tests, docs, specs, scripts, generated artifacts, and root-level shim
+# files stay in the git repo but are not published to PyPI.
+[tool.hatch.build.targets.sdist]
+include = [
+    "/synthscholar",
+    "/README.md",
+    "/LICENSE",
+    "/pyproject.toml",
+]
 
 [tool.ruff]
 target-version = "py311"
@@ -73,8 +102,8 @@ strict = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-
-[dependency-groups]
-dev = [
-    "ruff>=0.15.11",
+markers = [
+    "integration: requires live PostgreSQL (PRISMA_TEST_PG_DSN)",
+    "e2e: end-to-end tests using TestModel or fixture",
+    "smoke: requires live API key (RUN_E2E=1)",
 ]

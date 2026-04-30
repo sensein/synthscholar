@@ -5,7 +5,7 @@ import inspect
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from prisma_review_agent.models import (
+from synthscholar.models import (
     CompareReviewResult,
     MergedReviewResult,
     ModelReviewRun,
@@ -23,7 +23,7 @@ def _mock_result(question: str = "test") -> PRISMAReviewResult:
 
 
 def _mock_acq():
-    from prisma_review_agent.pipeline import AcquisitionResult, PRISMAFlowCounts
+    from synthscholar.pipeline import AcquisitionResult, PRISMAFlowCounts
     return AcquisitionResult(
         deduped=[],
         all_search_queries=["q1"],
@@ -33,32 +33,32 @@ def _mock_acq():
 
 class TestRunCompareSignature:
     def test_method_exists_on_pipeline(self):
-        from prisma_review_agent.pipeline import PRISMAReviewPipeline
+        from synthscholar.pipeline import PRISMAReviewPipeline
         assert hasattr(PRISMAReviewPipeline, "run_compare")
 
     def test_is_async(self):
-        from prisma_review_agent.pipeline import PRISMAReviewPipeline
+        from synthscholar.pipeline import PRISMAReviewPipeline
         assert inspect.iscoroutinefunction(PRISMAReviewPipeline.run_compare)
 
     def test_accepts_models_param(self):
-        from prisma_review_agent.pipeline import PRISMAReviewPipeline
+        from synthscholar.pipeline import PRISMAReviewPipeline
         sig = inspect.signature(PRISMAReviewPipeline.run_compare)
         assert "models" in sig.parameters
 
     def test_has_consensus_model_param(self):
-        from prisma_review_agent.pipeline import PRISMAReviewPipeline
+        from synthscholar.pipeline import PRISMAReviewPipeline
         sig = inspect.signature(PRISMAReviewPipeline.run_compare)
         assert "consensus_model" in sig.parameters
 
     def test_has_assemble_timeout_param(self):
-        from prisma_review_agent.pipeline import PRISMAReviewPipeline
+        from synthscholar.pipeline import PRISMAReviewPipeline
         sig = inspect.signature(PRISMAReviewPipeline.run_compare)
         assert "assemble_timeout" in sig.parameters
 
 
 class TestRunCompareValidation:
     async def test_fewer_than_2_models_raises_value_error(self):
-        from prisma_review_agent.compare import run_compare
+        from synthscholar.compare import run_compare
         pipeline = MagicMock()
         pipeline.deps.api_key = "k"
         pipeline.protocol = ReviewProtocol(title="t")
@@ -67,7 +67,7 @@ class TestRunCompareValidation:
             await run_compare(pipeline, ["only-one"])
 
     async def test_duplicate_models_deduped_raises_value_error(self):
-        from prisma_review_agent.compare import run_compare
+        from synthscholar.compare import run_compare
         pipeline = MagicMock()
         pipeline.deps.api_key = "k"
         pipeline.protocol = ReviewProtocol(title="t")
@@ -76,7 +76,7 @@ class TestRunCompareValidation:
             await run_compare(pipeline, ["A", "A"])
 
     async def test_more_than_5_models_raises_value_error(self):
-        from prisma_review_agent.compare import run_compare
+        from synthscholar.compare import run_compare
         pipeline = MagicMock()
         pipeline.deps.api_key = "k"
         pipeline.protocol = ReviewProtocol(title="t")
@@ -87,7 +87,7 @@ class TestRunCompareValidation:
 
 class TestRunComparePartialFailure:
     async def test_one_model_fails_other_succeeds(self):
-        from prisma_review_agent.compare import run_compare
+        from synthscholar.compare import run_compare
 
         good_result = _mock_result("good")
 
@@ -114,8 +114,8 @@ class TestRunComparePartialFailure:
         pipeline._fetch_articles = AsyncMock(return_value=_mock_acq())
 
         with (
-            patch("prisma_review_agent.compare._run_model_pipeline", side_effect=_model_pipeline),
-            patch("prisma_review_agent.compare.run_consensus_synthesis", AsyncMock(
+            patch("synthscholar.compare._run_model_pipeline", side_effect=_model_pipeline),
+            patch("synthscholar.compare.run_consensus_synthesis", AsyncMock(
                 return_value=MagicMock(consensus_text="ok", divergences=[])
             )),
         ):
@@ -129,7 +129,7 @@ class TestRunComparePartialFailure:
         assert failed[0].error is not None
 
     async def test_all_fail_returns_fallback_consensus(self):
-        from prisma_review_agent.compare import run_compare, _FALLBACK_CONSENSUS
+        from synthscholar.compare import run_compare, _FALLBACK_CONSENSUS
 
         async def _fail(*a, **kw):
             raise RuntimeError("fail")
@@ -141,7 +141,7 @@ class TestRunComparePartialFailure:
         pipeline.log = MagicMock()
         pipeline._fetch_articles = AsyncMock(return_value=_mock_acq())
 
-        with patch("prisma_review_agent.compare._run_model_pipeline", side_effect=_fail):
+        with patch("synthscholar.compare._run_model_pipeline", side_effect=_fail):
             result = await run_compare(pipeline, ["m1", "m2"])
 
         assert result.merged.consensus_synthesis == _FALLBACK_CONSENSUS
@@ -149,7 +149,7 @@ class TestRunComparePartialFailure:
 
 class TestRunCompareReturnsCorrectTypes:
     async def test_returns_compare_review_result(self):
-        from prisma_review_agent.compare import run_compare
+        from synthscholar.compare import run_compare
 
         r = _mock_result()
 
@@ -164,8 +164,8 @@ class TestRunCompareReturnsCorrectTypes:
         pipeline._fetch_articles = AsyncMock(return_value=_mock_acq())
 
         with (
-            patch("prisma_review_agent.compare._run_model_pipeline", side_effect=_ok),
-            patch("prisma_review_agent.compare.run_consensus_synthesis", AsyncMock(
+            patch("synthscholar.compare._run_model_pipeline", side_effect=_ok),
+            patch("synthscholar.compare.run_consensus_synthesis", AsyncMock(
                 return_value=MagicMock(consensus_text="c", divergences=[])
             )),
         ):

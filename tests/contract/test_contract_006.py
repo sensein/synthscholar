@@ -3,8 +3,8 @@
 import pytest
 from pydantic import ValidationError
 
-from prisma_review_agent.agents import default_charting_template, default_appraisal_config
-from prisma_review_agent.models import (
+from synthscholar.agents import default_charting_template, default_appraisal_config
+from synthscholar.models import (
     ChartingTemplate,
     CriticalAppraisalConfig,
     ReviewProtocol,

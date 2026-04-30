@@ -4,7 +4,7 @@ import warnings
 
 import pytest
 
-from prisma_review_agent.models import Article, InclusionStatus
+from synthscholar.models import Article, InclusionStatus
 
 
 def _make_article(**overrides) -> Article:

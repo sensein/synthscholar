@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from prisma_review_agent.models import (
+from synthscholar.models import (
     FieldDefinition,
     ChartingSection,
     ChartingTemplate,

@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from prisma_review_agent.models import (
+from synthscholar.models import (
     CompareReviewResult,
     FieldAgreement,
     MergedReviewResult,
@@ -63,13 +63,15 @@ class TestSynthesisDivergence:
         )
         assert len(d.positions) == 3
 
-    def test_one_position_raises(self):
-        with pytest.raises(ValidationError):
-            SynthesisDivergence(topic="t", positions={"A": "only one"})
+    def test_one_position_allowed(self):
+        # Validator removed: incomplete divergences are filtered by
+        # ConsensusSynthesisOutput, not rejected at the SynthesisDivergence level.
+        d = SynthesisDivergence(topic="t", positions={"A": "only one"})
+        assert len(d.positions) == 1
 
-    def test_zero_positions_raises(self):
-        with pytest.raises(ValidationError):
-            SynthesisDivergence(topic="t", positions={})
+    def test_zero_positions_allowed(self):
+        d = SynthesisDivergence(topic="t", positions={})
+        assert d.positions == {}
 
 
 class TestModelReviewRun:
