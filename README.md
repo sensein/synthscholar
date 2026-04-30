@@ -920,41 +920,7 @@ async def get_status(session_id: str):
 - `asyncio.TimeoutError` is raised inside the background task — catching it there and writing `"timeout"` to the session lets `/status` return a 504.
 - The default `3600.0` s is appropriate for production reviews with 10–50 included studies. Use `30.0`–`120.0` s for smoke-test environments.
 
-#### Suggested UI for the Plan Confirmation Phase
 
-Inspired by research review tools (see design reference in the project), the plan confirmation screen should feel like a structured "contract" the user approves before the pipeline does any expensive work. Suggested layout (following the KSynth-style design):
-
-```mermaid
-flowchart TB
-    subgraph Screen["Plan Confirmation — Protocol Tab"]
-        direction TB
-        Nav["Protocol ← selected  ·  Progress  ·  Synthesis  ·  PRISMA Flow  ·  Export"]
-
-        subgraph Plan["Generated Search Plan — Iteration 1"]
-            direction TB
-            RQ["Research Question\nCRISPR gene therapy efficacy in clinical trials"]
-
-            subgraph QBox["Queries — editable before approval"]
-                direction LR
-                PQ["PubMed × 3\n1. CRISPR gene therapy clinical trials\n2. CRISPR-Cas9 human trials outcomes\n3. gene editing therapy safety RCT"]
-                BQ["bioRxiv × 2\n1. CRISPR Cas9 gene editing safety\n2. CRISPR therapy clinical outcomes preprint"]
-            end
-
-            MeSH["MeSH pills · CRISPR-Cas Systems · Gene Therapy · Clinical Trials as RCTs"]
-            KC["Key concepts · efficacy · safety · clinical trial · gene editing"]
-            RT["Rationale: Focused on clinical evidence matching inclusion criteria..."]
-            FB["Feedback optional: Add pediatric studies, extend date range..."]
-        end
-
-        subgraph Actions["Actions"]
-            direction LR
-            B1["✗ Reject"] --- B2["↻ Regenerate"] --- B3["✓ Approve →"]
-        end
-    end
-
-    Nav --> Plan --> Actions
-    RQ --> QBox --> MeSH --> KC --> RT --> FB
-```
 
 **Key UX decisions:**
 - **Plan appears inline** in the "Progress" tab (not a modal) — so the user can scroll up to review the protocol they entered before approving
@@ -965,36 +931,7 @@ flowchart TB
 - **Regenerate** posts the feedback text; the plan card replaces itself with the new iteration
 - **Approve** posts `response: "yes"` and transitions the Progress tab to the live SSE log view
 
-**Progress tab after approval (SSE stream view):**
-
-```mermaid
-flowchart TB
-    subgraph Screen["Progress Tab — Live SSE View"]
-        direction TB
-        Hdr["Running · 0 included so far                              Cancel"]
-
-        subgraph Log["Pipeline Log"]
-            direction TB
-            S1["✓  Plan approved — Iteration 1"]
-            S2["✓  Searching PubMed — 3 queries sent"]
-            S3["✓  47 records retrieved"]
-            S4["✓  Deduplication — 6 duplicates removed"]
-            S5["⟳  Screening title/abstract — 41 records  in progress"]
-
-            subgraph Cards["Per-article decisions  streamed live"]
-                direction LR
-                C1["PMID 33283989\n✓ Include\nCRISPR-Cas9 for SCD trial"]
-                C2["PMID 38661449\n✓ Include\nExagamglogene Autotemcel"]
-                C3["PMID 29301234\n✗ Exclude\nAnimal model only"]
-            end
-        end
-    end
-
-    Hdr --> Log
-    S1 --> S2 --> S3 --> S4 --> S5 --> Cards
-```
-
-This mirrors the "Running · 0 included" sidebar state in the KSynth screenshot and the evidence card grid in the Evidence tab.
+ 
 
 ## Enhanced Output Formats
 
