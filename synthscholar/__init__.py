@@ -94,7 +94,7 @@ from synthscholar.export import (
     to_narrative_summary_markdown, to_narrative_summary_json,
 )
 
-__version__ = "0.2.9"
+__version__ = "0.0.1"
 
 __all__ = [
     "Article",
