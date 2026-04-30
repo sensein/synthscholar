@@ -92,6 +92,7 @@ guides/compare-mode
 guides/ui-integration
 guides/caching
 guides/fastapi
+guides/provenance
 ```
 
 ```{toctree}

@@ -1,8 +1,10 @@
 # Architecture
 
-SynthScholar is an **async, agent-based pipeline** that orchestrates 20+ specialised
-`pydantic-ai` agents, article fetchers, caching, and exporters to produce a fully
-structured PRISMA 2020 systematic review.
+SynthScholar is an **async, agent-based pipeline** that orchestrates 24 specialised
+`pydantic-ai` agents (16 in the core PRISMA path, 6 rich-synthesis section agents,
+2 compare-mode merge agents), an OA full-text resolver chain (Europe PMC, Unpaywall,
+OpenAlex, Semantic Scholar, PyMuPDF), article fetchers, caching, and exporters to
+produce a fully structured PRISMA 2020 systematic review.
 
 ## High-Level Overview
 
@@ -24,24 +26,32 @@ flowchart LR
       REL --> DEDUP
     end
 
-    subgraph PerArticle["🔬 Per-Article Parallel (N = concurrency)"]
+    subgraph PerArticle["🔬 Per-Article DAG (N articles concurrent, fused)"]
       direction TB
-      SCREEN[Screening agent]
-      EVID[Evidence extraction]
-      ROB[Risk of Bias]
-      CHART[Data Charting]
-      APP[Critical Appraisal]
-      DATA[Data extraction]
-      NARR[Narrative rows]
+      SCREEN[Screening agent<br/>batched]
+      EVID[Evidence extraction<br/>batched]
+      subgraph DAG["per-article DAG"]
+        direction LR
+        ROB[Risk of Bias]
+        DATA[Data extraction]
+        CHART[Data Charting]
+        APP[Critical Appraisal]
+        NARR[Narrative rows]
+        CHART --> APP --> NARR
+      end
+      SCREEN --> EVID
+      EVID --> DAG
     end
 
     subgraph Synthesis["🧠 Synthesis Layer"]
       direction TB
-      SYN[synthesis_agent]
-      GRADE[GRADE agent]
-      BIAS[Bias summary]
-      LIM[Limitations]
+      SYN[synthesis_agent<br/>parallel map-reduce<br/>+ run_synthesis_merge_agent]
+      GV[Grounding validation]
+      G1[Gather #1: bias + limitations<br/>+ intro + GRADE-per-outcome]
+      G2[Gather #2: conclusions + abstract]
+      THEM[Thematic synthesis<br/>map-reduce + structured merge]
       ASSEM[Assembly → PrismaReview]
+      SYN --> GV --> G1 --> G2 --> THEM --> ASSEM
     end
 
     subgraph Output["📄 Exports"]
@@ -64,7 +74,7 @@ flowchart LR
     classDef store fill:#e0f2fe,stroke:#0ea5e9,color:#0c4a6e;
     classDef agent fill:#eef2ff,stroke:#6366f1,color:#1e1b4b;
     class PG,OR store;
-    class SA,SCREEN,EVID,ROB,CHART,APP,DATA,NARR,SYN,GRADE,BIAS,LIM,ASSEM agent;
+    class SA,SCREEN,EVID,ROB,CHART,APP,DATA,NARR,SYN,GV,G1,G2,THEM,ASSEM agent;
 ```
 
 ## Component View
@@ -111,15 +121,39 @@ sequenceDiagram
         Web-->>Pipe: articles
         Pipe->>Pipe: dedup + citation hops + rerank
 
-        loop per batch (parallel, concurrency N)
-            Pipe->>LLM: screening_agent (T/A)
-            Pipe->>LLM: screening_agent (full-text)
-            Pipe->>LLM: evidence + charting + RoB + appraisal
+        loop per batch (concurrency N)
+            Pipe->>LLM: screening_agent (T/A — batches of 15)
+            Pipe->>LLM: screening_agent (full-text — batches of 10)
+            Pipe->>LLM: evidence_extraction_agent (batches of 5)
         end
 
-        Pipe->>LLM: synthesis + GRADE + bias
+        loop per article (DAG, all articles concurrent)
+            par RoB, Extract, and the chain run as siblings
+                Pipe->>LLM: rob_agent
+            and
+                Pipe->>LLM: data_extraction_agent (if data_items)
+            and
+                Pipe->>LLM: data_charting_agent
+                Pipe->>LLM: critical_appraisal_agent
+                Pipe->>LLM: narrative_row_agent
+            end
+        end
+
+        Pipe->>LLM: synthesis_agent (parallel map-reduce if corpus > 80K chars)
+        Pipe->>LLM: grounding_validation_agent
+        par Gather #1
+            Pipe->>LLM: bias_summary_agent
+            Pipe->>LLM: limitations_agent
+            Pipe->>LLM: introduction_agent
+            Pipe->>LLM: grade_agent (one per PICO outcome)
+        end
+        par Gather #2
+            Pipe->>LLM: conclusions_agent
+            Pipe->>LLM: abstract_agent
+        end
+        Pipe->>LLM: thematic_synthesis_agent (map-reduce + structured merge)
         Pipe->>Pipe: assemble PrismaReview
-        Pipe->>Cache: store result
+        Pipe->>Cache: store result + per-stage checkpoints
         Pipe-->>API: PRISMAReviewResult
     end
 
@@ -163,22 +197,36 @@ flowchart TB
 Article fetching runs **once** and is shared; every model then runs its own
 independent per-article pipeline in parallel via `asyncio.gather`.
 
-## Data Flow — Per-Article
+## Data Flow — Per-Article DAG
+
+After title/abstract screening + evidence-span extraction, every included
+article runs through a **fused per-article DAG**: three sibling legs that
+fire concurrently within each article task, with all article tasks running
+in parallel under a `proto.article_concurrency`-sized semaphore.
 
 ```{mermaid}
 flowchart LR
     A[Article<br/>PMID/DOI/abstract/full_text] --> S[Screening<br/>INCLUDE/EXCLUDE]
     S -->|INCLUDE| E[Evidence spans<br/>grounded sentences]
-    E --> D[Data extraction<br/>design, effect, CI]
-    E --> R[Risk of Bias<br/>per-domain judgments]
-    E --> CH[Data charting<br/>7-section rubric]
-    E --> AP[Critical appraisal<br/>4-domain rubric]
-    E --> NR[Narrative row<br/>6-cell summary]
-    D & R & CH & AP & NR --> ART[Annotated Article]
+    E --> DAG{{per-article DAG<br/>asyncio.gather}}
+    DAG --> R[Risk of Bias]
+    DAG --> D[Data extraction<br/>only if data_items]
+    DAG --> CH[Data charting<br/>7-section rubric]
+    CH --> AP[Critical appraisal<br/>4-domain rubric]
+    AP --> NR[Narrative row<br/>6-cell summary]
+    R & D & NR --> ART[Annotated Article]
 
     classDef extract fill:#dbeafe,stroke:#3b82f6;
+    classDef dag fill:#fef3c7,stroke:#d97706,color:#78350f;
     class E,D,R,CH,AP,NR extract;
+    class DAG dag;
 ```
+
+Independent legs (RoB, Extract) start as soon as the article enters the DAG.
+The Chart → Appraise → Narrate chain is internally sequential because each
+step consumes the previous step's output. Eliminates the four corpus-wide
+barriers the old block-by-block layout had between extract → RoB → chart →
+appraise → narrate, so a slow article never holds up faster ones.
 
 Every step produces typed Pydantic output backed by `retries=5` validation.
 

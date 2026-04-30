@@ -61,6 +61,8 @@ These define **what** to review.
 | `--cache-threshold` | `FLOAT` | `0.95` | Minimum similarity for a cache hit |
 | `--cache-ttl-days` | `INT` | `30` | Cache time-to-live in days |
 
+When `--pg-dsn` is set **and migration 005 is applied**, the full provenance trail (run config, plan iterations, search iterations, per-invocation telemetry) is persisted to a `review_telemetry` row keyed by `review_id`. See the [Provenance guide](guides/provenance.md) for the schema and SQL examples.
+
 ## Output Arguments
 
 | Flag | Type | Default | Description |
@@ -73,8 +75,21 @@ These define **what** to review.
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--interactive`, `-i` | flag | off | Interactive protocol setup wizard |
-| `--api-key` | `TEXT` | env var | OpenRouter API key (overrides `OPENROUTER_API_KEY`) |
+| `--auto` | flag | off | Skip the interactive search-strategy confirmation |
 | `--compare-models` | `MODEL [...]` | — | Run compare mode with 2+ model names |
+| `--max-plan-iterations` | `INT` | `3` | Max plan regeneration attempts |
+
+## Authentication Arguments
+
+All five are also read from environment variables. **Precedence: explicit CLI flag > env var > built-in default.**
+
+| Flag | Env var | Description |
+|------|---------|-------------|
+| `--api-key` | `OPENROUTER_API_KEY` | Required. OpenRouter key driving every LLM agent. |
+| `--ncbi-api-key` | `NCBI_API_KEY` | Optional. Lifts PubMed E-utilities rate limit 3 → 10 req/s. |
+| `--email` | `SYNTHSCHOLAR_EMAIL` | Optional. Polite-pool contact for OA providers (Unpaywall requires it). |
+| `--semantic-scholar-key` | `SEMANTIC_SCHOLAR_API_KEY` | Optional. Higher-rate Semantic Scholar tier (DOI resolver). |
+| `--core-key` | `CORE_API_KEY` | Optional. Required to enable the CORE OA-discovery leg. |
 
 ## Examples
 
@@ -125,3 +140,52 @@ synthscholar \
 ```bash
 synthscholar --interactive
 ```
+
+---
+
+# `synthscholar-search` — Corpus & Review Search
+
+Once Postgres caching is enabled, every fetched article (with its full text where available) and every completed review is searchable. Two subcommands, three modes each.
+
+```bash
+synthscholar-search literature <query> [options]
+synthscholar-search reviews    <query> [options]
+```
+
+## Modes (mutually exclusive)
+
+| Flag | Subcommand | Description |
+|------|-----------|-------------|
+| _(default)_ | `literature` | Lexical FTS over title + abstract + full-text |
+| `--by-title` | `literature` | Title-favouring lexical FTS variant |
+| `--semantic` | both | pgvector cosine similarity (requires migration 004 + `[semantic]` extra) |
+
+## Common Arguments
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--pg-dsn` | `TEXT` | — | PostgreSQL DSN (or set `PRISMA_PG_DSN`) |
+| `--top` | `INT` | `20` | Max results to return |
+| `--summarize` | flag | off | Feed top-K results through the synthesis agent for a stratified summary |
+| `--summary-top` | `INT` | `15` | Articles fed to the synthesis agent when `--summarize` is set |
+| `--api-key` | `TEXT` | env var | OpenRouter key (only required with `--summarize`) |
+| `--model` | `TEXT` | `anthropic/claude-sonnet-4` | LLM used by `--summarize` |
+| `--json` | flag | off | Emit JSON instead of human-readable output |
+
+`reviews` adds `--include-expired` to surface entries past their TTL.
+
+## Examples
+
+```bash
+# Lexical full-text search
+synthscholar-search literature "GLP-1 obesity adolescents" --top 15
+
+# Semantic search with stratified LLM summary
+synthscholar-search literature "diagnostic accuracy speech" \
+  --semantic --top 25 --summarize --summary-top 15
+
+# Search past reviews and summarise across them
+synthscholar-search reviews "hypertension" --semantic --summarize --json
+```
+
+`--summarize` auto-detects an informative grouping dimension (typically condition / disorder) and returns per-group aggregate findings with representative PMIDs — useful for landing-page result pages or "review of reviews" workflows. See the [Caching guide](guides/caching.md) for migrations and Python equivalents.

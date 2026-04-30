@@ -39,7 +39,7 @@ async def main():
         model_name="anthropic/claude-sonnet-4",
     )
     result = await pipeline.run()
-    print(result.synthesis.synthesis_text)
+    print(result.synthesis_text)
 
 asyncio.run(main())
 ```
@@ -49,12 +49,15 @@ asyncio.run(main())
 Run the same review with two LLMs and get field-level agreement scores:
 
 ```python
-result = await pipeline.run_compare(
+from synthscholar.compare import run_compare
+
+compare_result = await run_compare(
+    pipeline,
     models=["anthropic/claude-sonnet-4", "openai/gpt-4o"],
 )
-print(result.merged.consensus_synthesis)
-for field, agreement in result.merged.field_agreement.items():
-    print(f"{field}: {agreement:.0%} agreement")
+for model, sub in compare_result.results.items():
+    print(model, len(sub.included_articles), "included")
+print(compare_result.field_agreement)
 ```
 
 Or via CLI:
@@ -81,18 +84,20 @@ ttl  = to_turtle(result)       # Turtle RDF
 
 ## Progress Streaming
 
-Pass an `update_callback` to receive real-time pipeline updates:
+Pass a `progress_callback` to receive real-time pipeline updates:
 
 ```python
-def on_update(message: str):
+def on_progress(message: str):
     print(f"[progress] {message}")
 
-result = await pipeline.run(update_callback=on_update)
+result = await pipeline.run(progress_callback=on_progress, auto_confirm=True)
 ```
 
 ## Next Steps
 
 - [CLI Reference](cli.md) — all flags explained
 - [Compare Mode Guide](guides/compare-mode.md)
+- [Caching guide](guides/caching.md) — Postgres cache + the `synthscholar-search` CLI
 - [FastAPI Integration](guides/fastapi.md)
+- [UI Integration](guides/ui-integration.md)
 - [API Reference](api/index.md)

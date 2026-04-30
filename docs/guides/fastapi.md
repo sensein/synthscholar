@@ -351,11 +351,142 @@ async function pollReview(id) {
 }
 ```
 
-## 6 — Production Notes
+## 6 — Surfacing Provenance to the UI
+
+Every `PRISMAReviewResult` carries the full process provenance — run configuration, plan iterations, search iterations, per-invocation telemetry, **per-publication source attribution** (`Article.source`), and **per-database PRISMA identification numbers** (`result.flow.db_*`). Expose it as a small helper endpoint:
+
+```python
+@app.get("/review/{review_id}/provenance")
+async def get_provenance(review_id: str):
+    """Return the iterative-vs-zero-shot summary + plan history for a finished review.
+
+    Lightweight — the same information is on `result.run_configuration`,
+    `result.plan_iterations`, etc. — but pre-aggregated for UI display.
+    """
+    result = REVIEW_RESULTS.get(review_id)  # your storage
+    if not result:
+        raise HTTPException(404)
+
+    from collections import Counter
+    invs = result.agent_invocations
+    mode_counts = Counter(i.iteration_mode for i in invs)
+    f = result.flow
+    return {
+        "configuration": result.run_configuration.model_dump() if result.run_configuration else None,
+        "iteration_modes": dict(mode_counts),
+        "n_invocations": len(invs),
+        "total_input_tokens": sum(i.input_tokens for i in invs),
+        "total_output_tokens": sum(i.output_tokens for i in invs),
+        "plan_iterations": [pi.model_dump() for pi in result.plan_iterations],
+        "search_iterations": [si.model_dump() for si in result.search_iterations],
+        # Per-database PRISMA Item 16a identification numbers
+        "prisma_identification": {
+            "db_pubmed": f.db_pubmed,
+            "db_biorxiv": f.db_biorxiv,
+            "db_medrxiv": f.db_medrxiv,
+            "db_related": f.db_related,
+            "db_hops": f.db_hops,
+            "db_other_sources": f.db_other_sources,  # dict[str, int]
+            "total_identified": f.total_identified,
+        },
+        # Per-publication source provenance for the included corpus
+        "included_sources": [
+            {"pmid": a.pmid, "source": a.source, "doi": a.doi}
+            for a in result.included_articles
+        ],
+    }
+```
+
+For UIs that want to **render the plan-iteration trail live during the run**, pair this with the SSE pattern: every time `pipeline.run()` calls `confirm_callback`, your handler can push the plan to the client and capture the operator's response. The captured plan iterations land on `result.plan_iterations` automatically when the run completes.
+
+For audit-grade persistence (long after the request ends), enable migration 005 and the `review_telemetry` table is populated automatically — load it with:
+
+```python
+from synthscholar.cache.store import CacheStore
+
+store = CacheStore(dsn=os.environ["PRISMA_PG_DSN"])
+await store.connect()
+trail = await store.load_telemetry(review_id="my-review-id")
+# trail["agent_invocations"]: list[dict] with full prompts + token counts
+# trail["plan_iterations"]: list[dict] with operator feedback chain
+await store.close()
+```
+
+See [the Provenance guide](provenance.md) for the field-by-field reference.
+
+---
+
+## 7 — Per-Disorder Synthesis Endpoint
+
+`run_search_synthesis` lets the LLM choose the grouping dimension. When you want **strict, reproducible** strata — exactly one bucket per disorder — wire `run_per_disorder_synthesis` into a small endpoint that runs against a finished review's charted rubrics:
+
+```python
+from fastapi import HTTPException
+from synthscholar.agents import (
+    AgentDeps, disorder_labels_from_rubrics, run_per_disorder_synthesis,
+)
+
+
+class PerDisorderRequest(BaseModel):
+    review_id: str
+    min_articles_per_disorder: int = 1
+    model: str | None = None  # optional override; falls back to the review's run model
+
+
+@app.post("/review/{review_id}/per-disorder-synthesis")
+async def per_disorder_synthesis(review_id: str, req: PerDisorderRequest):
+    """Re-synthesize a finished review's included corpus, one bucket per disorder.
+
+    Bucketing is deterministic (case-insensitive on the charted
+    ``disorder_cohort`` field). Articles whose rubric carries no cohort are
+    counted in ``unlabeled_count`` and excluded from synthesis.
+    """
+    result = REVIEW_RESULTS.get(review_id)  # your storage
+    if not result:
+        raise HTTPException(404, "review not found")
+    if not result.data_charting_rubrics:
+        raise HTTPException(409, "review has no charted rubrics — cannot bucket")
+
+    labels = disorder_labels_from_rubrics(result.data_charting_rubrics)
+    deps = AgentDeps(
+        protocol=result.protocol,
+        api_key=os.environ["OPENROUTER_API_KEY"],
+        model_name=req.model or "anthropic/claude-sonnet-4",
+    )
+    synth = await run_per_disorder_synthesis(
+        result.included_articles, labels, deps,
+        topic=result.research_question,
+        min_articles_per_disorder=req.min_articles_per_disorder,
+    )
+    return synth.model_dump()
+```
+
+Sample response:
+
+```json
+{
+  "topic": "Speech-based screening across neurodegenerative and psychiatric disorders",
+  "n_articles_synthesized": 18,
+  "n_disorders": 3,
+  "unlabeled_count": 1,
+  "groups": [
+    {"label": "Parkinson's disease", "n_studies": 8, "aggregate_finding": "...", "representative_pmids": ["..."]},
+    {"label": "Alzheimer's disease", "n_studies": 6, "aggregate_finding": "...", "representative_pmids": ["..."]},
+    {"label": "Major depressive disorder", "n_studies": 3, "aggregate_finding": "...", "representative_pmids": ["..."]}
+  ],
+  "overall_caveats": ""
+}
+```
+
+Per-bucket calls run in parallel (`asyncio.gather`), so latency scales with the largest bucket plus one round-trip rather than the number of disorders. Sub-min-articles buckets are excluded from `groups` but their articles still count in `n_articles_synthesized`.
+
+---
+
+## 8 — Production Notes
 
 - **API key management**: don't accept the OpenRouter key over HTTP — keep it in `OPENROUTER_API_KEY` on the server. Your frontend never sees it.
 - **Timeouts**: reviews can take 5–30 minutes. Raise `uvicorn --timeout-keep-alive 1800` and your reverse-proxy timeouts accordingly, or use the polling pattern.
 - **Concurrency**: `concurrency=5` ⇒ 5 parallel LLM calls per article-processing stage. Bump to 10–20 for larger reviews; costs scale linearly.
-- **PostgreSQL caching**: pass `pg_dsn=` to `PRISMAReviewPipeline` and near-duplicate protocols served in seconds instead of minutes.
+- **PostgreSQL caching + telemetry**: pass `pg_dsn=` to `PRISMAReviewPipeline` and near-duplicate protocols are served in seconds. Apply migration 005 to also persist the per-run provenance trail (`review_telemetry`).
 - **Background workers**: for heavy usage, move `pipeline.run()` off the request thread into Celery / RQ / arq and keep FastAPI just for submission + status.
 - **CORS + auth**: scope `CORSMiddleware` tightly, and put this behind your own auth layer (JWT, session, API key).
