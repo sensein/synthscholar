@@ -2397,8 +2397,10 @@ search_synthesis_agent = Agent(
     deps_type=AgentDeps,
     system_prompt="""\
 You are a clinical/biomedical synthesis assistant. You receive (a) a free-text
-search query and (b) a shortlist of articles returned for that query. Produce
-a structured stratified summary.
+search query and (b) a shortlist of articles returned for that query. Each
+article block contains the title and abstract; many also carry a full-text
+excerpt and pre-extracted key findings — use those richer fields when present
+to ground numeric claims. Produce a structured stratified summary.
 
 Rules:
   1. Detect the most informative grouping dimension yourself — typically
@@ -2409,7 +2411,8 @@ Rules:
   2. Each group's `aggregate_finding` MUST cite specific quantitative values
      when present in the source articles: effect sizes (with units),
      accuracy / sensitivity / specificity / AUC, sample sizes, ranges,
-     confidence intervals. Do NOT invent numbers.
+     confidence intervals. Prefer numbers from the full-text excerpt over
+     the abstract when both are present. Do NOT invent numbers.
   3. `n_studies` per group should reflect actual articles in the shortlist
      that fall in that group. Sum across groups should equal
      n_articles_synthesized (allow a small overflow when an article spans
@@ -2431,11 +2434,20 @@ insufficient evidence to summarise quantitatively, say so explicitly.
 )
 
 
+# Per-article full-text excerpt budget for the search-synthesis prompt block.
+# 2 KB captures Methods + key Results paragraphs for most papers without
+# blowing the per-call context budget when a bucket has 10–25 articles.
+_SEARCH_FULL_TEXT_CHARS = 2000
+
+
 def _summarise_article_for_search(art: "Article", index: int) -> str:
     """Compact one-article block used as input to the search-synthesis agent.
 
-    Keeps the prompt focused on the pieces that drive aggregate findings:
-    title, abstract, and any pre-extracted study-design / effect-size data.
+    Renders whatever is most informative for aggregate findings, in order:
+    title + year, abstract, full-text excerpt (when resolved), and any
+    pre-extracted key findings. Abstract-only articles (e.g. fresh search
+    hits that have not been through the full-text resolver) degrade
+    gracefully — the helper just omits the missing pieces.
     """
     parts = [
         f"--- [{index}] PMID:{art.pmid} ---",
@@ -2445,6 +2457,14 @@ def _summarise_article_for_search(art: "Article", index: int) -> str:
         parts.append(f"Year: {art.year}")
     if art.abstract:
         parts.append(f"Abstract: {art.abstract[:1500]}")
+    if art.full_text:
+        parts.append(
+            f"Full-text excerpt: {art.full_text[:_SEARCH_FULL_TEXT_CHARS]}"
+        )
+    findings = getattr(getattr(art, "extracted_data", None), "key_findings", None)
+    if findings:
+        joined = "; ".join(findings[:5])
+        parts.append(f"Pre-extracted findings: {joined}")
     return "\n".join(parts)
 
 
@@ -2503,8 +2523,10 @@ disorder_group_summary_agent = Agent(
     system_prompt="""\
 You are a clinical/biomedical synthesis assistant. You receive (a) a single
 disorder/cohort label and (b) a shortlist of articles whose disorder cohort
-matches that label. Produce ONE structured summary (a single GroupSummary)
-covering this disorder.
+matches that label. Each article block contains the title and abstract; many
+also carry a full-text excerpt and pre-extracted key findings — use those
+richer fields when present to ground numeric claims. Produce ONE structured
+summary (a single GroupSummary) covering this disorder.
 
 Rules:
   1. The output `label` MUST equal the disorder label provided in the prompt
@@ -2514,7 +2536,8 @@ Rules:
      reports for this disorder. Cite specific quantitative values when the
      source articles supply them: effect sizes (with units), accuracy /
      sensitivity / specificity / AUC, sample sizes, ranges, confidence
-     intervals. Never invent numbers.
+     intervals. Prefer numbers from the full-text excerpt over the abstract
+     when both are present. Never invent numbers.
   4. `representative_pmids` lists 1–3 PMIDs from the shortlist that are most
      representative of the conclusion.
   5. `caveats` summarises within-disorder limitations (small N, narrow

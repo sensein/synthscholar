@@ -393,7 +393,7 @@ classDiagram
 
 ## Pipeline Flow — Step by Step
 
-`PRISMAReviewPipeline.run()` in [pipeline.py](pipeline.py) executes up to 16 steps. Step 0 is the PostgreSQL cache gate (short-circuits the pipeline on a hit). Steps 1–13 are sequential; step 14 runs three tasks in parallel via `asyncio.gather()`; step 15 persists the result to cache.
+`PRISMAReviewPipeline.run()` in [`synthscholar/pipeline.py`](synthscholar/pipeline.py) executes 18 logical steps. Step 0 is the PostgreSQL cache gate (short-circuits on a hit). Acquisition (steps 1–6) and screening/full-text (7–10) are batched-parallel. **Steps 11–15 are fused into a per-article DAG** that runs RoB ∥ Extract ∥ (Chart → Appraise → Narrate) for each included article, with all article DAGs running concurrently under `proto.article_concurrency` slots. Steps 16–18 stream synthesis through grounding validation, then run two `asyncio.gather` waves for the cross-study and document-section agents, and finally assemble the structured `PrismaReview`.
 
 ```mermaid
 flowchart TD
@@ -416,24 +416,29 @@ flowchart TD
 
     S9["Step 9 — Full-text Eligibility · LLM\nrun_screening(batch, deps, 'full_text')\nbatch size = 10 · STRICT\nno full_text → auto-include\nexcluded_reasons tallied"]
 
-    S10["Step 10 — Evidence Extraction + Source Grounding\nextract_evidence(ft_included, deps)\n  LLM → raw spans (batch 5)\n  filter_grounded(spans, articles, threshold=65)\n  → only grounded spans kept\n  span.grounding_score + span.grounded stamped\nmax 30 verified spans"]
+    S10["Step 10 — Evidence Extraction + Source Grounding\nextract_evidence(ft_included, deps)\n  LLM → raw spans (batches of 5)\n  filter_grounded(spans, articles, threshold=65)\n  → only grounded spans kept\n  span.grounding_score + span.grounded stamped"]
 
-    S11["Step 11 — Data Extraction · LLM  optional\nrun_data_extraction(article, data_items, deps)\narticle.extracted_data = StudyDataExtraction\nonly runs if data_items passed to run()"]
+    DAG["Steps 11–15 — Per-Article DAG (fused)\nasyncio.gather across articles, semaphore = proto.article_concurrency\nFor each article, three sibling legs:\n  • RoB (run_risk_of_bias)\n  • Extract (run_data_extraction · only if data_items)\n  • Chart → Appraise → Narrate chain\nSee 'Per-Article DAG' subsection below."]
 
-    S12["Step 12 — Risk of Bias · LLM\nrun_risk_of_bias(article, deps) per article\narticle.risk_of_bias = RiskOfBiasResult\ndomains from ROB_DOMAINS dict"]
+    S16["Step 16 — Synthesis · LLM\nrun_synthesis(ft_included, evidence, flow_text, deps)\nSingle call when corpus ≤ SYNTHESIS_BATCH_CHARS (80 KB);\nelse parallel partials + run_synthesis_merge_agent merge.\n→ str Markdown with PMID citations"]
 
-    S13["Step 13 — Narrative Synthesis · LLM\nrun_synthesis(ft_included, evidence, flow_text, deps)\n→ str Markdown with PMID citations\nmax 25 articles + top 20 evidence spans"]
+    S17["Step 17 — Grounding validation · LLM\nrun_grounding_validation(synthesis, corpus, citations)\n→ GroundingValidationResult\nverdict: SUPPORTED / REVISE / UNGROUNDED"]
 
-    PAR["Step 14 — asyncio.gather PARALLEL"]
-    S14A["run_bias_summary()\n→ str"]
-    S14B["run_limitations()\n→ str"]
-    S14C["run_grade(outcome) × 3\n→ GRADEAssessment each"]
+    PAR1["Step 18a — asyncio.gather #1 (parallel)"]
+    S18A1["run_bias_summary() → str"]
+    S18A2["run_limitations() → str"]
+    S18A3["run_introduction() → str"]
+    S18A4["run_grade(outcome) × N\n(every PICO outcome, concurrently)"]
 
-    S15["Step 15 — Assemble PRISMAReviewResult\nprotocol · flow · included_articles\nscreening_log · evidence_spans\nsynthesis · bias · limitations · grade"]
+    PAR2["Step 18b — asyncio.gather #2 (parallel)\nuses synthesis + GRADE summary"]
+    S18B1["run_conclusions() → str"]
+    S18B2["run_abstract() → structured_abstract"]
 
-    S16["Step 16 — PostgreSQL Cache Store\nif pg_dsn set:\n  cache_store(criteria, model, result)\n  → upsert review_cache with TTL\n  → close CacheStore + ArticleStore"]
+    ASSEMBLE["Step 18c — Assembly\nrun_thematic_synthesis (parallel map-reduce + structured merge)\n+ quantitative_analysis_agent + section agents\n→ PrismaReview"]
 
-    EXPORT["Export caller-side\nto_markdown() · to_json() · to_bibtex()\ncache_hit banner shown if result.cache_hit"]
+    PERSIST["Persist & cache\npg_store.save_checkpoint per stage\nresult cache: similarity-keyed result.cache_hit\nclose CacheStore + ArticleStore"]
+
+    EXPORT["Export caller-side\nto_markdown() · to_json() · to_bibtex() · to_turtle() · to_jsonld()"]
 
     INPUT --> S0
     S0 -->|CACHE HIT| EXPORT
@@ -449,19 +454,46 @@ flowchart TD
     S7 -->|ta_included| S8
     S8 --> S9
     S9 -->|ft_included| S10
-    S10 --> S11
-    S11 --> S12
-    S12 --> S13
-    S13 --> PAR
-    PAR --> S14A
-    PAR --> S14B
-    PAR --> S14C
-    S14A --> S15
-    S14B --> S15
-    S14C --> S15
-    S15 --> S16
-    S16 --> EXPORT
+    S10 --> DAG
+    DAG --> S16
+    S16 --> S17
+    S17 --> PAR1
+    PAR1 --> S18A1
+    PAR1 --> S18A2
+    PAR1 --> S18A3
+    PAR1 --> S18A4
+    S18A1 --> PAR2
+    S18A2 --> PAR2
+    S18A3 --> PAR2
+    S18A4 --> PAR2
+    PAR2 --> S18B1
+    PAR2 --> S18B2
+    S18B1 --> ASSEMBLE
+    S18B2 --> ASSEMBLE
+    ASSEMBLE --> PERSIST
+    PERSIST --> EXPORT
 ```
+
+### Per-Article DAG (steps 11–15)
+
+```mermaid
+flowchart LR
+    A[Article] --> SEM{{acquire dag_sem slot<br/>cap = proto.article_concurrency}}
+    SEM --> ROB[RoB · STAGE_ROB checkpoint]
+    SEM --> EXT[Data extraction · if data_items]
+    SEM --> CH[Charting · STAGE_CHARTING]
+    CH --> AP[Appraisal · STAGE_APPRAISAL]
+    AP --> NR[Narrative · STAGE_NARRATIVE]
+    ROB & EXT & NR --> JOIN[asyncio.gather wait]
+    JOIN --> ART[Annotated Article]
+
+    classDef dag fill:#fef3c7,stroke:#d97706,color:#78350f;
+    class SEM,JOIN dag;
+```
+
+- All three legs run as siblings via inner `asyncio.gather` per article.
+- A failed chain leg drops the article from `ft_included` (chain has data dependencies). RoB and Extract failures are best-effort — they leave the field `None`.
+- Each leg with DB checkpointing uses `_load_or_run_batch` so partial DB resume is per-article-per-stage.
 
 ### Batch Sizes
 
@@ -950,7 +982,31 @@ flowchart TD
 
 ## Provenance & Reconstruct
 
-The system captures full provenance for every review at two levels: a **semantic RDF graph** (who reviewed what, when, using which model and criteria) and a **relational snapshot** (the full result JSON + every article that was considered). Together they let you reconstruct any prior review from scratch or replay it in a UI.
+The system captures provenance at **four** levels:
+
+1. **Process provenance** (`provenance.py` + new fields on `PRISMAReviewResult`) — captures *how* the analysis was produced: which phases were zero-shot vs iterative, every plan version the operator saw and their feedback, every search query and citation hop, every LLM invocation with token counts / latency / one-line tool-call summary, plus the run configuration (model, package version, env-var presence — never values).
+2. **Semantic RDF graph** — `prov:Activity` nodes for every plan iteration, search iteration, and agent invocation; `prov:wasRevisionOf` chains across plan versions.
+3. **Relational snapshot** — full `PRISMAReviewResult` JSON in `review_cache`, plus the optional `review_telemetry` table (migration 005) holding the full provenance trail keyed by `review_id`.
+4. **Article snapshot** — every article ever fetched in `article_store` with full text + SHA-256 content hash for reproducibility.
+
+Together they let you reconstruct any prior review from scratch or replay it in a UI, and they answer the *"how did the LLM arrive at these queries?"* audit question that protocol reviewers ask.
+
+### Process provenance (the new layer)
+
+`synthscholar/provenance.py` defines:
+
+- **`ProvenanceCollector`** — per-run accumulator threaded through `AgentDeps.provenance`. Holds `run_configuration`, `plan_iterations`, `agent_invocations`, `search_iterations`. Stamped onto the final result via `collector.stamp(result)`.
+- **`run_traced(agent, prompt, *, deps, model, step_name, iteration_mode, ...)`** — wrapper around `agent.run()`. Captures static system prompt (`agent._system_prompts`), the user prompt as-sent, `result.usage()` (input/output tokens, requests, cache reads), `result.all_messages()` (tool calls), duration, and writes one `AgentInvocation` to `deps.provenance`. **Every `agent.run()` site in `agents.py` goes through this wrapper.** When `deps.provenance` is None or a MagicMock (in unit tests), it silently skips recording.
+- **`build_run_configuration(...)`** — snapshotted at the start of `pipeline.run()`. Records `protocol.model_dump()`, the resolved `pipeline_kwargs` (max_per_query, related_depth, biorxiv_days, output_synthesis_style, ...), env-var **presence** (never values) for `OPENROUTER_API_KEY` / `NCBI_API_KEY` / `SYNTHSCHOLAR_EMAIL` / `SEMANTIC_SCHOLAR_API_KEY` / `CORE_API_KEY` / `PRISMA_PG_DSN`, the joined `sys.argv`, and the package version from `importlib.metadata`.
+- **`PHASE_DEFAULT_MODE`** — dict mapping `step_name → IterationMode`; lets the Markdown exporter group phases without re-walking the invocations list.
+
+Plan iterations are recorded by `PRISMAReviewPipeline._resolve_plan_with_iterations()` (called from both `run()` and `_fetch_articles()`). Each operator response — `True` (approved), `False` (rejected), `""` (approved silently), or any string (feedback) — is captured with the plan snapshot, decision, generation timestamp, and model name. Search iterations are recorded inline in `run()` for each PubMed/bioRxiv/medRxiv query, each related-articles depth round, and each citation hop.
+
+The **`review_telemetry` table** (migration 005) is the audit-grade store. When `--pg-dsn` is set and the migration applied, `pipeline.run()` writes one row per `review_id` containing JSONB columns for `run_configuration`, `plan_iterations`, `agent_invocations`, `search_iterations` plus pre-computed totals (`n_invocations`, `total_input_tokens`, `total_output_tokens`, `n_plan_iterations`). Without migration 005, the JSON / Markdown / Turtle exports still carry everything — Postgres is just the optional persistent store.
+
+The **iteration-mode taxonomy** is fixed in `models.IterationMode` and exhaustive: `zero_shot`, `iterative_with_human_feedback`, `iterative_with_fallback`, `iterative_expansion`, `hierarchical_reduce`, `self_check_retry`, `validated_against_source`. Every wrapped `agent.run()` site passes the appropriate tag. The Markdown export renders an "Iterative vs Zero-Shot Phases" table grouping every step by its dominant mode plus the call count.
+
+### Original RDF + relational provenance
 
 ### How provenance is captured
 
@@ -1334,46 +1390,85 @@ This avoids re-fetching articles N times while ensuring each model applies its o
 
 ## Environment & Configuration
 
-| Variable | Required | Description |
-|---|---|---|
-| `OPENROUTER_API_KEY` | Yes | Passed via `--api-key` CLI arg or directly to `PRISMAReviewPipeline` |
-| `NCBI_API_KEY` | No | Enables 10 req/s vs 3 req/s at NCBI |
-| `PRISMA_PG_DSN` | No | PostgreSQL DSN for review result cache + article store. Overridden by `--pg-dsn`. |
+Every credential field uses the precedence **explicit constructor argument / CLI flag → env var → built-in default**.
+
+| Variable | CLI flag | Required? | Description |
+|---|---|---|---|
+| `OPENROUTER_API_KEY` | `--api-key` | **yes** | Drives every LLM agent. Without it the pipeline errors on the first agent call. |
+| `NCBI_API_KEY` | `--ncbi-api-key` | optional | Lifts PubMed E-utilities rate limit from 3 → 10 req/s. |
+| `SYNTHSCHOLAR_EMAIL` | `--email` | recommended | Polite-pool contact. Used in the `User-Agent` header on every OA HTTP call and as Unpaywall's required `email=` parameter. Falls back to `NCBI_EMAIL = "tekraj@mit.edu"` if unset. |
+| `SEMANTIC_SCHOLAR_API_KEY` | `--semantic-scholar-key` | optional | Lifts Semantic Scholar rate limits in the DOI-resolver chain. |
+| `CORE_API_KEY` | `--core-key` | optional | Enables the CORE OA aggregator inside `OAFetcher.search_all()` (silent without). |
+| `PRISMA_PG_DSN` | `--pg-dsn` | optional | PostgreSQL DSN that activates the protocol-similarity result cache, the article store, and per-stage resumable checkpoints. Empty = Postgres caching disabled. |
 
 ### Pipeline Constructor Parameters
 
 ```python
 PRISMAReviewPipeline(
-    api_key: str,               # OpenRouter API key (required)
-    model_name: str,            # Default: "anthropic/claude-sonnet-4"
-    ncbi_api_key: str,          # Default: "" (anonymous NCBI access)
-    protocol: ReviewProtocol,   # Review protocol (required for useful results)
-    enable_cache: bool,         # Default: True — SQLite cache on/off
-    max_per_query: int,         # Default: 20 — max results per PubMed query
-    related_depth: int,         # Default: 1 — rounds of related article expansion
-    biorxiv_days: int,          # Default: 180 — bioRxiv lookback window in days
+    api_key: str,                                       # OpenRouter (required)
+    model_name: str = "anthropic/claude-sonnet-4",
+    ncbi_api_key: str = "",                             # falls back to NCBI_API_KEY env
+    email: str = "",                                    # falls back to SYNTHSCHOLAR_EMAIL env
+    api_keys: dict[str, str] | None = None,             # {"semantic_scholar": ..., "core": ...}
+    protocol: ReviewProtocol | None = None,
+    enable_cache: bool = True,                          # SQLite article cache
+    max_per_query: int = 20,                            # PubMed results per query
+    related_depth: int = 1,                             # related-articles expansion depth
+    biorxiv_days: int = 180,                            # bioRxiv lookback window
 )
 ```
 
+The resolved credentials live on `pipeline.pubmed.api_key`, `pipeline.full_text_resolver.email`, and `pipeline.full_text_resolver.api_keys` — `synthscholar.compare.run_compare()` reads them back to thread inherited credentials into per-model sub-pipelines.
+
+`proto.article_concurrency`, `proto.rob_tool`, `proto.max_hops`, `proto.date_range_start`/`date_range_end`, `proto.charting_questions`, `proto.appraisal_domains`, `proto.synthesis_batch_size`, etc. all live on the `ReviewProtocol` rather than the pipeline constructor.
+
 ### ReviewProtocol — PostgreSQL Cache Fields
+
+PostgreSQL caching activates when `protocol.pg_dsn` is non-empty. All four
+fields are set on the `ReviewProtocol`, not on the pipeline constructor:
 
 ```python
 ReviewProtocol(
     ...
-    pg_dsn: str,                # PostgreSQL DSN — activates cache when non-empty
-    force_refresh: bool,        # Default: False — bypass cache, overwrite on completion
-    cache_threshold: float,     # Default: 0.95 — min similarity score for a cache hit
-    cache_ttl_days: int,        # Default: 30 — days until entry expires; 0 = never
+    pg_dsn: str = "",                                 # PostgreSQL DSN — activates cache when non-empty
+    force_refresh: bool = False,                      # Bypass cache lookup; overwrite entry on completion
+    cache_threshold: float = Field(0.95, ge=0, le=1), # Min similarity score for a cache hit
+    cache_ttl_days: int = Field(30, ge=0),            # Days until entry expires; 0 = never
 )
 ```
 
-### Cache CLI Flags
+### CLI cache controls
+
+Two independent caches are exposed on the CLI:
 
 ```
---pg-dsn DSN            PostgreSQL DSN (also reads PRISMA_PG_DSN env var)
---force-refresh         Bypass cache lookup; overwrite entry on completion
---cache-threshold FLOAT Similarity threshold 0.0–1.0 (default 0.95)
---cache-ttl-days DAYS   Cache TTL in days; 0 = never expire (default 30)
+--no-cache                       Disable the SQLite article-fetch cache (per-run, in-process).
+                                 Unrelated to PostgreSQL caching.
+
+--pg-dsn DSN                     PostgreSQL DSN. Activates the protocol-similarity result cache,
+                                 the article store, and per-stage resumable checkpoints. Falls
+                                 back to PRISMA_PG_DSN env var. Empty disables Postgres caching.
+--force-refresh                  Bypass any matching cache entry and overwrite it on completion.
+                                 Only meaningful with --pg-dsn / PRISMA_PG_DSN set.
+--cache-threshold FLOAT          Min protocol-similarity score (0.0–1.0) for a Postgres cache hit.
+                                 Default 0.95.
+--cache-ttl-days N               Postgres cache TTL in days; 0 = never expire. Default 30.
+```
+
+The four PostgreSQL flags are threaded onto `ReviewProtocol.pg_dsn`,
+`force_refresh`, `cache_threshold`, and `cache_ttl_days` inside
+`build_protocol_from_args()` (and overlaid on top of `--interactive` runs)
+in [`synthscholar/main.py`](synthscholar/main.py). Python users can set
+the same fields directly on the protocol they construct.
+
+Run the migrations under
+[`synthscholar/cache/migrations/`](synthscholar/cache/migrations/) once
+against your DSN before first use:
+
+```bash
+psql "$PRISMA_PG_DSN" -f synthscholar/cache/migrations/001_initial.sql
+psql "$PRISMA_PG_DSN" -f synthscholar/cache/migrations/002_add_sharing.sql
+psql "$PRISMA_PG_DSN" -f synthscholar/cache/migrations/003_add_pipeline_checkpoints.sql
 ```
 
 ### Running the Migration
