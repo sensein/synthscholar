@@ -136,6 +136,7 @@ class Article(BaseModel):
     keywords: list[str] = Field(default_factory=list)
     source: str = ""
     full_text: str = ""
+    content_sha256: str = ""
     hop_level: int = 0
     parent_id: str = ""
     inclusion_status: InclusionStatus = InclusionStatus.PENDING
@@ -438,11 +439,21 @@ class ReviewProtocol(BaseModel):
 
 
 class PRISMAFlowCounts(BaseModel):
-    """PRISMA 2020 flow diagram counts."""
+    """PRISMA 2020 flow diagram counts.
+
+    Per-database identification numbers (``db_*`` fields) are derived from
+    each ``Article.source`` set during discovery. ``db_other_sources`` maps
+    any source name that does not fall into the named categories
+    (PubMed / bioRxiv / medRxiv / related / hop) to its article count —
+    populated when alternative providers (OpenAlex, Europe PMC, etc.) are
+    wired in. Sum of all ``db_*`` values equals ``total_identified``.
+    """
     db_pubmed: int = 0
     db_biorxiv: int = 0
+    db_medrxiv: int = 0
     db_related: int = 0
     db_hops: int = 0
+    db_other_sources: dict[str, int] = Field(default_factory=dict)
     total_identified: int = 0
     duplicates_removed: int = 0
     after_dedup: int = 0
@@ -495,6 +506,12 @@ class PRISMAReviewResult(BaseModel):
     quality_checklist: dict[str, bool] = Field(default_factory=dict)
     # Feature 006: structured appraisal results populated during pipeline run
     structured_appraisal_results: list[CriticalAppraisalResult] = Field(default_factory=list)
+
+    # Provenance — how this analysis was produced
+    run_configuration: Optional["RunConfiguration"] = None
+    plan_iterations: list["PlanIteration"] = Field(default_factory=list)
+    agent_invocations: list["AgentInvocation"] = Field(default_factory=list)
+    search_iterations: list["SearchIteration"] = Field(default_factory=list)
 
 
 # ── Forward reference resolution ──
@@ -1115,6 +1132,189 @@ class CompareReviewResult(BaseModel):
                 "CompareReviewResult requires at least 2 unique models in compare_models"
             )
         return self
+
+
+# ──────────────────────────── Search synthesis ─────────────────────────────────
+
+
+class GroupSummary(BaseModel):
+    """One stratum of a search-result synthesis (e.g. "Parkinson's disease").
+
+    Auto-detected by the LLM from the article corpus: the model groups results
+    by the dimension it judges most informative (typically condition/disorder
+    when results span multiple disease areas, or population subgroup, or
+    intervention type). The label is the short descriptive name it chose.
+    """
+
+    label: str = Field(..., description="Short stratum label (e.g. condition, population, intervention)")
+    n_studies: int = Field(..., ge=0, description="How many of the searched articles fall in this group")
+    aggregate_finding: str = Field(
+        ...,
+        description=(
+            "1–2 sentence quantitative summary across studies in this group. "
+            "Should cite specific numbers when present (effect size, accuracy, sample size, range)."
+        ),
+    )
+    representative_pmids: list[str] = Field(default_factory=list)
+    caveats: str = ""
+
+
+class SearchSynthesis(BaseModel):
+    """Stratified summary produced from a search result set.
+
+    Used by ``synthscholar.agents.run_search_synthesis``. The agent receives
+    the original query plus the top-K articles returned by lexical or semantic
+    search and produces both an overall corpus framing and a list of grouped
+    findings.
+    """
+
+    query: str
+    n_articles_synthesized: int = Field(..., ge=0)
+    overview: str = Field(
+        ...,
+        description="1–2 sentence framing of the corpus (study designs, settings, sample size range).",
+    )
+    groups: list[GroupSummary] = Field(default_factory=list)
+    overall_caveats: str = Field(
+        default="",
+        description="Cross-group caveats: heterogeneity, methodological limits, missing comparator, etc.",
+    )
+
+
+class PerDisorderSynthesis(BaseModel):
+    """Strict per-disorder stratified summary.
+
+    Produced by ``synthscholar.agents.run_per_disorder_synthesis``. Articles
+    are bucketed deterministically by a caller-supplied disorder label
+    (typically ``DataChartingRubric.disorder_cohort`` post-charting); each
+    non-empty bucket is summarised by an LLM into one ``GroupSummary``.
+    Articles whose label is missing/empty are counted in ``unlabeled_count``
+    and excluded from synthesis.
+    """
+
+    topic: str = Field(
+        default="",
+        description="Optional topical descriptor (e.g. protocol question) for context.",
+    )
+    n_articles_synthesized: int = Field(..., ge=0)
+    n_disorders: int = Field(..., ge=0)
+    unlabeled_count: int = Field(
+        default=0, ge=0,
+        description="Articles excluded from synthesis because they had no disorder label.",
+    )
+    groups: list[GroupSummary] = Field(
+        default_factory=list,
+        description="One entry per distinct disorder label; ``label`` is the disorder name.",
+    )
+    overall_caveats: str = Field(
+        default="",
+        description="Cross-disorder caveats (e.g. very small per-disorder cohorts, missing comparators).",
+    )
+
+
+# ────────────────── Provenance / Process Models ────────────────────────
+#
+# These capture HOW the analysis was produced — distinguishing zero-shot
+# steps (single LLM call, no loop) from iterative steps (human feedback,
+# fallback cascades, citation-hop expansion, map-reduce). Stored on every
+# PRISMAReviewResult and exported to JSON / Markdown / Turtle.
+
+
+IterationMode = Literal[
+    "zero_shot",                       # single call, no loop
+    "iterative_with_human_feedback",   # plan regen until operator approves
+    "iterative_with_fallback",         # cascade through providers (full-text resolver)
+    "iterative_expansion",             # output of round N seeds round N+1 (citation hops)
+    "hierarchical_reduce",             # shard → partial → merge (map-reduce synthesis)
+    "self_check_retry",                # pydantic-ai schema-violation retry only
+    "validated_against_source",        # zero-shot, then deterministic post-filter
+]
+
+
+class RunConfiguration(BaseModel):
+    """Captures the user-provided configuration that drove this run.
+
+    Snapshotted at the start of pipeline.run() so a result is always
+    reproducible from its own configuration block. API keys are NEVER
+    stored — only their *presence* is recorded in env_vars_present.
+    """
+    started_at: str = ""
+    review_id: str = ""
+    model_name: str = ""
+    protocol_snapshot: dict = Field(default_factory=dict)
+    pipeline_kwargs: dict = Field(default_factory=dict)
+    env_vars_present: dict[str, bool] = Field(default_factory=dict)
+    cli_invocation: str = ""
+    package_version: str = ""
+
+
+class PlanIteration(BaseModel):
+    """One round of plan generation + operator response.
+
+    A run with `auto_confirm=True` records exactly one iteration with
+    decision='auto_confirmed'. A human-in-the-loop run records every
+    plan version the operator saw plus their feedback string.
+    """
+    iteration_index: int
+    plan_snapshot: "ReviewPlan"
+    user_feedback: str = ""
+    decision: Literal["approved", "rejected", "feedback", "auto_confirmed"] = "auto_confirmed"
+    generated_at: str = ""
+    model_name: str = ""
+
+
+class AgentInvocation(BaseModel):
+    """Provenance record for a single agent.run() call.
+
+    Captures which step / phase ran, in what mode (zero-shot vs iterative),
+    the prompt actually sent, token / cost / latency telemetry, and a
+    one-line summary of any tool calls the agent made.
+    """
+    agent_name: str
+    step_name: str
+    iteration_mode: IterationMode = "zero_shot"
+    model_name: str = ""
+    started_at: str = ""
+    duration_ms: float = 0.0
+
+    # Token usage (from pydantic-ai RunUsage)
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    requests: int = 0  # number of LLM API calls (>1 means retries occurred)
+
+    # Tool usage
+    tool_calls_count: int = 0
+    tool_call_summary: str = ""
+
+    # Targets (for per-article / per-outcome steps)
+    target_pmid: str = ""
+    target_outcome: str = ""
+    batch_index: int = -1
+
+    # Prompts as sent (full text)
+    system_prompt_snapshot: str = ""
+    prompt_snapshot: str = ""
+    output_type: str = ""
+
+    # Outcome
+    succeeded: bool = True
+    error_message: str = ""
+
+
+class SearchIteration(BaseModel):
+    """One round of literature search — initial query, citation-hop, or related-articles expansion."""
+    iteration_index: int
+    iteration_kind: Literal["initial_query", "citation_hop", "related_articles"] = "initial_query"
+    database: str = ""           # "pubmed", "biorxiv", "medrxiv", ...
+    query: str = ""
+    seed_pmids: list[str] = Field(default_factory=list)
+    new_pmids: list[str] = Field(default_factory=list)
+    cumulative_count: int = 0
+    duration_ms: float = 0.0
+    started_at: str = ""
 
 
 # Rebuild PRISMAReviewResult one final time to resolve PrismaReview forward reference

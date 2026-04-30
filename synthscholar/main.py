@@ -63,6 +63,8 @@ def get_api_key(cli_value: str = "") -> str:
 
 def build_protocol_from_args(args: argparse.Namespace) -> ReviewProtocol:
     """Build ReviewProtocol from CLI arguments."""
+    # Postgres caching: CLI flag wins, otherwise env var, otherwise empty (disabled).
+    pg_dsn = args.pg_dsn or os.environ.get("PRISMA_PG_DSN", "")
     return ReviewProtocol(
         title=args.title,
         objective=args.objective or args.title,
@@ -80,6 +82,10 @@ def build_protocol_from_args(args: argparse.Namespace) -> ReviewProtocol:
         rob_tool=RoBTool(args.rob_tool),
         article_concurrency=args.concurrency,
         max_articles=args.max_articles if args.max_articles and args.max_articles > 0 else None,
+        pg_dsn=pg_dsn,
+        force_refresh=args.force_refresh,
+        cache_threshold=args.cache_threshold,
+        cache_ttl_days=args.cache_ttl_days,
     )
 
 
@@ -194,6 +200,12 @@ async def run_review(args: argparse.Namespace):
     # Build protocol
     if args.interactive:
         protocol = build_protocol_interactive()
+        # Apply cache flags after the interactive build so users can still
+        # combine `--interactive` with `--pg-dsn` etc.
+        protocol.pg_dsn = args.pg_dsn or os.environ.get("PRISMA_PG_DSN", "")
+        protocol.force_refresh = args.force_refresh
+        protocol.cache_threshold = args.cache_threshold
+        protocol.cache_ttl_days = args.cache_ttl_days
     else:
         if not args.title:
             print("ERROR: --title is required (or use --interactive)")
@@ -401,7 +413,21 @@ Examples:
 
     # Pipeline options
     parser.add_argument("--no-cache", action="store_true",
-                        help="Disable SQLite cache")
+                        help="Disable the SQLite article-fetch cache (per-run, in-process)")
+
+    # PostgreSQL result-cache + checkpointing (separate from the SQLite cache above).
+    parser.add_argument("--pg-dsn", type=str, default="",
+                        help="PostgreSQL DSN that activates the protocol-similarity result cache, "
+                             "the article store, and per-stage resumable checkpoints. "
+                             "Falls back to the PRISMA_PG_DSN env var. Empty disables Postgres caching.")
+    parser.add_argument("--force-refresh", action="store_true",
+                        help="Bypass any matching cache entry and overwrite it on completion. "
+                             "Only meaningful with --pg-dsn (or PRISMA_PG_DSN) set.")
+    parser.add_argument("--cache-threshold", type=float, default=0.95,
+                        help="Min protocol-similarity score (0.0–1.0) for a Postgres cache hit. "
+                             "Default 0.95.")
+    parser.add_argument("--cache-ttl-days", type=int, default=30,
+                        help="Postgres cache TTL in days; 0 = never expire. Default 30.")
     parser.add_argument("--extract-data", action="store_true",
                         help="Enable per-study data extraction")
     parser.add_argument("--concurrency", type=int, default=5, metavar="N",

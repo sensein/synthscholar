@@ -330,7 +330,125 @@ def _build_graph(result: "PRISMAReviewResult") -> Graph:
     # ── EvidenceSpans → oa:Annotation ──
     _add_evidence_spans(g, rev_uri, result, pmid_to_uri)
 
+    # ── Provenance: RunConfiguration + PlanIterations + AgentInvocations ──
+    _add_provenance_block(g, rev_uri, result)
+
     return g
+
+
+def _add_provenance_block(g: Graph, rev_uri: URIRef, result: "PRISMAReviewResult") -> None:
+    """Emit run-config, plan-iteration chain, agent-invocation activities, and SHA-256 hashes."""
+
+    # 1. RunConfiguration as an entity used by the review activity.
+    rc = getattr(result, "run_configuration", None)
+    if rc is not None:
+        rc_node = BNode()
+        g.add((rc_node, RDF.type, SLR.RunConfiguration))
+        if rc.started_at:
+            g.add((rc_node, PROV.generatedAtTime,
+                   Literal(rc.started_at, datatype=XSD.dateTime)))
+        if rc.model_name:
+            g.add((rc_node, SLR.model_name, Literal(rc.model_name)))
+        if rc.package_version:
+            g.add((rc_node, SLR.package_version, Literal(rc.package_version)))
+        if rc.cli_invocation:
+            g.add((rc_node, SLR.cli_invocation, Literal(rc.cli_invocation)))
+        for env_key, present in (rc.env_vars_present or {}).items():
+            # Only record presence — never the values.
+            ev = BNode()
+            g.add((ev, RDF.type, SLR.EnvVarPresence))
+            g.add((ev, SLR.env_var_name, Literal(env_key)))
+            g.add((ev, SLR.env_var_present, Literal(bool(present), datatype=XSD.boolean)))
+            g.add((rc_node, SLR.env_var_record, ev))
+        g.add((rev_uri, PROV.used, rc_node))
+
+    # 2. PlanIteration chain — earlier revisions linked via prov:wasRevisionOf.
+    prev_plan: BNode | None = None
+    for pi in (result.plan_iterations or []):
+        plan_node = BNode()
+        g.add((plan_node, RDF.type, SLR.PlanIteration))
+        g.add((plan_node, RDF.type, PROV.Entity))
+        g.add((plan_node, SLR.iteration_index,
+               Literal(pi.iteration_index, datatype=XSD.integer)))
+        g.add((plan_node, SLR.decision, Literal(pi.decision)))
+        if pi.user_feedback:
+            g.add((plan_node, SLR.user_feedback, Literal(pi.user_feedback)))
+        if pi.generated_at:
+            g.add((plan_node, PROV.generatedAtTime,
+                   Literal(pi.generated_at, datatype=XSD.dateTime)))
+        if pi.model_name:
+            g.add((plan_node, SLR.model_name, Literal(pi.model_name)))
+        # Plan content
+        for q in pi.plan_snapshot.pubmed_queries:
+            g.add((plan_node, SLR.pubmed_query, Literal(q)))
+        for q in pi.plan_snapshot.biorxiv_queries:
+            g.add((plan_node, SLR.biorxiv_query, Literal(q)))
+        if prev_plan is not None:
+            g.add((plan_node, PROV.wasRevisionOf, prev_plan))
+        g.add((rev_uri, SLR.plan_iteration, plan_node))
+        prev_plan = plan_node
+
+    # 3. SearchIteration chain.
+    for si in (result.search_iterations or []):
+        s_node = BNode()
+        g.add((s_node, RDF.type, SLR.SearchIteration))
+        g.add((s_node, RDF.type, PROV.Activity))
+        g.add((s_node, SLR.iteration_index,
+               Literal(si.iteration_index, datatype=XSD.integer)))
+        g.add((s_node, SLR.iteration_kind, Literal(si.iteration_kind)))
+        g.add((s_node, SLR.database, Literal(si.database)))
+        if si.query:
+            g.add((s_node, SLR.search_query, Literal(si.query)))
+        if si.duration_ms:
+            g.add((s_node, SLR.duration_ms,
+                   Literal(round(si.duration_ms, 2), datatype=XSD.float)))
+        if si.started_at:
+            g.add((s_node, PROV.startedAtTime,
+                   Literal(si.started_at, datatype=XSD.dateTime)))
+        for pmid in si.new_pmids:
+            g.add((s_node, SLR.discovered_pmid, Literal(pmid)))
+        g.add((rev_uri, SLR.search_iteration_record, s_node))
+
+    # 4. AgentInvocation as prov:Activity nodes (one per LLM call).
+    for inv in (result.agent_invocations or []):
+        a_node = BNode()
+        g.add((a_node, RDF.type, SLR.AgentInvocation))
+        g.add((a_node, RDF.type, PROV.Activity))
+        g.add((a_node, SLR.agent_name, Literal(inv.agent_name)))
+        g.add((a_node, SLR.step_name, Literal(inv.step_name)))
+        g.add((a_node, SLR.iteration_mode, Literal(inv.iteration_mode)))
+        if inv.model_name:
+            g.add((a_node, SLR.model_name, Literal(inv.model_name)))
+        if inv.started_at:
+            g.add((a_node, PROV.startedAtTime,
+                   Literal(inv.started_at, datatype=XSD.dateTime)))
+        if inv.duration_ms:
+            g.add((a_node, SLR.duration_ms,
+                   Literal(round(inv.duration_ms, 2), datatype=XSD.float)))
+        if inv.input_tokens:
+            g.add((a_node, SLR.input_tokens,
+                   Literal(inv.input_tokens, datatype=XSD.integer)))
+        if inv.output_tokens:
+            g.add((a_node, SLR.output_tokens,
+                   Literal(inv.output_tokens, datatype=XSD.integer)))
+        if inv.requests:
+            g.add((a_node, SLR.requests,
+                   Literal(inv.requests, datatype=XSD.integer)))
+        if inv.tool_call_summary:
+            g.add((a_node, SLR.tool_call_summary, Literal(inv.tool_call_summary)))
+        if inv.target_pmid:
+            g.add((a_node, SLR.target_pmid, Literal(inv.target_pmid)))
+        if inv.target_outcome:
+            g.add((a_node, SLR.target_outcome, Literal(inv.target_outcome)))
+        g.add((a_node, SLR.succeeded,
+               Literal(inv.succeeded, datatype=XSD.boolean)))
+        g.add((rev_uri, SLR.agent_invocation, a_node))
+
+    # 5. Article content_sha256 hashes (already minted URIs; just attach).
+    for article in result.included_articles:
+        if getattr(article, "content_sha256", ""):
+            g.add((article_uri(article), SLR.content_sha256,
+                   Literal(article.content_sha256)))
 
 
 # ── Public API ────────────────────────────────────────────────────────────────

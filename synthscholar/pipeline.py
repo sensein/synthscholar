@@ -39,6 +39,8 @@ from .models import (
     Abstract,
     Introduction,
     Implications,
+    PlanIteration,
+    SearchIteration,
     DataExtractionField,
     DataExtractionSchema,
     SourceMetadata,
@@ -68,6 +70,11 @@ from .clients import (
     FullTextResolver,
 )
 from .evidence import extract_evidence
+from .provenance import (
+    ProvenanceCollector,
+    build_run_configuration,
+    content_sha256,
+)
 from .agents import (
     AgentDeps,
     build_model,
@@ -335,6 +342,44 @@ class AcquisitionResult:
     flow: PRISMAFlowCounts
 
 
+# Sentinel sources understood by the per-database tally; everything else
+# (e.g. OpenAlex, Europe PMC) lands in ``db_other_sources``.
+_KNOWN_DB_SOURCES = {"pubmed_search", "biorxiv", "medrxiv"}
+
+
+def _apply_per_db_tally(flow: PRISMAFlowCounts, all_articles: dict[str, Article]) -> None:
+    """Recompute every per-database PRISMA count from ``Article.source`` values.
+
+    Mutates ``flow`` in place: sets ``db_pubmed``, ``db_biorxiv``,
+    ``db_medrxiv``, ``db_related``, ``db_hops``, and ``db_other_sources``.
+    Idempotent — safe to call multiple times during discovery; each call
+    fully replaces previous tallies.
+    """
+    counts = {"db_pubmed": 0, "db_biorxiv": 0, "db_medrxiv": 0,
+              "db_related": 0, "db_hops": 0}
+    other: dict[str, int] = {}
+    for a in all_articles.values():
+        s = a.source or ""
+        if s == "pubmed_search":
+            counts["db_pubmed"] += 1
+        elif s == "biorxiv":
+            counts["db_biorxiv"] += 1
+        elif s == "medrxiv":
+            counts["db_medrxiv"] += 1
+        elif s.startswith("related_"):
+            counts["db_related"] += 1
+        elif s.startswith("hop_"):
+            counts["db_hops"] += 1
+        elif s:
+            other[s] = other.get(s, 0) + 1
+    flow.db_pubmed = counts["db_pubmed"]
+    flow.db_biorxiv = counts["db_biorxiv"]
+    flow.db_medrxiv = counts["db_medrxiv"]
+    flow.db_related = counts["db_related"]
+    flow.db_hops = counts["db_hops"]
+    flow.db_other_sources = other
+
+
 def _rerank_articles(articles: list[Article], question: str, max_n: int) -> list[Article]:
     """Return the top *max_n* articles ranked by heuristic relevance to *question*.
 
@@ -427,6 +472,63 @@ class PRISMAReviewPipeline:
         self._log.append(entry)
         print(entry)
 
+    async def _resolve_plan_with_iterations(
+        self,
+        strategy,
+        provenance: "ProvenanceCollector",
+        confirm_callback,
+        max_plan_iterations: int,
+        effective_auto: bool,
+        up,
+    ):
+        """Run the plan-confirmation loop, recording every iteration on `provenance`.
+
+        Returns the final approved (or auto-confirmed) strategy. Raises
+        :class:`PlanRejectedError` / :class:`MaxIterationsReachedError`
+        with iteration history already captured.
+        """
+        from datetime import timezone as _tz
+        proto = self.protocol
+        if not effective_auto and confirm_callback is not None:
+            for iteration in range(1, max_plan_iterations + 1):
+                plan = _build_review_plan(strategy, proto.question, iteration=iteration)
+                up(f"Awaiting plan confirmation (iteration {iteration})...")
+                response = confirm_callback(plan)
+                gen_at = datetime.now(_tz.utc).isoformat()
+                if response is True or response == "":
+                    provenance.record_plan_iteration(PlanIteration(
+                        iteration_index=iteration, plan_snapshot=plan,
+                        decision="approved", generated_at=gen_at,
+                        model_name=self.model_name,
+                    ))
+                    up("Plan approved.")
+                    return strategy
+                if response is False:
+                    provenance.record_plan_iteration(PlanIteration(
+                        iteration_index=iteration, plan_snapshot=plan,
+                        decision="rejected", generated_at=gen_at,
+                        model_name=self.model_name,
+                    ))
+                    raise PlanRejectedError(iterations=iteration)
+                feedback = str(response)
+                provenance.record_plan_iteration(PlanIteration(
+                    iteration_index=iteration, plan_snapshot=plan,
+                    user_feedback=feedback, decision="feedback",
+                    generated_at=gen_at, model_name=self.model_name,
+                ))
+                up(f"Revising strategy with feedback: {feedback[:80]}...")
+                strategy = await run_search_strategy(self.deps, user_feedback=feedback)
+            raise MaxIterationsReachedError(max_plan_iterations, max_plan_iterations)
+        # Auto-confirmed: record the single plan
+        plan = _build_review_plan(strategy, proto.question, iteration=1)
+        provenance.record_plan_iteration(PlanIteration(
+            iteration_index=1, plan_snapshot=plan,
+            decision="auto_confirmed",
+            generated_at=datetime.now(_tz.utc).isoformat(),
+            model_name=self.model_name,
+        ))
+        return strategy
+
     async def run(
         self,
         progress_callback: Optional[Callable[[str], None]] = None,  # existing — unchanged
@@ -448,6 +550,26 @@ class PRISMAReviewPipeline:
         all_screening: list[ScreeningLogEntry] = []
         all_articles: dict[str, Article] = {}
         seen_pmids: set[str] = set()
+
+        # Provenance collector for this run — captures plan iterations,
+        # agent invocations, search iterations, and run configuration.
+        provenance = ProvenanceCollector()
+        provenance.run_configuration = build_run_configuration(
+            protocol=proto,
+            review_id=proto.review_id or "",
+            model_name=self.model_name,
+            pipeline_kwargs={
+                "auto_confirm": auto_confirm,
+                "max_plan_iterations": max_plan_iterations,
+                "output_synthesis_style": output_synthesis_style,
+                "assemble_timeout": assemble_timeout,
+                "data_items": data_items,
+                "max_per_query": self.max_per_query,
+                "related_depth": self.related_depth,
+                "biorxiv_days": self.biorxiv_days,
+            },
+        )
+        self.deps.provenance = provenance
 
         _ckpt: dict = checkpoint or {}
         _ckpt_step: int = _ckpt.get("last_completed_step", 0)
@@ -564,30 +686,39 @@ class PRISMAReviewPipeline:
             )
             _effective_auto = True
 
-        if not _effective_auto and confirm_callback is not None:
-            for iteration in range(1, max_plan_iterations + 1):
-                plan = _build_review_plan(strategy, proto.question, iteration=iteration)
-                up(f"Awaiting plan confirmation (iteration {iteration})...")
-                response = confirm_callback(plan)
-                if response is True or response == "":
-                    up("Plan approved.")
-                    break
-                elif response is False:
-                    raise PlanRejectedError(iterations=iteration)
-                else:
-                    feedback = str(response)
-                    up(f"Revising strategy with feedback: {feedback[:80]}...")
-                    strategy = await run_search_strategy(self.deps, user_feedback=feedback)
-            else:
-                raise MaxIterationsReachedError(iteration, max_plan_iterations)
+        strategy = await self._resolve_plan_with_iterations(
+            strategy, provenance, confirm_callback,
+            max_plan_iterations, _effective_auto, up,
+        )
 
         pubmed_queries = strategy.pubmed_queries or [proto.question]
         biorxiv_queries = strategy.biorxiv_queries or []
         all_search_queries = pubmed_queries + biorxiv_queries
 
+        # Search-iteration recorder (one record per query / hop).
+        import time as _time
+        from datetime import timezone as _tz
+        _search_idx = [0]
+
+        def _record_search(*, kind: str, db: str, query: str,
+                           seed_pmids: list, new_pmids: list, dur_ms: float) -> None:
+            _search_idx[0] += 1
+            provenance.record_search_iteration(SearchIteration(
+                iteration_index=_search_idx[0],
+                iteration_kind=kind,
+                database=db,
+                query=query,
+                seed_pmids=list(seed_pmids),
+                new_pmids=list(new_pmids),
+                cumulative_count=len(all_articles),
+                duration_ms=dur_ms,
+                started_at=datetime.now(_tz.utc).isoformat(),
+            ))
+
         # ── 2. PubMed search ──
         for i, q in enumerate(pubmed_queries):
             up(f"PubMed search {i+1}/{len(pubmed_queries)}: {q[:60]}...")
+            _t0 = _time.monotonic()
             pmids = self.pubmed.search(
                 q, self.max_per_query,
                 proto.date_range_start, proto.date_range_end,
@@ -600,42 +731,57 @@ class PRISMAReviewPipeline:
                     a.source = "pubmed_search"
                     all_articles[a.pmid] = a
                 up(f"  Found {len(arts)} articles")
-        flow.db_pubmed = sum(
-            1 for a in all_articles.values() if a.source == "pubmed_search"
-        )
+            _record_search(
+                kind="initial_query", db="pubmed", query=q,
+                seed_pmids=[], new_pmids=new,
+                dur_ms=(_time.monotonic() - _t0) * 1000.0,
+            )
+        _apply_per_db_tally(flow, all_articles)
 
         # ── 3. bioRxiv / medRxiv search ──
         if "bioRxiv" in proto.databases and biorxiv_queries:
             for bq in biorxiv_queries[:3]:
                 up(f"bioRxiv search: {bq[:60]}...")
+                _t0 = _time.monotonic()
                 bx_arts = self.biorxiv.search(bq, 10, self.biorxiv_days)
+                _new = [a.pmid for a in bx_arts if a.pmid not in all_articles]
                 for a in bx_arts:
                     if a.pmid not in all_articles:
                         all_articles[a.pmid] = a
                 up(f"  Found {len(bx_arts)} preprints")
-        flow.db_biorxiv = sum(
-            1 for a in all_articles.values() if a.source == "biorxiv"
-        )
+                _record_search(
+                    kind="initial_query", db="biorxiv", query=bq,
+                    seed_pmids=[], new_pmids=_new,
+                    dur_ms=(_time.monotonic() - _t0) * 1000.0,
+                )
+        _apply_per_db_tally(flow, all_articles)
 
         if "medRxiv" in proto.databases and biorxiv_queries:
             for bq in biorxiv_queries[:3]:
                 up(f"medRxiv search: {bq[:60]}...")
+                _t0 = _time.monotonic()
                 mx_arts = self.medrxiv.search(bq, 10, self.biorxiv_days)
+                _new = [a.pmid for a in mx_arts if a.pmid not in all_articles]
                 for a in mx_arts:
                     if a.pmid not in all_articles:
                         all_articles[a.pmid] = a
                 up(f"  Found {len(mx_arts)} preprints")
+                _record_search(
+                    kind="initial_query", db="medrxiv", query=bq,
+                    seed_pmids=[], new_pmids=_new,
+                    dur_ms=(_time.monotonic() - _t0) * 1000.0,
+                )
 
         # ── 4. Related articles ──
         pm_pmids = [
             a.pmid for a in all_articles.values()
             if not a.pmid.startswith("biorxiv_")
         ]
-        related_total = 0
         if pm_pmids:
             seeds = pm_pmids[:8]
             for d in range(1, self.related_depth + 1):
                 up(f"Finding related articles (depth {d})...")
+                _t0 = _time.monotonic()
                 rel_pmids = self.pubmed.find_related(seeds, max_results=15)
                 new_rel = [p for p in rel_pmids if p not in all_articles]
                 if new_rel:
@@ -643,19 +789,23 @@ class PRISMAReviewPipeline:
                     for a in rel_arts:
                         a.source = f"related_{d}"
                         all_articles[a.pmid] = a
-                    related_total += len(rel_arts)
+                    _record_search(
+                        kind="related_articles", db="pubmed",
+                        query=f"related-depth-{d}", seed_pmids=seeds,
+                        new_pmids=new_rel,
+                        dur_ms=(_time.monotonic() - _t0) * 1000.0,
+                    )
                     seeds = [a.pmid for a in rel_arts[:5]]
                     up(f"  Depth {d}: {len(rel_arts)} articles")
                 else:
                     break
-        flow.db_related = related_total
 
         # ── 5. Multi-hop citation navigation ──
-        hop_total = 0
         if proto.max_hops > 0 and pm_pmids:
             hop_seeds = pm_pmids[:5]
             for hop in range(1, proto.max_hops + 1):
                 up(f"Citation hop {hop}...")
+                _t0 = _time.monotonic()
                 back = self.pubmed.find_related(hop_seeds, max_results=8)
                 fwd = self.pubmed.find_cited_by(hop_seeds, max_results=8)
                 combined = list(set(back + fwd))
@@ -667,12 +817,18 @@ class PRISMAReviewPipeline:
                         a.hop_level = hop
                         a.parent_id = ",".join(hop_seeds[:3])
                         all_articles[a.pmid] = a
-                    hop_total += len(hop_arts)
+                    _record_search(
+                        kind="citation_hop", db="pubmed",
+                        query=f"citation-hop-{hop}",
+                        seed_pmids=hop_seeds,
+                        new_pmids=[a.pmid for a in hop_arts],
+                        dur_ms=(_time.monotonic() - _t0) * 1000.0,
+                    )
                     hop_seeds = [a.pmid for a in hop_arts[:5]]
                     up(f"  Hop {hop}: {len(hop_arts)} articles")
                 else:
                     break
-        flow.db_hops = hop_total
+        _apply_per_db_tally(flow, all_articles)
         flow.total_identified = len(all_articles)
         up(f"Total identified: {flow.total_identified}")
 
@@ -788,6 +944,11 @@ class PRISMAReviewPipeline:
                     logger.info("Full-text resolver error on %s: %s", a.pmid, exc)
             up(f"  Resolver retrieved {resolved}/{len(unresolved)} additional full texts")
 
+        # 8a-bis. Compute SHA-256 content hashes for reproducibility.
+        for a in ta_included:
+            if a.full_text and not a.content_sha256:
+                a.content_sha256 = content_sha256(a.full_text)
+
         # 8b. Persist all fetched articles to ArticleStore for future reuse
         if art_store:
             try:
@@ -863,70 +1024,7 @@ class PRISMAReviewPipeline:
             up(f"Extracted {len(evidence)} evidence spans from {len(ft_included)} articles")
             await _save_ckpt(10, {"evidence": [e.model_dump() for e in evidence]})
 
-        # ── 11. Per-study data extraction (LLM agent) ──
-        if data_items:
-            _n_extr = len(ft_included)
-            up(f"Extracting data from {_n_extr} studies (concurrency={proto.article_concurrency})...")
-            _art_sem = asyncio.Semaphore(proto.article_concurrency)
-            _extr_done = [0]
-
-            async def _extract_one(i: int, art: Article) -> None:
-                async with _art_sem:
-                    up(f"  [{i+1}/{_n_extr}] {art.title[:50]}...")
-                    try:
-                        art.extracted_data = await run_data_extraction(art, data_items, self.deps)
-                    except Exception as e:
-                        up(f"  Data extraction failed for {art.pmid}: {e}")
-                    finally:
-                        _extr_done[0] += 1
-                        _rem = _n_extr - _extr_done[0]
-                        up(f"  ✓ {art.pmid} [{_extr_done[0]}/{_n_extr} done, {_rem} remaining]")
-
-            await asyncio.gather(*[_extract_one(i, art) for i, art in enumerate(ft_included)])
-
-        # ── 12. Per-study risk of bias (LLM agent) ──
-        if STAGE_ROB in _completed_stages:
-            if pg_store and proto.review_id:
-                rob_ckpts = await pg_store.load_checkpoints(proto.review_id, STAGE_ROB)
-                rob_map = {
-                    c.batch_index: c.result_json.get("rob")
-                    for c in rob_ckpts if c.status == "complete" and "rob" in c.result_json
-                }
-                for i, art in enumerate(ft_included):
-                    if i in rob_map and rob_map[i]:
-                        art.risk_of_bias = RiskOfBiasResult(**rob_map[i])
-            up(f"Resume: loaded RoB results from DB")
-            logger.info("stage_resumed stage=%s", STAGE_ROB)
-        else:
-            _n_rob = len(ft_included)
-            up(f"Assessing risk of bias ({proto.rob_tool.value}, concurrency={proto.article_concurrency})...")
-            _rob_sem = asyncio.Semaphore(proto.article_concurrency)
-            _rob_done = [0]
-
-            async def _rob_one(i: int, art: Article) -> None:
-                async with _rob_sem:
-                    up(f"  [{i+1}/{_n_rob}] {art.title[:50]}...")
-                    try:
-                        async def _do_rob(_a=art) -> dict:
-                            rob = await run_risk_of_bias(_a, self.deps)
-                            return {"rob": rob.model_dump()}
-
-                        payload = await _load_or_run_batch(
-                            pg_store, proto.review_id or "", STAGE_ROB, i,
-                            _do_rob, proto.max_batch_retries,
-                        )
-                        if "rob" in payload:
-                            art.risk_of_bias = RiskOfBiasResult(**payload["rob"])
-                    except Exception as e:
-                        up(f"  RoB failed for {art.pmid}: {e}")
-                    finally:
-                        _rob_done[0] += 1
-                        _rem = _n_rob - _rob_done[0]
-                        up(f"  ✓ {art.pmid} [{_rob_done[0]}/{_n_rob} done, {_rem} remaining]")
-
-            await asyncio.gather(*[_rob_one(i, art) for i, art in enumerate(ft_included)])
-
-        # ── Setup for charting and synthesis ──
+        # ── Setup for the per-article DAG and downstream synthesis ──
         flow_text = (
             f"Identified: {flow.total_identified} | "
             f"After dedup: {flow.after_dedup} | "
@@ -942,166 +1040,219 @@ class PRISMAReviewPipeline:
         appraisal_config = proto.critical_appraisal_config or default_appraisal_config()
         _resolved_cfg = _resolve_section_config(self.protocol)
 
-        # ── 13. Data charting (per-article) ──
-        data_charting_rubrics = []
-        if _ckpt_step >= 13:
+        # ── 11–15. Per-article DAG: RoB + Extract + (Chart → Appraise → Narrate)
+        # Every article runs as one independent task. Within the task three
+        # legs fire concurrently:
+        #
+        #   (1) Risk of bias                          — independent
+        #   (2) Per-study data extraction (if data_items)  — independent
+        #   (3) Charting → Appraisal → Narrative      — sequential chain
+        #
+        # All article tasks themselves run concurrently, gated by
+        # ``proto.article_concurrency``. With concurrency=N this fans out to
+        # at most N×3 in-flight LLM calls (since each article holds its slot
+        # for the duration of its slowest leg, with up to 3 calls in flight
+        # for that article at a time).
+        #
+        # Eliminates four corpus-wide barriers the old layout had
+        # (extract→RoB→chart→appraise→narrate), so a slow article never
+        # blocks faster ones.
+        #
+        # Each leg with DB checkpointing still uses ``_load_or_run_batch`` so
+        # per-article-per-stage resume works exactly as before. Local-fixture
+        # resume at ``_ckpt_step >= 15`` short-circuits the whole block.
+        data_charting_rubrics: list[DataChartingRubric] = []
+        critical_appraisals: list[CriticalAppraisalRubric] = []
+        critical_appraisal_results: list[CriticalAppraisalResult] = []
+        narrative_rows: list[PRISMANarrativeRow] = []
+
+        if _ckpt_step >= 15:
             data_charting_rubrics = [DataChartingRubric(**r) for r in _ckpt.get("data_charting_rubrics", [])]
+            critical_appraisals = [CriticalAppraisalRubric(**r) for r in _ckpt.get("critical_appraisals", [])]
+            narrative_rows = [PRISMANarrativeRow(**r) for r in _ckpt.get("narrative_rows", [])]
             _ckpt_ft = _ckpt.get("ft_included")
             if _ckpt_ft:
                 ft_included = [Article(**a) for a in _ckpt_ft]
-            up("Loaded data charting from checkpoint (step 13)")
-        elif STAGE_CHARTING in _completed_stages:
-            # Load all charting results from DB checkpoints
+            up("Loaded RoB/extract/charting/appraisal/narrative from checkpoint (step 15)")
+        elif (
+            STAGE_NARRATIVE in _completed_stages
+            and STAGE_APPRAISAL in _completed_stages
+            and STAGE_CHARTING in _completed_stages
+        ):
             if pg_store and proto.review_id:
-                db_ckpts = await pg_store.load_checkpoints(proto.review_id, STAGE_CHARTING)
+                # Hydrate RoB onto each article from DB if STAGE_ROB is present.
+                if STAGE_ROB in _completed_stages:
+                    rob_ckpts = await pg_store.load_checkpoints(proto.review_id, STAGE_ROB)
+                    rob_map = {
+                        c.batch_index: c.result_json.get("rob")
+                        for c in rob_ckpts if c.status == "complete" and "rob" in c.result_json
+                    }
+                    for i, art in enumerate(ft_included):
+                        if i in rob_map and rob_map[i]:
+                            art.risk_of_bias = RiskOfBiasResult(**rob_map[i])
+                chart_ckpts = await pg_store.load_checkpoints(proto.review_id, STAGE_CHARTING)
                 data_charting_rubrics = [
                     DataChartingRubric(**c.result_json["rubric"])
-                    for c in db_ckpts if c.status == "complete" and "rubric" in c.result_json
+                    for c in chart_ckpts if c.status == "complete" and "rubric" in c.result_json
                 ]
-                up(f"Resume: loaded {len(data_charting_rubrics)} charting results from DB")
-            logger.info("stage_resumed stage=%s skipped_batches=%d", STAGE_CHARTING, len(data_charting_rubrics))
-        else:
-            _n_chart = len(ft_included)
-            _chart_sem = asyncio.Semaphore(proto.article_concurrency)
-            _chart_results: list[DataChartingRubric | None] = [None] * _n_chart
-            _chart_done = [0]
-
-            async def _chart_one(idx: int, article: Article) -> None:
-                async with _chart_sem:
-                    _rem_start = _n_chart - _chart_done[0]
-                    up(f"  Charting [{idx+1}/{_n_chart}, {_rem_start} remaining] {article.pmid}…")
-                    try:
-                        async def _do_charting(_art=article) -> dict:
-                            rubric = await run_data_charting(
-                                _art, self.deps, charting_questions,
-                                resolved_section_config=_resolved_cfg,
-                                charting_template=charting_template,
-                            )
-                            return {"rubric": rubric.model_dump()}
-
-                        payload = await _load_or_run_batch(
-                            pg_store, proto.review_id or "", STAGE_CHARTING, idx,
-                            _do_charting, proto.max_batch_retries,
-                        )
-                        _chart_results[idx] = DataChartingRubric(**payload["rubric"])
-                    except Exception as exc:
-                        logger.warning("Charting failed for %s: %s", article.pmid, exc)
-                    finally:
-                        _chart_done[0] += 1
-                        _rem = _n_chart - _chart_done[0]
-                        up(f"  ✓ Charted {article.pmid} [{_chart_done[0]}/{_n_chart} done, {_rem} remaining]")
-
-            await asyncio.gather(*[_chart_one(idx, art) for idx, art in enumerate(ft_included)])
-            # Keep ft_included and rubrics aligned (drop articles whose charting failed)
-            paired = [(art, r) for art, r in zip(ft_included, _chart_results) if r is not None]
-            ft_included, data_charting_rubrics = ([p[0] for p in paired], [p[1] for p in paired])
-            await _save_ckpt(13, {
-                "data_charting_rubrics": [r.model_dump() for r in data_charting_rubrics],
-                "ft_included": [a.model_dump() for a in ft_included],
-            })
-
-        # ── 14. Critical appraisal (per-article) ──
-        critical_appraisals = []
-        critical_appraisal_results: list[CriticalAppraisalResult] = []
-        if _ckpt_step >= 14:
-            critical_appraisals = [CriticalAppraisalRubric(**r) for r in _ckpt.get("critical_appraisals", [])]
-            up("Loaded critical appraisals from checkpoint (step 14)")
-        elif STAGE_APPRAISAL in _completed_stages:
-            if pg_store and proto.review_id:
-                db_ckpts = await pg_store.load_checkpoints(proto.review_id, STAGE_APPRAISAL)
+                appr_ckpts = await pg_store.load_checkpoints(proto.review_id, STAGE_APPRAISAL)
                 critical_appraisals = [
                     CriticalAppraisalRubric(**c.result_json["appraisal"])
-                    for c in db_ckpts if c.status == "complete" and "appraisal" in c.result_json
+                    for c in appr_ckpts if c.status == "complete" and "appraisal" in c.result_json
                 ]
-                up(f"Resume: loaded {len(critical_appraisals)} appraisal results from DB")
-            logger.info("stage_resumed stage=%s", STAGE_APPRAISAL)
-        else:
-            _n_appr = len(ft_included)
-            _appraisal_sem = asyncio.Semaphore(proto.article_concurrency)
-            _appraisal_results: list[tuple[CriticalAppraisalRubric, CriticalAppraisalResult | None] | None] = [None] * _n_appr
-            _appr_done = [0]
-
-            async def _appraise_one(idx: int, article: Article, rubric: "DataChartingRubric") -> None:
-                async with _appraisal_sem:
-                    _rem_start = _n_appr - _appr_done[0]
-                    up(f"  Appraising [{idx+1}/{_n_appr}, {_rem_start} remaining] {article.pmid}…")
-                    try:
-                        async def _do_appraisal(_art=article, _rub=rubric) -> dict:
-                            ap_rubric, ap_result = await run_critical_appraisal(
-                                _art, _rub, self.deps, appraisal_domains,
-                                appraisal_config=appraisal_config,
-                            )
-                            return {"appraisal": ap_rubric.model_dump(), "result": ap_result.model_dump()}
-
-                        payload = await _load_or_run_batch(
-                            pg_store, proto.review_id or "", STAGE_APPRAISAL, idx,
-                            _do_appraisal, proto.max_batch_retries,
-                        )
-                        ap_rubric = CriticalAppraisalRubric(**payload["appraisal"])
-                        ap_res = CriticalAppraisalResult(**payload["result"]) if "result" in payload else None
-                        _appraisal_results[idx] = (ap_rubric, ap_res)
-                    except Exception as exc:
-                        logger.warning("Appraisal failed for %s: %s", article.pmid, exc)
-                    finally:
-                        _appr_done[0] += 1
-                        _rem = _n_appr - _appr_done[0]
-                        up(f"  ✓ Appraised {article.pmid} [{_appr_done[0]}/{_n_appr} done, {_rem} remaining]")
-
-            await asyncio.gather(*[_appraise_one(idx, art, rub) for idx, (art, rub) in enumerate(zip(ft_included, data_charting_rubrics))])
-            for entry in _appraisal_results:
-                if entry is not None:
-                    critical_appraisals.append(entry[0])
-                    if entry[1] is not None:
-                        critical_appraisal_results.append(entry[1])
-            await _save_ckpt(14, {
-                "critical_appraisals": [r.model_dump() for r in critical_appraisals],
-            })
-
-        # ── 15. Narrative rows (per-article) ──
-        narrative_rows = []
-        if _ckpt_step >= 15:
-            narrative_rows = [PRISMANarrativeRow(**r) for r in _ckpt.get("narrative_rows", [])]
-            up("Loaded narrative rows from checkpoint (step 15)")
-        elif STAGE_NARRATIVE in _completed_stages:
-            if pg_store and proto.review_id:
-                db_ckpts = await pg_store.load_checkpoints(proto.review_id, STAGE_NARRATIVE)
+                narr_ckpts = await pg_store.load_checkpoints(proto.review_id, STAGE_NARRATIVE)
                 narrative_rows = [
                     PRISMANarrativeRow(**c.result_json["row"])
-                    for c in db_ckpts if c.status == "complete" and "row" in c.result_json
+                    for c in narr_ckpts if c.status == "complete" and "row" in c.result_json
                 ]
-                up(f"Resume: loaded {len(narrative_rows)} narrative rows from DB")
-            logger.info("stage_resumed stage=%s", STAGE_NARRATIVE)
+                up(
+                    f"Resume: loaded {len(data_charting_rubrics)} charting / "
+                    f"{len(critical_appraisals)} appraisal / {len(narrative_rows)} narrative from DB"
+                )
+            logger.info(
+                "stage_resumed stage=%s+%s+%s",
+                STAGE_CHARTING, STAGE_APPRAISAL, STAGE_NARRATIVE,
+            )
         else:
-            _n_narr = len(data_charting_rubrics)
-            _narr_sem = asyncio.Semaphore(proto.article_concurrency)
-            _narr_results: list[PRISMANarrativeRow | None] = [None] * _n_narr
-            _narr_done = [0]
+            n = len(ft_included)
+            extract_note = " + extract" if data_items else ""
+            up(
+                f"Per-article DAG: RoB{extract_note} + chart→appraise→narrate "
+                f"(concurrency={proto.article_concurrency})..."
+            )
+            _dag_sem = asyncio.Semaphore(proto.article_concurrency)
+            _chart_r: list[DataChartingRubric | None] = [None] * n
+            _appraisal_r: list[CriticalAppraisalRubric | None] = [None] * n
+            _appraisal_rs: list[CriticalAppraisalResult | None] = [None] * n
+            _narr_r: list[PRISMANarrativeRow | None] = [None] * n
+            _done = [0]
 
-            async def _narr_one(idx: int, rubric: "DataChartingRubric", appraisal_rubric: "CriticalAppraisalRubric") -> None:
-                async with _narr_sem:
-                    _rem_start = _n_narr - _narr_done[0]
-                    up(f"  Narrative [{idx+1}/{_n_narr}, {_rem_start} remaining] {rubric.source_id}…")
-                    try:
-                        async def _do_narrative(_rub=rubric, _ap=appraisal_rubric) -> dict:
-                            row = await run_narrative_row(_rub, _ap, self.deps)
-                            return {"row": row.model_dump()}
+            async def _process_article(idx: int, article: Article) -> None:
+                async with _dag_sem:
+                    # ── Leg A: Risk of bias (independent, DB-checkpointed) ──
+                    async def _rob_leg() -> None:
+                        try:
+                            async def _do_rob(_a=article) -> dict:
+                                rob = await run_risk_of_bias(_a, self.deps)
+                                return {"rob": rob.model_dump()}
 
-                        payload = await _load_or_run_batch(
-                            pg_store, proto.review_id or "", STAGE_NARRATIVE, idx,
-                            _do_narrative, proto.max_batch_retries,
-                        )
-                        _narr_results[idx] = PRISMANarrativeRow(**payload["row"])
-                    except Exception as exc:
-                        logger.warning("Narrative row failed: %s", exc)
-                    finally:
-                        _narr_done[0] += 1
-                        _rem = _n_narr - _narr_done[0]
-                        up(f"  ✓ Narrative {rubric.source_id} [{_narr_done[0]}/{_n_narr} done, {_rem} remaining]")
+                            payload = await _load_or_run_batch(
+                                pg_store, proto.review_id or "", STAGE_ROB, idx,
+                                _do_rob, proto.max_batch_retries,
+                            )
+                            if "rob" in payload:
+                                article.risk_of_bias = RiskOfBiasResult(**payload["rob"])
+                        except Exception as exc:
+                            logger.warning("RoB failed for %s: %s", article.pmid, exc)
 
-            await asyncio.gather(*[_narr_one(idx, rub, ap) for idx, (rub, ap) in enumerate(zip(data_charting_rubrics, critical_appraisals))])
-            narrative_rows = [r for r in _narr_results if r is not None]
+                    # ── Leg B: Per-study data extraction (independent, no DB ckpt) ──
+                    async def _extract_leg() -> None:
+                        if not data_items:
+                            return
+                        try:
+                            article.extracted_data = await run_data_extraction(
+                                article, data_items, self.deps,
+                            )
+                        except Exception as exc:
+                            logger.warning("Data extraction failed for %s: %s", article.pmid, exc)
+
+                    # ── Leg C: Charting → Appraisal → Narrative (chained) ──
+                    async def _chain_leg() -> None:
+                        # Charting
+                        try:
+                            async def _do_charting(_art=article) -> dict:
+                                rubric_local = await run_data_charting(
+                                    _art, self.deps, charting_questions,
+                                    resolved_section_config=_resolved_cfg,
+                                    charting_template=charting_template,
+                                )
+                                return {"rubric": rubric_local.model_dump()}
+
+                            payload = await _load_or_run_batch(
+                                pg_store, proto.review_id or "", STAGE_CHARTING, idx,
+                                _do_charting, proto.max_batch_retries,
+                            )
+                            rubric = DataChartingRubric(**payload["rubric"])
+                            _chart_r[idx] = rubric
+                        except Exception as exc:
+                            logger.warning("Charting failed for %s: %s", article.pmid, exc)
+                            return
+
+                        # Appraisal (consumes rubric)
+                        try:
+                            async def _do_appraisal(_art=article, _rub=rubric) -> dict:
+                                ap_rubric_local, ap_result_local = await run_critical_appraisal(
+                                    _art, _rub, self.deps, appraisal_domains,
+                                    appraisal_config=appraisal_config,
+                                )
+                                return {
+                                    "appraisal": ap_rubric_local.model_dump(),
+                                    "result": ap_result_local.model_dump(),
+                                }
+
+                            payload = await _load_or_run_batch(
+                                pg_store, proto.review_id or "", STAGE_APPRAISAL, idx,
+                                _do_appraisal, proto.max_batch_retries,
+                            )
+                            ap_rubric = CriticalAppraisalRubric(**payload["appraisal"])
+                            ap_res = (
+                                CriticalAppraisalResult(**payload["result"])
+                                if "result" in payload else None
+                            )
+                            _appraisal_r[idx] = ap_rubric
+                            _appraisal_rs[idx] = ap_res
+                        except Exception as exc:
+                            logger.warning("Appraisal failed for %s: %s", article.pmid, exc)
+                            return
+
+                        # Narrative (consumes rubric + appraisal)
+                        try:
+                            async def _do_narrative(_rub=rubric, _ap=ap_rubric) -> dict:
+                                row = await run_narrative_row(_rub, _ap, self.deps)
+                                return {"row": row.model_dump()}
+
+                            payload = await _load_or_run_batch(
+                                pg_store, proto.review_id or "", STAGE_NARRATIVE, idx,
+                                _do_narrative, proto.max_batch_retries,
+                            )
+                            _narr_r[idx] = PRISMANarrativeRow(**payload["row"])
+                        except Exception as exc:
+                            logger.warning("Narrative row failed for %s: %s", article.pmid, exc)
+
+                    # Three legs run as siblings; chain leg gates on its own
+                    # internal sequential dependencies, RoB + extract are
+                    # truly independent.
+                    await asyncio.gather(_rob_leg(), _extract_leg(), _chain_leg())
+
+                    _done[0] += 1
+                    up(
+                        f"  ✓ {article.pmid} per-article work complete "
+                        f"[{_done[0]}/{n} done, {n - _done[0]} remaining]"
+                    )
+
+            await asyncio.gather(*[_process_article(i, art) for i, art in enumerate(ft_included)])
+
+            # Reconcile: keep only articles where every leg succeeded so the
+            # downstream lists stay aligned by index. Articles that failed any
+            # leg are dropped from `ft_included` (mirrors the old behaviour
+            # where charting failures filtered the list).
+            keep = [
+                i for i in range(n)
+                if _chart_r[i] is not None and _appraisal_r[i] is not None and _narr_r[i] is not None
+            ]
+            ft_included = [ft_included[i] for i in keep]
+            data_charting_rubrics = [_chart_r[i] for i in keep]  # type: ignore[misc]
+            critical_appraisals = [_appraisal_r[i] for i in keep]  # type: ignore[misc]
+            critical_appraisal_results = [
+                _appraisal_rs[i] for i in keep if _appraisal_rs[i] is not None
+            ]  # type: ignore[misc]
+            narrative_rows = [_narr_r[i] for i in keep]  # type: ignore[misc]
+
             await _save_ckpt(15, {
+                "data_charting_rubrics": [r.model_dump() for r in data_charting_rubrics],
+                "critical_appraisals": [r.model_dump() for r in critical_appraisals],
                 "narrative_rows": [r.model_dump() for r in narrative_rows],
+                "ft_included": [a.model_dump() for a in ft_included],
             })
 
         # ── 16. Grounded synthesis (LLM agent, chunked for large reviews) ──
@@ -1308,7 +1459,10 @@ class PRISMAReviewPipeline:
             except Exception as exc:
                 logger.warning("PrismaReview assembly failed: %s", exc)
 
-        # ── Persist result to PostgreSQL cache ──
+        # Stamp provenance onto the final result.
+        provenance.stamp(final_result)
+
+        # ── Persist result + provenance trail to PostgreSQL ──
         if pg_store:
             try:
                 await cache_store(
@@ -1322,6 +1476,35 @@ class PRISMAReviewPipeline:
                     is_shared=proto.share_to_cache,
                 )
                 up("Result stored in review cache.")
+                # Provenance telemetry — only when we have a stable review_id.
+                if proto.review_id:
+                    try:
+                        ok = await pg_store.store_telemetry(
+                            review_id=proto.review_id,
+                            run_configuration=(
+                                provenance.run_configuration.model_dump(mode="json")
+                                if provenance.run_configuration else None
+                            ),
+                            plan_iterations=[
+                                p.model_dump(mode="json")
+                                for p in provenance.plan_iterations
+                            ],
+                            agent_invocations=[
+                                i.model_dump(mode="json")
+                                for i in provenance.agent_invocations
+                            ],
+                            search_iterations=[
+                                s.model_dump(mode="json")
+                                for s in provenance.search_iterations
+                            ],
+                        )
+                        if ok:
+                            up(f"Provenance trail stored "
+                               f"({len(provenance.agent_invocations)} invocations, "
+                               f"{len(provenance.plan_iterations)} plan iter, "
+                               f"{len(provenance.search_iterations)} search iter).")
+                    except Exception as exc:
+                        logger.warning("Failed to store telemetry (%s).", exc)
             except Exception as exc:
                 logger.warning("Failed to store result in cache (%s).", exc)
             finally:
@@ -1354,6 +1537,12 @@ class PRISMAReviewPipeline:
         all_articles: dict[str, Article] = {}
         seen_pmids: set[str] = set()
 
+        # Provenance collector for the shared article-acquisition phase
+        # (compare-mode reuses this across sub-pipelines).
+        provenance = self.deps.provenance or ProvenanceCollector()
+        if self.deps.provenance is None:
+            self.deps.provenance = provenance
+
         def up(msg: str) -> None:
             self.log(msg)
             if progress_callback:
@@ -1369,22 +1558,10 @@ class PRISMAReviewPipeline:
         if not auto_confirm and confirm_callback is None and not sys.stdin.isatty():
             _effective_auto = True
 
-        if not _effective_auto and confirm_callback is not None:
-            for iteration in range(1, max_plan_iterations + 1):
-                plan = _build_review_plan(strategy, proto.question, iteration=iteration)
-                up(f"Awaiting plan confirmation (iteration {iteration})...")
-                response = confirm_callback(plan)
-                if response is True or response == "":
-                    up("Plan approved.")
-                    break
-                elif response is False:
-                    raise PlanRejectedError(iterations=iteration)
-                else:
-                    feedback = str(response)
-                    up(f"Revising strategy with feedback: {feedback[:80]}...")
-                    strategy = await run_search_strategy(self.deps, user_feedback=feedback)
-            else:
-                raise MaxIterationsReachedError(iteration, max_plan_iterations)
+        strategy = await self._resolve_plan_with_iterations(
+            strategy, provenance, confirm_callback,
+            max_plan_iterations, _effective_auto, up,
+        )
 
         pubmed_queries = strategy.pubmed_queries or [proto.question]
         biorxiv_queries = strategy.biorxiv_queries or []
@@ -1402,7 +1579,7 @@ class PRISMAReviewPipeline:
                     a.source = "pubmed_search"
                     all_articles[a.pmid] = a
                 up(f"  Found {len(arts)} articles")
-        flow.db_pubmed = sum(1 for a in all_articles.values() if a.source == "pubmed_search")
+        _apply_per_db_tally(flow, all_articles)
 
         # 3. bioRxiv search
         if "bioRxiv" in proto.databases and biorxiv_queries:
@@ -1413,11 +1590,10 @@ class PRISMAReviewPipeline:
                     if a.pmid not in all_articles:
                         all_articles[a.pmid] = a
                 up(f"  Found {len(bx_arts)} preprints")
-        flow.db_biorxiv = sum(1 for a in all_articles.values() if a.source == "biorxiv")
+        _apply_per_db_tally(flow, all_articles)
 
         # 4. Related articles
         pm_pmids = [a.pmid for a in all_articles.values() if not a.pmid.startswith("biorxiv_")]
-        related_total = 0
         if pm_pmids:
             seeds = pm_pmids[:8]
             for d in range(1, self.related_depth + 1):
@@ -1429,15 +1605,11 @@ class PRISMAReviewPipeline:
                     for a in rel_arts:
                         a.source = f"related_{d}"
                         all_articles[a.pmid] = a
-                    related_total += len(rel_arts)
                     seeds = [a.pmid for a in rel_arts[:5]]
                     up(f"  Depth {d}: {len(rel_arts)} articles")
                 else:
                     break
-        flow.db_related = related_total
-
         # 5. Citation hops
-        hop_total = 0
         if proto.max_hops > 0 and pm_pmids:
             hop_seeds = pm_pmids[:5]
             for hop in range(1, proto.max_hops + 1):
@@ -1453,12 +1625,11 @@ class PRISMAReviewPipeline:
                         a.hop_level = hop
                         a.parent_id = ",".join(hop_seeds[:3])
                         all_articles[a.pmid] = a
-                    hop_total += len(hop_arts)
                     hop_seeds = [a.pmid for a in hop_arts[:5]]
                     up(f"  Hop {hop}: {len(hop_arts)} articles")
                 else:
                     break
-        flow.db_hops = hop_total
+        _apply_per_db_tally(flow, all_articles)
         flow.total_identified = len(all_articles)
         up(f"Total identified: {flow.total_identified}")
 
@@ -1502,6 +1673,22 @@ class PRISMAReviewPipeline:
         proto = self.protocol
         flow = copy.copy(initial_flow)
         all_screening: list[ScreeningLogEntry] = []
+
+        # Per-sub-pipeline provenance collector for compare-mode (each
+        # model gets its own AgentInvocation trail).
+        if self.deps.provenance is None:
+            self.deps.provenance = ProvenanceCollector()
+            self.deps.provenance.run_configuration = build_run_configuration(
+                protocol=proto,
+                review_id=proto.review_id or "",
+                model_name=self.model_name,
+                pipeline_kwargs={
+                    "compare_mode": True,
+                    "output_synthesis_style": output_synthesis_style,
+                    "assemble_timeout": assemble_timeout,
+                    "data_items": data_items,
+                },
+            )
 
         def up(msg: str) -> None:
             self.log(msg)
@@ -1596,44 +1783,10 @@ class PRISMAReviewPipeline:
         evidence = await extract_evidence(ft_included, self.deps, concurrency=proto.article_concurrency)
         up(f"Extracted {len(evidence)} evidence spans from {len(ft_included)} articles")
 
-        # 11. Per-study data extraction (parallel)
-        if data_items:
-            _n_extr_c = len(ft_included)
-            up(f"Extracting data from {_n_extr_c} studies (concurrency={proto.article_concurrency})...")
-            _extr_sem_c = asyncio.Semaphore(proto.article_concurrency)
-            _extr_done_c = [0]
-
-            async def _extract_one_c(i: int, art: Article) -> None:
-                async with _extr_sem_c:
-                    up(f"  [{i+1}/{_n_extr_c}] {art.title[:50]}...")
-                    try:
-                        art.extracted_data = await run_data_extraction(art, data_items, self.deps)
-                    except Exception as e:
-                        up(f"  Data extraction failed for {art.pmid}: {e}")
-                    finally:
-                        _extr_done_c[0] += 1
-                        up(f"  ✓ {art.pmid} [{_extr_done_c[0]}/{_n_extr_c} done, {_n_extr_c - _extr_done_c[0]} remaining]")
-
-            await asyncio.gather(*[_extract_one_c(i, art) for i, art in enumerate(ft_included)])
-
-        # 12. Risk of bias (parallel)
-        _n_rob_c = len(ft_included)
-        up(f"Assessing risk of bias ({proto.rob_tool.value}, concurrency={proto.article_concurrency})...")
-        _rob_sem_c = asyncio.Semaphore(proto.article_concurrency)
-        _rob_done_c = [0]
-
-        async def _rob_one_c(i: int, art: Article) -> None:
-            async with _rob_sem_c:
-                up(f"  [{i+1}/{_n_rob_c}] {art.title[:50]}...")
-                try:
-                    art.risk_of_bias = await run_risk_of_bias(art, self.deps)
-                except Exception as e:
-                    up(f"  RoB failed for {art.pmid}: {e}")
-                finally:
-                    _rob_done_c[0] += 1
-                    up(f"  ✓ {art.pmid} [{_rob_done_c[0]}/{_n_rob_c} done, {_n_rob_c - _rob_done_c[0]} remaining]")
-
-        await asyncio.gather(*[_rob_one_c(i, art) for i, art in enumerate(ft_included)])
+        # Per-article DAG legs 11/12 (RoB + extract) are now folded into the
+        # block 15 DAG below — see the per-article DAG section a few blocks
+        # down. The variables initialised there cover all per-article work
+        # (RoB, extract, chart, appraise, narrate) in one fused fan-out.
 
         # 13+14. Synthesis + bias + GRADE + limitations — all independent, run concurrently
         flow_text = (
@@ -1676,82 +1829,95 @@ class PRISMAReviewPipeline:
         narrative_rows = []
         _resolved_cfg = _resolve_section_config(proto)
 
-        # 15a. Data charting (parallel)
-        _n_chart_c = len(ft_included)
-        _chart_sem_c = asyncio.Semaphore(proto.article_concurrency)
-        _chart_results_c: list = [None] * _n_chart_c
-        _chart_done_c = [0]
+        # 15. Charting + appraisal + narrative as a per-article DAG.
+        # All articles run concurrently (semaphore-bounded); each article
+        # streams chart → appraise → narrate without waiting on a corpus-wide
+        # barrier between legs.
+        _n = len(ft_included)
+        _dag_sem_c = asyncio.Semaphore(proto.article_concurrency)
+        _chart_r_c: list = [None] * _n
+        _appr_rub_c: list = [None] * _n
+        _appr_res_c: list = [None] * _n
+        _narr_r_c: list = [None] * _n
+        _done_c = [0]
 
-        async def _chart_one_c(idx: int, article: Article) -> None:
-            async with _chart_sem_c:
-                _rem = _n_chart_c - _chart_done_c[0]
-                up(f"  Charting [{idx+1}/{_n_chart_c}, {_rem} remaining] {article.pmid}…")
-                try:
-                    rubric = await run_data_charting(
-                        article, self.deps, charting_questions,
-                        resolved_section_config=_resolved_cfg,
-                        charting_template=charting_template,
-                    )
-                    _chart_results_c[idx] = rubric
-                except Exception as exc:
-                    logger.warning("Charting failed for %s: %s", article.pmid, exc)
-                finally:
-                    _chart_done_c[0] += 1
-                    up(f"  ✓ Charted {article.pmid} [{_chart_done_c[0]}/{_n_chart_c} done, {_n_chart_c - _chart_done_c[0]} remaining]")
+        async def _process_article_c(idx: int, article: Article) -> None:
+            async with _dag_sem_c:
+                # ── Leg A: Risk of bias (independent) ──
+                async def _rob_leg() -> None:
+                    try:
+                        article.risk_of_bias = await run_risk_of_bias(article, self.deps)
+                    except Exception as exc:
+                        logger.warning("RoB failed for %s: %s", article.pmid, exc)
 
-        await asyncio.gather(*[_chart_one_c(idx, art) for idx, art in enumerate(ft_included)])
-        paired_c = [(art, r) for art, r in zip(ft_included, _chart_results_c) if r is not None]
-        ft_included_c = [p[0] for p in paired_c]
-        data_charting_rubrics = [p[1] for p in paired_c]
+                # ── Leg B: Per-study data extraction (independent) ──
+                async def _extract_leg() -> None:
+                    if not data_items:
+                        return
+                    try:
+                        article.extracted_data = await run_data_extraction(
+                            article, data_items, self.deps,
+                        )
+                    except Exception as exc:
+                        logger.warning("Data extraction failed for %s: %s", article.pmid, exc)
 
-        # 15b. Critical appraisal (parallel)
-        _n_appr_c = len(ft_included_c)
-        _appr_sem_c = asyncio.Semaphore(proto.article_concurrency)
-        _appr_results_c: list = [None] * _n_appr_c
-        _appr_done_c = [0]
+                # ── Leg C: Charting → Appraisal → Narrative (chained) ──
+                async def _chain_leg() -> None:
+                    try:
+                        rubric = await run_data_charting(
+                            article, self.deps, charting_questions,
+                            resolved_section_config=_resolved_cfg,
+                            charting_template=charting_template,
+                        )
+                        _chart_r_c[idx] = rubric
+                    except Exception as exc:
+                        logger.warning("Charting failed for %s: %s", article.pmid, exc)
+                        return
 
-        async def _appraise_one_c(idx: int, article: Article, rubric) -> None:
-            async with _appr_sem_c:
-                _rem = _n_appr_c - _appr_done_c[0]
-                up(f"  Appraising [{idx+1}/{_n_appr_c}, {_rem} remaining] {article.pmid}…")
-                try:
-                    ap_rubric, ap_result = await run_critical_appraisal(
-                        article, rubric, self.deps, None, appraisal_config=appraisal_config,
-                    )
-                    _appr_results_c[idx] = (ap_rubric, ap_result)
-                except Exception as exc:
-                    logger.warning("Appraisal failed for %s: %s", article.pmid, exc)
-                finally:
-                    _appr_done_c[0] += 1
-                    up(f"  ✓ Appraised {article.pmid} [{_appr_done_c[0]}/{_n_appr_c} done, {_n_appr_c - _appr_done_c[0]} remaining]")
+                    try:
+                        ap_rubric, ap_result = await run_critical_appraisal(
+                            article, rubric, self.deps, None,
+                            appraisal_config=appraisal_config,
+                        )
+                        _appr_rub_c[idx] = ap_rubric
+                        _appr_res_c[idx] = ap_result
+                    except Exception as exc:
+                        logger.warning("Appraisal failed for %s: %s", article.pmid, exc)
+                        return
 
-        await asyncio.gather(*[_appraise_one_c(idx, art, rub) for idx, (art, rub) in enumerate(zip(ft_included_c, data_charting_rubrics))])
-        for entry in _appr_results_c:
-            if entry is not None:
-                critical_appraisals.append(entry[0])
-                critical_appraisal_results.append(entry[1])
+                    try:
+                        row = await run_narrative_row(rubric, ap_rubric, self.deps)
+                        _narr_r_c[idx] = row
+                    except Exception as exc:
+                        logger.warning("Narrative row failed for %s: %s", article.pmid, exc)
 
-        # 15c. Narrative rows (parallel)
-        _n_narr_c = len(data_charting_rubrics)
-        _narr_sem_c = asyncio.Semaphore(proto.article_concurrency)
-        _narr_results_c: list = [None] * _n_narr_c
-        _narr_done_c = [0]
+                await asyncio.gather(_rob_leg(), _extract_leg(), _chain_leg())
 
-        async def _narr_one_c(idx: int, rubric, ap_rubric) -> None:
-            async with _narr_sem_c:
-                _rem = _n_narr_c - _narr_done_c[0]
-                up(f"  Narrative [{idx+1}/{_n_narr_c}, {_rem} remaining] {rubric.source_id}…")
-                try:
-                    row = await run_narrative_row(rubric, ap_rubric, self.deps)
-                    _narr_results_c[idx] = row
-                except Exception as exc:
-                    logger.warning("Narrative row failed: %s", exc)
-                finally:
-                    _narr_done_c[0] += 1
-                    up(f"  ✓ Narrative {rubric.source_id} [{_narr_done_c[0]}/{_n_narr_c} done, {_n_narr_c - _narr_done_c[0]} remaining]")
+                _done_c[0] += 1
+                up(
+                    f"  ✓ {article.pmid} per-article work complete "
+                    f"[{_done_c[0]}/{_n} done, {_n - _done_c[0]} remaining]"
+                )
 
-        await asyncio.gather(*[_narr_one_c(idx, rub, ap) for idx, (rub, ap) in enumerate(zip(data_charting_rubrics, critical_appraisals))])
-        narrative_rows = [r for r in _narr_results_c if r is not None]
+        extract_note = " + extract" if data_items else ""
+        up(
+            f"  Per-article DAG: RoB{extract_note} + chart→appraise→narrate "
+            f"(concurrency={proto.article_concurrency})..."
+        )
+        await asyncio.gather(*[_process_article_c(i, art) for i, art in enumerate(ft_included)])
+
+        # Reconcile lists by article index, dropping any with a failed leg.
+        keep = [
+            i for i in range(_n)
+            if _chart_r_c[i] is not None and _appr_rub_c[i] is not None and _narr_r_c[i] is not None
+        ]
+        ft_included = [ft_included[i] for i in keep]
+        data_charting_rubrics = [_chart_r_c[i] for i in keep]
+        critical_appraisals = [_appr_rub_c[i] for i in keep]
+        critical_appraisal_results = [
+            _appr_res_c[i] for i in keep if _appr_res_c[i] is not None
+        ]
+        narrative_rows = [_narr_r_c[i] for i in keep]
 
         grade_summary = "; ".join(f"{k}: {v.overall_certainty.value}" for k, v in grade_assessments.items())
         flow_text_short = f"{flow.total_identified} identified, {flow.included_synthesis} included"
@@ -1829,6 +1995,10 @@ class PRISMAReviewPipeline:
                    f"{len(pr.results.extracted_studies or [])} studies")
             except Exception as exc:
                 logger.warning("PrismaReview assembly failed: %s", exc)
+
+        # Stamp provenance onto compare-mode sub-pipeline result.
+        if self.deps.provenance is not None:
+            self.deps.provenance.stamp(final_result)
 
         return final_result
 
