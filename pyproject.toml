@@ -59,9 +59,13 @@ fulltext = [
     "pymupdf>=1.24",
     "feedparser>=6.0",
 ]
+semantic = [
+    "sentence-transformers>=2.2",
+]
 
 [project.scripts]
 synthscholar = "synthscholar.main:main"
+synthscholar-search = "synthscholar.search_cli:main"
 
 [project.urls]
 Repository = "https://github.com/sensein/synthscholar"
