@@ -28,6 +28,40 @@ from .similarity import compute_fingerprint, compute_similarity
 logger = logging.getLogger(__name__)
 
 
+# ── psycopg3 compatibility helpers ────────────────────────────────────────────
+# The cache code was originally written assuming asyncpg's connection-level
+# `fetch / fetchrow / fetchval` methods, which don't exist in psycopg3. These
+# helpers emulate those signatures using psycopg3's cursor pattern, taking a
+# single positional `params` sequence (instead of asyncpg's positional varargs)
+# to keep callers tidy.
+
+
+async def _fetchall_dict(conn, sql, params: tuple = ()):
+    """psycopg3 equivalent of asyncpg's ``conn.fetch(sql, *params)``."""
+    if not _PSYCOPG:
+        raise CacheUnavailableError("psycopg[async] not installed")
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(sql, params)
+        return await cur.fetchall()
+
+
+async def _fetchone_dict(conn, sql, params: tuple = ()):
+    """psycopg3 equivalent of asyncpg's ``conn.fetchrow(sql, *params)``."""
+    if not _PSYCOPG:
+        raise CacheUnavailableError("psycopg[async] not installed")
+    async with conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(sql, params)
+        return await cur.fetchone()
+
+
+async def _fetchval(conn, sql, params: tuple = ()):
+    """psycopg3 equivalent of asyncpg's ``conn.fetchval(sql, *params)``."""
+    async with conn.cursor() as cur:
+        await cur.execute(sql, params)
+        row = await cur.fetchone()
+        return row[0] if row else None
+
+
 class CacheStore:
     """Async PostgreSQL cache store for PRISMA review results.
 
@@ -45,6 +79,11 @@ class CacheStore:
         self._dsn = dsn
         self._pool_size = pool_size
         self._pool: AsyncConnectionPool | None = None
+        # Cached at connect-time. True when migration 004 has added the
+        # ``embedding`` column on ``review_cache``. Controls whether
+        # store_entry writes embeddings and whether semantic-review-search
+        # is callable.
+        self._has_embeddings: bool = False
 
     async def connect(self) -> None:
         self._pool = AsyncConnectionPool(
@@ -55,6 +94,7 @@ class CacheStore:
         )
         await self._pool.open()
         await self._ensure_schema()
+        self._has_embeddings = await self._has_review_embeddings()
 
     async def close(self) -> None:
         if self._pool:
@@ -99,8 +139,8 @@ class CacheStore:
         """
         assert self._pool
         async with self._pool.connection() as conn:
-            conn.row_factory = dict_row
-            row = await conn.fetchrow(
+            row = await _fetchone_dict(
+                conn,
                 """
                 SELECT id, criteria_fingerprint, criteria_json, model_name,
                        result_json, created_at, expires_at, review_id, is_shared
@@ -108,8 +148,7 @@ class CacheStore:
                 WHERE criteria_fingerprint = %s
                   AND (is_shared = TRUE OR review_id = %s)
                 """,
-                fingerprint,
-                owner_review_id,
+                (fingerprint, owner_review_id),
             )
         if not row:
             return None
@@ -134,8 +173,8 @@ class CacheStore:
         """
         assert self._pool
         async with self._pool.connection() as conn:
-            conn.row_factory = dict_row
-            rows = await conn.fetch(
+            rows = await _fetchall_dict(
+                conn,
                 """
                 SELECT id, criteria_fingerprint, criteria_json, model_name,
                        result_json, created_at, expires_at, review_id, is_shared
@@ -144,8 +183,7 @@ class CacheStore:
                   AND (expires_at IS NULL OR expires_at > NOW())
                   AND (is_shared = TRUE OR review_id = %s)
                 """,
-                model_name,
-                owner_review_id,
+                (model_name, owner_review_id),
             )
 
         best_score = 0.0
@@ -199,42 +237,110 @@ class CacheStore:
 
         lock_key = int(fingerprint[:15], 16) & 0x7FFFFFFFFFFFFFFF
 
+        # Generate an embedding from the criteria_json so the row is
+        # immediately retrievable by semantic search. Best-effort — if the
+        # backend isn't installed we still write the row without it.
+        vec_literal: str | None = None
+        if self._has_embeddings:
+            try:
+                from synthscholar.embedding import embed_text
+                from synthscholar.cache.article_store import _vector_literal
+                # Compose embedding text from the same fields that feed the
+                # tsvector — kept consistent with migration 004's GENERATED
+                # search_vector definition.
+                parts = [
+                    str(criteria_json.get("question", "")),
+                    str(criteria_json.get("title", "")),
+                    str(criteria_json.get("pico_population", "")),
+                    str(criteria_json.get("pico_intervention", "")),
+                    str(criteria_json.get("pico_comparison", "")),
+                    str(criteria_json.get("pico_outcome", "")),
+                    str(criteria_json.get("inclusion_criteria", "")),
+                    str(criteria_json.get("exclusion_criteria", "")),
+                ]
+                vec = embed_text(" \n ".join(p for p in parts if p))
+                if vec is not None:
+                    vec_literal = _vector_literal(vec)
+            except Exception as exc:
+                logger.info("Review embedding generation skipped: %s", exc)
+
         async with self._pool.connection() as conn:
             async with conn.transaction():
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(%s)", (lock_key,)
                 )
-                exists = await conn.fetchval(
+                exists = await _fetchval(
+                    conn,
                     "SELECT 1 FROM review_cache WHERE criteria_fingerprint = %s",
-                    fingerprint,
+                    (fingerprint,),
                 )
                 if exists:
-                    await conn.execute(
-                        """
-                        UPDATE review_cache
-                        SET result_json = %s, created_at = NOW(), expires_at = %s,
-                            review_id = %s, is_shared = %s
-                        WHERE criteria_fingerprint = %s
-                        """,
-                        json.dumps(result_json), expires_at,
-                        review_id, is_shared, fingerprint,
-                    )
+                    if self._has_embeddings:
+                        await conn.execute(
+                            """
+                            UPDATE review_cache
+                            SET result_json = %s, created_at = NOW(), expires_at = %s,
+                                review_id = %s, is_shared = %s,
+                                embedding = COALESCE(%s::vector, embedding)
+                            WHERE criteria_fingerprint = %s
+                            """,
+                            (
+                                json.dumps(result_json), expires_at,
+                                review_id, is_shared, vec_literal, fingerprint,
+                            ),
+                        )
+                    else:
+                        await conn.execute(
+                            """
+                            UPDATE review_cache
+                            SET result_json = %s, created_at = NOW(), expires_at = %s,
+                                review_id = %s, is_shared = %s
+                            WHERE criteria_fingerprint = %s
+                            """,
+                            (
+                                json.dumps(result_json), expires_at,
+                                review_id, is_shared, fingerprint,
+                            ),
+                        )
                 else:
-                    await conn.execute(
-                        """
-                        INSERT INTO review_cache
-                            (criteria_fingerprint, criteria_json, model_name,
-                             result_json, expires_at, review_id, is_shared)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
-                        """,
-                        fingerprint,
-                        json.dumps(criteria_json),
-                        model_name,
-                        json.dumps(result_json),
-                        expires_at,
-                        review_id,
-                        is_shared,
-                    )
+                    if self._has_embeddings:
+                        await conn.execute(
+                            """
+                            INSERT INTO review_cache
+                                (criteria_fingerprint, criteria_json, model_name,
+                                 result_json, expires_at, review_id, is_shared,
+                                 embedding)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s::vector)
+                            """,
+                            (
+                                fingerprint,
+                                json.dumps(criteria_json),
+                                model_name,
+                                json.dumps(result_json),
+                                expires_at,
+                                review_id,
+                                is_shared,
+                                vec_literal,
+                            ),
+                        )
+                    else:
+                        await conn.execute(
+                            """
+                            INSERT INTO review_cache
+                                (criteria_fingerprint, criteria_json, model_name,
+                                 result_json, expires_at, review_id, is_shared)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                            """,
+                            (
+                                fingerprint,
+                                json.dumps(criteria_json),
+                                model_name,
+                                json.dumps(result_json),
+                                expires_at,
+                                review_id,
+                                is_shared,
+                            ),
+                        )
         return True
 
     async def set_sharing(self, review_id: str, is_shared: bool) -> int:
@@ -261,8 +367,7 @@ class CacheStore:
             query += " WHERE expires_at IS NULL OR expires_at > NOW()"
         query += " ORDER BY created_at DESC"
         async with self._pool.connection() as conn:
-            conn.row_factory = dict_row
-            rows = await conn.fetch(query)
+            rows = await _fetchall_dict(conn, query)
         return [_row_to_entry(r) for r in rows]
 
     async def delete_entry(self, fingerprint: str) -> bool:
@@ -279,6 +384,86 @@ class CacheStore:
             result = await conn.execute("DELETE FROM review_cache")
         return result.pgresult.command_tuples or 0
 
+    # ── Review search (feature: search past reviews by topic) ────────────────
+
+    async def search_reviews_keyword(
+        self, query: str, limit: int = 20, include_expired: bool = False,
+    ) -> list[CacheEntry]:
+        """Lexical full-text search across cached reviews.
+
+        Searches the ``criteria_json`` columns indexed by migration 004's
+        ``search_vector``. Title + research question rank highest, PICO terms
+        rank second, inclusion/exclusion criteria rank third.
+
+        Returns a relevance-ordered list of :class:`CacheEntry` objects. Each
+        entry's full ``result_json`` is preserved so callers can pluck the
+        synthesis text or downstream sections.
+        """
+        assert self._pool
+        sql = """
+            SELECT *, ts_rank(search_vector, plainto_tsquery('english', %s)) AS rank
+            FROM review_cache
+            WHERE search_vector @@ plainto_tsquery('english', %s)
+        """
+        if not include_expired:
+            sql += "  AND (expires_at IS NULL OR expires_at > NOW())\n"
+        sql += "ORDER BY rank DESC LIMIT %s"
+        async with self._pool.connection() as conn:
+            rows = await _fetchall_dict(conn, sql, (query, query, limit))
+        return [_row_to_entry(r) for r in rows]
+
+    async def search_reviews_semantic(
+        self, query: str, limit: int = 20, include_expired: bool = False,
+    ) -> list[CacheEntry]:
+        """Semantic (vector-similarity) search across cached reviews.
+
+        Requires migration 004 and the ``[semantic]`` extra. Skips entries
+        whose ``embedding`` is NULL (e.g. old reviews ingested before the
+        embedding backend was wired). Raises :class:`RuntimeError` with an
+        actionable message when prerequisites are missing.
+        """
+        assert self._pool
+        if not self._has_embeddings:
+            raise RuntimeError(
+                "Semantic review search unavailable — apply migration 004 first: "
+                "psql \"$PRISMA_PG_DSN\" -f synthscholar/cache/migrations/004_add_embeddings.sql"
+            )
+        from synthscholar.embedding import embed_text
+        from synthscholar.cache.article_store import _vector_literal
+        vec = embed_text(query)
+        if vec is None:
+            raise RuntimeError(
+                "Semantic search backend unavailable — install: "
+                "pip install 'synthscholar[semantic]'"
+            )
+        vec_literal = _vector_literal(vec)
+        sql = """
+            SELECT *, 1 - (embedding <=> %s::vector) AS similarity
+            FROM review_cache
+            WHERE embedding IS NOT NULL
+        """
+        if not include_expired:
+            sql += "  AND (expires_at IS NULL OR expires_at > NOW())\n"
+        sql += "ORDER BY embedding <=> %s::vector LIMIT %s"
+        async with self._pool.connection() as conn:
+            rows = await _fetchall_dict(conn, sql, (vec_literal, vec_literal, limit))
+        return [_row_to_entry(r) for r in rows]
+
+    async def _has_review_embeddings(self) -> bool:
+        assert self._pool
+        try:
+            async with self._pool.connection() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        """
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'review_cache' AND column_name = 'embedding'
+                        """
+                    )
+                    return await cur.fetchone() is not None
+        except Exception:
+            return False
+
     # ── Pipeline checkpoint methods (feature 010) ─────────────────────────────
 
     async def save_checkpoint(self, ckpt: PipelineCheckpoint) -> PipelineCheckpoint:
@@ -288,8 +473,8 @@ class CacheStore:
         """
         assert self._pool
         async with self._pool.connection() as conn:
-            conn.row_factory = dict_row
-            row = await conn.fetchrow(
+            row = await _fetchone_dict(
+                conn,
                 """
                 INSERT INTO pipeline_checkpoints
                     (review_id, stage_name, batch_index, status,
@@ -304,13 +489,15 @@ class CacheStore:
                     updated_at    = now()
                 RETURNING *
                 """,
-                ckpt.review_id,
-                ckpt.stage_name,
-                ckpt.batch_index,
-                ckpt.status,
-                json.dumps(ckpt.result_json),
-                ckpt.error_message,
-                ckpt.retries,
+                (
+                    ckpt.review_id,
+                    ckpt.stage_name,
+                    ckpt.batch_index,
+                    ckpt.status,
+                    json.dumps(ckpt.result_json),
+                    ckpt.error_message,
+                    ckpt.retries,
+                ),
             )
         return _row_to_checkpoint(row)
 
@@ -320,13 +507,13 @@ class CacheStore:
         """Load one specific checkpoint, or None if it does not exist."""
         assert self._pool
         async with self._pool.connection() as conn:
-            conn.row_factory = dict_row
-            row = await conn.fetchrow(
+            row = await _fetchone_dict(
+                conn,
                 """
                 SELECT * FROM pipeline_checkpoints
                 WHERE review_id = %s AND stage_name = %s AND batch_index = %s
                 """,
-                review_id, stage_name, batch_index,
+                (review_id, stage_name, batch_index),
             )
         return _row_to_checkpoint(row) if row else None
 
@@ -336,14 +523,14 @@ class CacheStore:
         """Return all checkpoints for a stage ordered by batch_index."""
         assert self._pool
         async with self._pool.connection() as conn:
-            conn.row_factory = dict_row
-            rows = await conn.fetch(
+            rows = await _fetchall_dict(
+                conn,
                 """
                 SELECT * FROM pipeline_checkpoints
                 WHERE review_id = %s AND stage_name = %s
                 ORDER BY batch_index
                 """,
-                review_id, stage_name,
+                (review_id, stage_name),
             )
         return [_row_to_checkpoint(r) for r in rows]
 
@@ -354,8 +541,8 @@ class CacheStore:
         """
         assert self._pool
         async with self._pool.connection() as conn:
-            conn.row_factory = dict_row
-            rows = await conn.fetch(
+            rows = await _fetchall_dict(
+                conn,
                 """
                 SELECT stage_name,
                        COUNT(*) FILTER (WHERE status != 'complete') AS incomplete
@@ -364,7 +551,7 @@ class CacheStore:
                 GROUP BY stage_name
                 HAVING COUNT(*) FILTER (WHERE status != 'complete') = 0
                 """,
-                review_id,
+                (review_id,),
             )
         return {r["stage_name"] for r in rows}
 
@@ -397,6 +584,90 @@ class CacheStore:
                     "DELETE FROM pipeline_checkpoints WHERE review_id = %s",
                     review_id,
                 )
+
+    # ── Provenance telemetry (migration 005) ─────────────────────────────
+
+    async def store_telemetry(
+        self,
+        *,
+        review_id: str,
+        run_configuration: dict | None,
+        plan_iterations: list[dict],
+        agent_invocations: list[dict],
+        search_iterations: list[dict],
+    ) -> bool:
+        """Persist the full provenance trail for a review run.
+
+        Idempotent: replaces any existing row for this review_id (DELETE+
+        INSERT semantics — historic runs are not retained).
+
+        Returns False silently if the review_telemetry table doesn't exist
+        (migration 005 not applied), so callers don't need to gate calls
+        on a feature flag.
+        """
+        if not self._pool or not review_id:
+            return False
+        run_cfg = run_configuration or {}
+        model_name = str(run_cfg.get("model_name") or "")
+        package_version = str(run_cfg.get("package_version") or "")
+        n_inv = len(agent_invocations)
+        in_tokens = sum(int(i.get("input_tokens") or 0) for i in agent_invocations)
+        out_tokens = sum(int(i.get("output_tokens") or 0) for i in agent_invocations)
+        n_plan = max(1, len(plan_iterations))
+
+        try:
+            async with self._pool.connection() as conn:
+                async with conn.transaction():
+                    await conn.execute(
+                        "DELETE FROM review_telemetry WHERE review_id = %s",
+                        (review_id,),
+                    )
+                    await conn.execute(
+                        """
+                        INSERT INTO review_telemetry (
+                            review_id, model_name, package_version,
+                            run_configuration, plan_iterations,
+                            agent_invocations, search_iterations,
+                            n_invocations, total_input_tokens,
+                            total_output_tokens, n_plan_iterations
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            review_id, model_name, package_version,
+                            json.dumps(run_cfg),
+                            json.dumps(plan_iterations),
+                            json.dumps(agent_invocations),
+                            json.dumps(search_iterations),
+                            n_inv, in_tokens, out_tokens, n_plan,
+                        ),
+                    )
+            return True
+        except psycopg.errors.UndefinedTable:
+            logger.info(
+                "review_telemetry table not present (apply migration 005 to enable)"
+            )
+            return False
+        except Exception as exc:
+            logger.warning("Failed to store telemetry for %s: %s", review_id, exc)
+            return False
+
+    async def load_telemetry(self, review_id: str) -> dict | None:
+        """Load the provenance trail for a review, or None if absent."""
+        if not self._pool or not review_id:
+            return None
+        try:
+            async with self._pool.connection() as conn:
+                row = await _fetchone_dict(
+                    conn,
+                    "SELECT * FROM review_telemetry WHERE review_id = %s",
+                    (review_id,),
+                )
+        except psycopg.errors.UndefinedTable:
+            return None
+        except Exception as exc:
+            logger.warning("Failed to load telemetry for %s: %s", review_id, exc)
+            return None
+        return row
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
