@@ -23,9 +23,14 @@ A multi-agent system for automated, PRISMA-2020-guided systematic literature rev
 ## Install  
   
 ```bash  
-pip install synthscholar                  # corepip install "synthscholar[fulltext]"      # adds PDF parsing (PyMuPDF) + arXiv (feedparser)
-```  
-  
+pip install synthscholar                  
+```
+To add PDF parsing (PyMuPDF) + arXiv (feedparser)
+
+```bash
+pip install "synthscholar[fulltext]"      
+```
+
 From source:  
   
 ```bash  
