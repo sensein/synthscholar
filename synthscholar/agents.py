@@ -20,6 +20,7 @@ from pydantic_ai import Agent, RunContext
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openrouter import OpenRouterProvider
 
+from .provenance import run_traced
 from .models import (
     ReviewProtocol,
     SearchStrategy,
@@ -65,6 +66,10 @@ from .models import (
     DomainAppraisal,
     CriticalAppraisalResult,
     CONCERN_AGGREGATION_RULE,
+    # Search synthesis
+    SearchSynthesis,
+    GroupSummary,
+    PerDisorderSynthesis,
 )
 
 
@@ -77,6 +82,7 @@ class AgentDeps:
     api_key: str = ""
     model_name: str = "anthropic/claude-sonnet-4"
     model: object = field(default=None, repr=False)
+    provenance: object = field(default=None, repr=False)  # ProvenanceCollector | None
 
 
 def build_model(api_key: str, model_name: str = "anthropic/claude-sonnet-4"):
@@ -527,7 +533,11 @@ async def run_search_strategy(deps: AgentDeps, user_feedback: str = "") -> Searc
             f"\n\nUser feedback on previous strategy: {user_feedback}\n\n"
             "Please revise the strategy accordingly."
         )
-    result = await search_strategy_agent.run(prompt, deps=deps, model=model)
+    result = await run_traced(
+        search_strategy_agent, prompt, deps=deps, model=model,
+        step_name="search_strategy_generation",
+        iteration_mode="iterative_with_human_feedback",
+    )
     return result.output
 
 
@@ -544,11 +554,14 @@ async def run_screening(
         for i, a in enumerate(articles)
     )
     model = deps.model or build_model(deps.api_key, deps.model_name)
-    result = await screening_agent.run(
+    result = await run_traced(
+        screening_agent,
         f"Stage: {stage}\n\n"
         f"=== ARTICLES TO SCREEN ({len(articles)}) ===\n{articles_text}",
         deps=deps,
         model=model,
+        step_name="screening",
+        iteration_mode="zero_shot",
     )
     return result.output
 
@@ -556,12 +569,16 @@ async def run_screening(
 async def run_risk_of_bias(article: Article, deps: AgentDeps) -> RiskOfBiasResult:
     """Assess risk of bias for a single study."""
     model = deps.model or build_model(deps.api_key, deps.model_name)
-    result = await rob_agent.run(
+    result = await run_traced(
+        rob_agent,
         f"Title: {article.title}\n"
         f"Abstract: {article.abstract[:2000]}\n"
         f"Full text: {(article.full_text or 'Not available')[:2000]}",
         deps=deps,
         model=model,
+        step_name="rob_assessment",
+        iteration_mode="zero_shot",
+        target_pmid=article.pmid,
     )
     return result.output
 
@@ -573,13 +590,17 @@ async def run_data_extraction(
 ) -> StudyDataExtraction:
     """Extract structured data from a study."""
     model = deps.model or build_model(deps.api_key, deps.model_name)
-    result = await data_extraction_agent.run(
+    result = await run_traced(
+        data_extraction_agent,
         f"Title: {article.title}\n"
         f"Abstract: {article.abstract[:2500]}\n"
         f"Full text: {(article.full_text or 'Not available')[:3000]}\n\n"
         f"Data items to extract: {', '.join(data_items)}",
         deps=deps,
         model=model,
+        step_name="data_extraction",
+        iteration_mode="zero_shot",
+        target_pmid=article.pmid,
     )
     return result.output
 
@@ -613,7 +634,11 @@ async def run_synthesis(
             + "\n\n".join(blocks)
             + _format_evidence_spans(evidence_spans)
         )
-        result = await synthesis_agent.run(prompt, deps=deps, model=model)
+        result = await run_traced(
+            synthesis_agent, prompt, deps=deps, model=model,
+            step_name="synthesis",
+            iteration_mode="zero_shot",  # single-pass: corpus fit budget
+        )
         return result.output
 
     # Map-reduce: shard articles, distribute spans by PMID, run in parallel.
@@ -636,7 +661,12 @@ async def run_synthesis(
             + "\n\n".join(batch_blocks)
             + _format_evidence_spans(batch_spans)
         )
-        partial_result = await synthesis_agent.run(prompt, deps=deps, model=model)
+        partial_result = await run_traced(
+            synthesis_agent, prompt, deps=deps, model=model,
+            step_name="synthesis",
+            iteration_mode="hierarchical_reduce",
+            batch_index=batch_idx,
+        )
         return partial_result.output
 
     partials = await asyncio.gather(
@@ -656,10 +686,14 @@ async def run_grade(
         for a in articles
     )
     model = deps.model or build_model(deps.api_key, deps.model_name)
-    result = await grade_agent.run(
+    result = await run_traced(
+        grade_agent,
         f"Outcome: {outcome}\nStudies ({len(articles)}):\n{studies_text}",
         deps=deps,
         model=model,
+        step_name="grade_assessment",
+        iteration_mode="zero_shot",
+        target_outcome=outcome,
     )
     return result.output
 
@@ -671,10 +705,13 @@ async def run_bias_summary(articles: list[Article], deps: AgentDeps) -> str:
         for a in articles
     )
     model = deps.model or build_model(deps.api_key, deps.model_name)
-    result = await bias_summary_agent.run(
+    result = await run_traced(
+        bias_summary_agent,
         f"Included studies:\n{articles_text}",
         deps=deps,
         model=model,
+        step_name="bias_summary",
+        iteration_mode="zero_shot",
     )
     return result.output
 
@@ -687,13 +724,16 @@ async def run_limitations(
     """Generate limitations section."""
     p = deps.protocol
     model = deps.model or build_model(deps.api_key, deps.model_name)
-    result = await limitations_agent.run(
+    result = await run_traced(
+        limitations_agent,
         f"Question: {p.question}\n"
         f"Databases: {', '.join(p.databases)}\n"
         f"Flow summary: {flow_text}\n"
         f"Study types: {', '.join(set(a.journal for a in articles))}",
         deps=deps,
         model=model,
+        step_name="limitations",
+        iteration_mode="zero_shot",
     )
     return result.output
 
@@ -735,10 +775,14 @@ async def run_evidence_extraction(
                 bidx + 1, n_batches, pmids, _rem_start,
             )
             try:
-                result = await evidence_extraction_agent.run(
+                result = await run_traced(
+                    evidence_extraction_agent,
                     f"Extract evidence from these {len(batch)} articles:\n\n{articles_text}",
                     deps=deps,
                     model=model,
+                    step_name="evidence_extraction",
+                    iteration_mode="validated_against_source",
+                    batch_index=bidx,
                 )
                 extraction = result.output
                 spans: list[EvidenceSpan] = []
@@ -1081,13 +1125,21 @@ def _is_schema_too_complex_error(exc: Exception) -> bool:
     )
 
 
-async def _run_with_text_fallback(agent: "Any", prompt: str, target_type: "Any", deps: "Any", model: "Any") -> "Any":
+async def _run_with_text_fallback(
+    agent: "Any", prompt: str, target_type: "Any", deps: "Any", model: "Any",
+    *, step_name: str = "structured_output", iteration_mode: "str" = "self_check_retry",
+    target_pmid: str = "",
+) -> "Any":
     """Try structured-output agent.run(); on schema-complexity 400, retry as plain text + JSON parse."""
     import logging as _lg
     import re as _re2
 
     try:
-        r = await agent.run(prompt, deps=deps, model=model)
+        r = await run_traced(
+            agent, prompt, deps=deps, model=model,
+            step_name=step_name, iteration_mode=iteration_mode,
+            target_pmid=target_pmid,
+        )
         return r.output
     except Exception as _exc:
         if not _is_schema_too_complex_error(_exc):
@@ -1105,7 +1157,13 @@ async def _run_with_text_fallback(agent: "Any", prompt: str, target_type: "Any",
             "Use empty string for unknown text fields, [] for list fields, "
             "{} for dict fields. No markdown fences."
         )
-        _tr = await agent.run(_fp, output_type=str, deps=deps, model=model)
+        _tr = await run_traced(
+            agent, _fp, deps=deps, model=model,
+            step_name=f"{step_name}_text_fallback",
+            iteration_mode="self_check_retry",
+            target_pmid=target_pmid,
+            output_type=str,
+        )
         _raw = _tr.output.strip()
         if _raw.startswith("```"):
             _lines = _raw.split("\n")
@@ -1212,7 +1270,9 @@ async def run_data_charting(
         + field_constraint_block
     )
     rubric = await _run_with_text_fallback(
-        data_charting_agent, _charting_prompt, DataChartingRubric, deps, model
+        data_charting_agent, _charting_prompt, DataChartingRubric, deps, model,
+        step_name="data_charting", iteration_mode="zero_shot",
+        target_pmid=article.pmid,
     )
     rubric.source_id = f"M-{article.pmid[-3:]}" if article.pmid.startswith("biorxiv_") else f"R-{article.pmid[-3:]}"
 
@@ -1262,11 +1322,15 @@ async def run_data_charting(
 async def run_narrative_row(charting: DataChartingRubric, appraisal: CriticalAppraisalRubric, deps: AgentDeps) -> PRISMANarrativeRow:
     """Generate narrative row from charting data and appraisal."""
     model = deps.model or build_model(deps.api_key, deps.model_name)
-    result = await narrative_row_agent.run(
+    result = await run_traced(
+        narrative_row_agent,
         f"Data Charting Rubric:\n{charting.model_dump_json(indent=2)}\n\n"
         f"Critical Appraisal:\n{appraisal.model_dump_json(indent=2)}",
         deps=deps,
         model=model,
+        step_name="narrative_row",
+        iteration_mode="zero_shot",
+        target_pmid=charting.source_id,
     )
     row = result.output
     row.source_id = charting.source_id
@@ -1332,7 +1396,9 @@ async def run_critical_appraisal(
         + config_block
     )
     rubric = await _run_with_text_fallback(
-        critical_appraisal_agent, _appraisal_prompt, CriticalAppraisalRubric, deps, model
+        critical_appraisal_agent, _appraisal_prompt, CriticalAppraisalRubric, deps, model,
+        step_name="critical_appraisal", iteration_mode="zero_shot",
+        target_pmid=charting.source_id,
     )
     rubric.source_id = charting.source_id
     for domain_field, label in zip(
@@ -1410,24 +1476,33 @@ async def run_grounding_validation(
         "Validate each atomic claim in the TARGET_EXCERPT against the CORPUS_DOCUMENTS."
     )
 
-    result = await grounding_validation_agent.run(prompt, deps=deps, model=model)
+    result = await run_traced(
+        grounding_validation_agent, prompt, deps=deps, model=model,
+        step_name="grounding_validation",
+        iteration_mode="validated_against_source",
+    )
     return result.output
 
 
 async def run_introduction(deps: AgentDeps) -> str:
     """Generate Introduction section."""
     model = deps.model or build_model(deps.api_key, deps.model_name)
-    result = await introduction_agent.run("Write the Introduction section.", deps=deps, model=model)
+    result = await run_traced(
+        introduction_agent, "Write the Introduction section.", deps=deps, model=model,
+        step_name="introduction", iteration_mode="zero_shot",
+    )
     return result.output
 
 
 async def run_conclusions(synthesis: str, grade_summary: str, deps: AgentDeps) -> str:
     """Generate Conclusions section."""
     model = deps.model or build_model(deps.api_key, deps.model_name)
-    result = await conclusions_agent.run(
+    result = await run_traced(
+        conclusions_agent,
         f"Synthesis summary:\n{synthesis[:2000]}\n\nGRADE certainty:\n{grade_summary}",
         deps=deps,
         model=model,
+        step_name="conclusions", iteration_mode="zero_shot",
     )
     return result.output
 
@@ -1436,7 +1511,8 @@ async def run_abstract(flow_text: str, synthesis: str, deps: AgentDeps) -> str:
     """Generate structured abstract."""
     p = deps.protocol
     model = deps.model or build_model(deps.api_key, deps.model_name)
-    result = await abstract_agent.run(
+    result = await run_traced(
+        abstract_agent,
         f"Review: {p.title}\n"
         f"PICO: {p.pico_text}\n"
         f"Databases: {', '.join(p.databases)}\n"
@@ -1446,6 +1522,7 @@ async def run_abstract(flow_text: str, synthesis: str, deps: AgentDeps) -> str:
         f"Key synthesis:\n{synthesis[:2000]}",
         deps=deps,
         model=model,
+        step_name="structured_abstract", iteration_mode="zero_shot",
     )
     return result.output
 
@@ -1486,7 +1563,8 @@ async def run_abstract_section(
     theme_block = "\n".join(
         f"- {t.theme_name}: {'; '.join(t.key_findings[:2])}" for t in themes[:5]
     )
-    result = await abstract_section_agent.run(
+    result = await run_traced(
+        abstract_section_agent,
         f"Review Title: {protocol.title}\n"
         f"Objective: {protocol.objective}\n"
         f"PICO: {protocol.pico_text}\n"
@@ -1500,6 +1578,8 @@ async def run_abstract_section(
         f"Overall bias: {bias_summary}\n",
         deps=deps,
         model=model,
+        step_name="abstract_section",
+        iteration_mode="zero_shot",
     )
     return result.output
 
@@ -1527,7 +1607,8 @@ Style: past tense for completed work; present for established knowledge.
 async def run_introduction_section(deps: AgentDeps, protocol: ReviewProtocol) -> Introduction:
     """Generate four-section introduction from review protocol."""
     model = deps.model or build_model(deps.api_key, deps.model_name)
-    result = await introduction_section_agent.run(
+    result = await run_traced(
+        introduction_section_agent,
         f"Review Title: {protocol.title}\n"
         f"Objective: {protocol.objective}\n"
         f"PICO:\n{protocol.pico_text}\n"
@@ -1536,6 +1617,8 @@ async def run_introduction_section(deps: AgentDeps, protocol: ReviewProtocol) ->
         f"Target audience: {getattr(protocol, 'target_audience', '') or 'academic journal'}\n",
         deps=deps,
         model=model,
+        step_name="introduction_section",
+        iteration_mode="zero_shot",
     )
     return result.output
 
@@ -1736,7 +1819,10 @@ async def run_thematic_synthesis(
     # Single-pass when the corpus fits the budget.
     if total_block_chars <= THEMATIC_BATCH_CHARS:
         prompt = _build_prompt(articles, charting_rubrics, evidence_spans)
-        result = await thematic_synthesis_agent.run(prompt, deps=deps, model=model)
+        result = await run_traced(
+            thematic_synthesis_agent, prompt, deps=deps, model=model,
+            step_name="thematic_synthesis", iteration_mode="zero_shot",
+        )
         return result.output
 
     # Map-reduce: shard articles, distribute rubrics + spans by source_id /
@@ -1760,8 +1846,11 @@ async def run_thematic_synthesis(
             batch_articles, batch_rubrics, batch_spans,
             batch_idx=batch_idx, n_batches=len(batches),
         )
-        partial_result = await thematic_synthesis_agent.run(
-            prompt, deps=deps, model=model
+        partial_result = await run_traced(
+            thematic_synthesis_agent, prompt, deps=deps, model=model,
+            step_name="thematic_synthesis",
+            iteration_mode="hierarchical_reduce",
+            batch_index=batch_idx,
         )
         return partial_result.output
 
@@ -1802,13 +1891,15 @@ async def run_discussion_section(
         f"- {t.theme_name}: {t.description} Key findings: {'; '.join(t.key_findings[:3])}"
         for t in themes[:6]
     )
-    result = await discussion_section_agent.run(
+    result = await run_traced(
+        discussion_section_agent,
         f"Research Question: {protocol.question}\n"
         f"PICO: {protocol.pico_text}\n\n"
         f"THEMES FROM SYNTHESIS:\n{theme_block}\n\n"
         f"LIMITATIONS: {limitations_text or 'Not specified'}\n",
         deps=deps,
         model=model,
+        step_name="discussion_section", iteration_mode="zero_shot",
     )
     return result.output
 
@@ -1842,12 +1933,14 @@ async def run_conclusion_section(
     theme_block = "\n".join(
         f"- {t.theme_name}: {'; '.join(t.key_findings[:2])}" for t in themes[:6]
     )
-    result = await conclusion_section_agent.run(
+    result = await run_traced(
+        conclusion_section_agent,
         f"Research Question: {protocol.question}\n"
         f"Objectives: {protocol.objective}\n\n"
         f"KEY THEMES AND FINDINGS:\n{theme_block}\n",
         deps=deps,
         model=model,
+        step_name="conclusion_section", iteration_mode="zero_shot",
     )
     return result.output
 
@@ -1889,11 +1982,13 @@ async def run_quantitative_analysis(
         f"findings={'; '.join(a.extracted_data.key_findings[:2])}"
         for a in quantitative[:10]
     )
-    result = await quantitative_analysis_agent.run(
+    result = await run_traced(
+        quantitative_analysis_agent,
         f"Research Question: {deps.protocol.question}\n\n"
         f"NUMERIC OUTCOME DATA ({len(quantitative)} studies):\n{data_block}\n",
         deps=deps,
         model=model,
+        step_name="quantitative_analysis", iteration_mode="zero_shot",
     )
     return result.output
 
@@ -2218,7 +2313,11 @@ async def run_consensus_synthesis(
     )
     prompt = "\n".join(lines)
     model = deps.model or build_model(deps.api_key, deps.model_name)
-    result = await consensus_synthesis_agent.run(prompt, deps=deps, model=model)
+    result = await run_traced(
+        consensus_synthesis_agent, prompt, deps=deps, model=model,
+        step_name="consensus_synthesis",
+        iteration_mode="hierarchical_reduce",
+    )
     return result.output
 
 
@@ -2277,6 +2376,269 @@ async def run_synthesis_merge_agent(
     )
     prompt = "\n".join(lines)
     model = deps.model or build_model(deps.api_key, deps.model_name)
-    result = await _synthesis_merge_agent.run(prompt, deps=deps, model=model)
+    result = await run_traced(
+        _synthesis_merge_agent, prompt, deps=deps, model=model,
+        step_name="synthesis_merge",
+        iteration_mode="hierarchical_reduce",
+    )
     return result.output.synthesis_text
 
+
+
+# ────────────────────── 17. Search-Result Synthesis Agent ────────────────────
+#
+# Used by the standalone search surface (CLI / FastAPI) to produce a
+# stratified summary of search hits. Distinct from `synthesis_agent` (which
+# is corpus-wide and PRISMA-flow-anchored) — this one operates on a
+# pre-filtered shortlist returned by ArticleStore.search_*().
+
+search_synthesis_agent = Agent(
+    output_type=SearchSynthesis,
+    deps_type=AgentDeps,
+    system_prompt="""\
+You are a clinical/biomedical synthesis assistant. You receive (a) a free-text
+search query and (b) a shortlist of articles returned for that query. Produce
+a structured stratified summary.
+
+Rules:
+  1. Detect the most informative grouping dimension yourself — typically
+     condition / disorder / disease when results span multiple disease
+     areas, otherwise population subgroup, intervention type, study design,
+     or outcome metric. State the chosen dimension implicitly through the
+     group labels.
+  2. Each group's `aggregate_finding` MUST cite specific quantitative values
+     when present in the source articles: effect sizes (with units),
+     accuracy / sensitivity / specificity / AUC, sample sizes, ranges,
+     confidence intervals. Do NOT invent numbers.
+  3. `n_studies` per group should reflect actual articles in the shortlist
+     that fall in that group. Sum across groups should equal
+     n_articles_synthesized (allow a small overflow when an article spans
+     two groups — note such overlaps in `caveats`).
+  4. `representative_pmids` lists 1–3 PMIDs from the shortlist that are most
+     representative of the group's conclusion.
+  5. `overview` is 1–2 sentences framing the corpus: predominant study
+     designs, settings, sample size range, data collection era. No findings.
+  6. `overall_caveats` summarises cross-group heterogeneity, missing
+     comparators, demographic narrowness, etc. Concise; use only when
+     genuinely warranted.
+
+Never fabricate findings beyond what the shortlist supplies. When a group has
+insufficient evidence to summarise quantitatively, say so explicitly.
+""",
+    retries=3,
+    name="search_synthesis",
+    defer_model_check=True,
+)
+
+
+def _summarise_article_for_search(art: "Article", index: int) -> str:
+    """Compact one-article block used as input to the search-synthesis agent.
+
+    Keeps the prompt focused on the pieces that drive aggregate findings:
+    title, abstract, and any pre-extracted study-design / effect-size data.
+    """
+    parts = [
+        f"--- [{index}] PMID:{art.pmid} ---",
+        f"Title: {art.title}",
+    ]
+    if art.year:
+        parts.append(f"Year: {art.year}")
+    if art.abstract:
+        parts.append(f"Abstract: {art.abstract[:1500]}")
+    return "\n".join(parts)
+
+
+async def run_search_synthesis(
+    query: str,
+    articles: "list[Article]",
+    deps: AgentDeps,
+    top_k: int | None = None,
+) -> SearchSynthesis:
+    """Produce a stratified summary of a search-result shortlist.
+
+    Single LLM call. Use ``top_k`` to cap the corpus when search returned
+    a long list (default: use whatever is supplied). The agent's output
+    length grows roughly linearly with article count, so 10–25 is a
+    practical sweet spot for the CLI / REST surface.
+    """
+    if not articles:
+        return SearchSynthesis(
+            query=query,
+            n_articles_synthesized=0,
+            overview="No matching articles in the corpus.",
+            groups=[],
+        )
+
+    if top_k is not None and top_k > 0:
+        articles = articles[:top_k]
+
+    blocks = [_summarise_article_for_search(a, i + 1) for i, a in enumerate(articles)]
+    prompt = (
+        f"Search query: {query}\n\n"
+        f"=== SHORTLIST ({len(articles)} articles, ranked by relevance) ===\n\n"
+        + "\n\n".join(blocks)
+    )
+
+    model = deps.model or build_model(deps.api_key, deps.model_name)
+    result = await run_traced(
+        search_synthesis_agent, prompt, deps=deps, model=model,
+        step_name="search_synthesis",
+        iteration_mode="zero_shot",
+    )
+    return result.output
+
+
+# ────────────────── Per-Disorder Synthesis (deterministic bucketing) ───
+#
+# Unlike ``search_synthesis_agent`` — which lets the LLM pick a grouping
+# dimension — this flow buckets articles deterministically by a
+# caller-supplied disorder label and produces one summary per non-empty
+# bucket. Use this when you already have charted ``disorder_cohort`` values
+# (or any externally-curated disorder mapping) and want strict, reproducible
+# per-disorder strata rather than soft, model-chosen groups.
+
+disorder_group_summary_agent = Agent(
+    output_type=GroupSummary,
+    deps_type=AgentDeps,
+    system_prompt="""\
+You are a clinical/biomedical synthesis assistant. You receive (a) a single
+disorder/cohort label and (b) a shortlist of articles whose disorder cohort
+matches that label. Produce ONE structured summary (a single GroupSummary)
+covering this disorder.
+
+Rules:
+  1. The output `label` MUST equal the disorder label provided in the prompt
+     (verbatim). Do not relabel, abbreviate, or expand it.
+  2. `n_studies` MUST equal the number of articles in the shortlist.
+  3. `aggregate_finding` is 1–3 sentences synthesising what the shortlist
+     reports for this disorder. Cite specific quantitative values when the
+     source articles supply them: effect sizes (with units), accuracy /
+     sensitivity / specificity / AUC, sample sizes, ranges, confidence
+     intervals. Never invent numbers.
+  4. `representative_pmids` lists 1–3 PMIDs from the shortlist that are most
+     representative of the conclusion.
+  5. `caveats` summarises within-disorder limitations (small N, narrow
+     demographics, methodological heterogeneity, missing comparator).
+     Concise; use only when genuinely warranted.
+
+Do not introduce sub-groups or alternative grouping dimensions — this call
+covers exactly one disorder.
+""",
+    retries=3,
+    name="disorder_group_summary",
+    defer_model_check=True,
+)
+
+
+def _normalize_disorder_label(label: str) -> str:
+    """Canonicalise a disorder label for bucketing: trim + collapse whitespace + casefold."""
+    return " ".join((label or "").split()).casefold()
+
+
+def disorder_labels_from_rubrics(
+    rubrics: "list[DataChartingRubric]",
+    *,
+    pmid_attr: str = "source_id",
+) -> dict[str, str]:
+    """Build a ``{pmid: disorder_cohort}`` mapping from charted rubrics.
+
+    Empty / whitespace-only ``disorder_cohort`` values are omitted so they
+    surface as ``unlabeled_count`` in :func:`run_per_disorder_synthesis`.
+    The default ``pmid_attr`` is ``source_id`` because that is what
+    ``DataChartingRubric`` carries; pass another attribute name when your
+    rubric variant keys on something else.
+    """
+    out: dict[str, str] = {}
+    for r in rubrics:
+        key = getattr(r, pmid_attr, "") or ""
+        cohort = (getattr(r, "disorder_cohort", "") or "").strip()
+        if key and cohort:
+            out[key] = cohort
+    return out
+
+
+async def run_per_disorder_synthesis(
+    articles: "list[Article]",
+    disorder_labels: dict[str, str],
+    deps: AgentDeps,
+    *,
+    topic: str = "",
+    min_articles_per_disorder: int = 1,
+) -> PerDisorderSynthesis:
+    """Strict per-disorder stratified summary via deterministic bucketing.
+
+    For each distinct disorder label in ``disorder_labels``, articles whose
+    ``pmid`` maps to that label are grouped together (case-insensitive,
+    whitespace-collapsed match) and summarised in a single LLM call. Buckets
+    smaller than ``min_articles_per_disorder`` are skipped — the articles
+    still count toward ``n_articles_synthesized`` but produce no group.
+    Articles missing from ``disorder_labels`` (or mapped to an empty label)
+    are excluded from synthesis and counted in ``unlabeled_count``.
+
+    The output preserves the *original-cased* label string from the first
+    article encountered for that bucket — normalisation is used only for
+    grouping, never for display.
+    """
+    if not articles:
+        return PerDisorderSynthesis(
+            topic=topic,
+            n_articles_synthesized=0,
+            n_disorders=0,
+            unlabeled_count=0,
+            groups=[],
+        )
+
+    buckets: dict[str, list["Article"]] = {}
+    display_label: dict[str, str] = {}
+    unlabeled = 0
+    for art in articles:
+        raw = (disorder_labels.get(art.pmid) or "").strip()
+        if not raw:
+            unlabeled += 1
+            continue
+        key = _normalize_disorder_label(raw)
+        if not key:
+            unlabeled += 1
+            continue
+        buckets.setdefault(key, []).append(art)
+        display_label.setdefault(key, raw)
+
+    eligible_keys = [
+        k for k, arts in buckets.items() if len(arts) >= min_articles_per_disorder
+    ]
+
+    model = deps.model or build_model(deps.api_key, deps.model_name)
+
+    async def _summarise_one(key: str) -> GroupSummary:
+        bucket = buckets[key]
+        label = display_label[key]
+        blocks = [_summarise_article_for_search(a, i + 1) for i, a in enumerate(bucket)]
+        prompt = (
+            f"Disorder label: {label}\n"
+            f"Topic context: {topic or '(none)'}\n\n"
+            f"=== SHORTLIST ({len(bucket)} articles for this disorder) ===\n\n"
+            + "\n\n".join(blocks)
+        )
+        result = await run_traced(
+            disorder_group_summary_agent, prompt, deps=deps, model=model,
+            step_name="per_disorder_synthesis",
+            iteration_mode="zero_shot",
+        )
+        gs: GroupSummary = result.output
+        # Normalise label and counts deterministically — ignore any LLM drift.
+        return gs.model_copy(update={"label": label, "n_studies": len(bucket)})
+
+    summaries: list[GroupSummary] = []
+    if eligible_keys:
+        summaries = list(
+            await asyncio.gather(*(_summarise_one(k) for k in eligible_keys))
+        )
+        summaries.sort(key=lambda g: (-g.n_studies, g.label.casefold()))
+
+    return PerDisorderSynthesis(
+        topic=topic,
+        n_articles_synthesized=len(articles),
+        n_disorders=len(summaries),
+        unlabeled_count=unlabeled,
+        groups=summaries,
+    )
