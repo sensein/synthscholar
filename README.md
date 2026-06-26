@@ -1,7 +1,7 @@
 
 # SynthScholar — PRISMA 2020 Systematic Review Agent  
 
-  <img alt="image" src="logos/synthscholar-horizontal.png" />
+  <img alt="image" src="logos/synthscholar-horizontal.webp" />
 
 A multi-agent system for automated, PRISMA-2020-guided systematic literature reviews.  
   
