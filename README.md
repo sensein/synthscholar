@@ -21,6 +21,17 @@ A multi-agent system for automated, PRISMA-2020-guided systematic literature rev
 - **Multiple export formats** — Markdown, JSON, BibTeX, Turtle, JSON-LD (via the SLR Ontology, reusing PROV-O / FaBiO / BIBO / OA — including activity nodes for every plan iteration, search iteration, and agent invocation).  
 - **Configurable RoB tools** — RoB 2, ROBINS-I, Newcastle-Ottawa, QUADAS-2.  
 ---  
+
+
+## 🎥 SynthScholar in BrainKB Platform
+
+Watch the SynthScholar demo to see how the application supports PRISMA 2020-guided systematic literature reviews using multi-agent workflows, evidence grounding, provenance tracking, and structured exports.
+
+[![Watch the SynthScholar demo](https://img.youtube.com/vi/DhHVc4Udfe0/maxresdefault.jpg)](https://youtu.be/DhHVc4Udfe0)
+
+🔗 **Video:** https://youtu.be/DhHVc4Udfe0
+ 
+
   
 ## Install  
   
