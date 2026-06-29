@@ -17,8 +17,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from prisma_review_agent.models import ReviewProtocol, ReviewPlan
-from prisma_review_agent.pipeline import PRISMAReviewPipeline
+from synthscholar.models import ReviewProtocol, ReviewPlan
+from synthscholar.pipeline import PRISMAReviewPipeline
 
 
 def main() -> None:

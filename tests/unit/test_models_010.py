@@ -6,11 +6,11 @@ import pytest
 from pydantic import ValidationError
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from prisma_review_agent.cache.models import (
+from synthscholar.cache.models import (
     PipelineCheckpoint,
     BatchMaxRetriesError,
 )
-from prisma_review_agent.models import ReviewProtocol
+from synthscholar.models import ReviewProtocol
 
 
 # ── PipelineCheckpoint ────────────────────────────────────────────────────────
@@ -120,7 +120,7 @@ class TestSynthesisMergeAgent:
     @pytest.mark.asyncio
     async def test_single_chunk_returns_without_merge(self):
         """With one partial synthesis, the merge agent is skipped."""
-        from prisma_review_agent.agents import run_synthesis_merge_agent
+        from synthscholar.agents import run_synthesis_merge_agent
 
         deps = MagicMock()
         result = await run_synthesis_merge_agent(["Only one chunk."], deps)
@@ -128,7 +128,7 @@ class TestSynthesisMergeAgent:
 
     @pytest.mark.asyncio
     async def test_empty_returns_empty_string(self):
-        from prisma_review_agent.agents import run_synthesis_merge_agent
+        from synthscholar.agents import run_synthesis_merge_agent
 
         deps = MagicMock()
         result = await run_synthesis_merge_agent([], deps)
@@ -137,7 +137,7 @@ class TestSynthesisMergeAgent:
     @pytest.mark.asyncio
     async def test_multiple_chunks_calls_agent(self):
         """With multiple chunks the merge agent is called and returns merged text."""
-        from prisma_review_agent.agents import run_synthesis_merge_agent, _synthesis_merge_agent
+        from synthscholar.agents import run_synthesis_merge_agent, _synthesis_merge_agent
 
         merged_text = "Merged synthesis across all chunks."
         mock_output = MagicMock()

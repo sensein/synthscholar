@@ -26,7 +26,7 @@ def pg_dsn():
 
 @pytest.fixture
 async def store(pg_dsn):
-    from prisma_review_agent.cache.store import CacheStore
+    from synthscholar.cache.store import CacheStore
     async with CacheStore(dsn=pg_dsn) as s:
         yield s
 
@@ -36,7 +36,7 @@ async def store(pg_dsn):
 @pytest.mark.asyncio
 async def test_save_and_load_checkpoint(store):
     """save_checkpoint → load_checkpoints round-trip and upsert idempotency."""
-    from prisma_review_agent.cache.models import PipelineCheckpoint
+    from synthscholar.cache.models import PipelineCheckpoint
 
     review_id = "test-010-roundtrip"
     stage = "synthesis"
@@ -70,7 +70,7 @@ async def test_save_and_load_checkpoint(store):
 @pytest.mark.asyncio
 async def test_clear_checkpoints_by_stage(store):
     """clear_checkpoints(review_id, stage_name) removes only that stage."""
-    from prisma_review_agent.cache.models import PipelineCheckpoint
+    from synthscholar.cache.models import PipelineCheckpoint
 
     review_id = "test-010-clear-stage"
     await store.clear_checkpoints(review_id)
@@ -95,7 +95,7 @@ async def test_clear_checkpoints_by_stage(store):
 @pytest.mark.asyncio
 async def test_load_completed_stages(store):
     """load_completed_stages returns only stages where all batches are complete."""
-    from prisma_review_agent.cache.models import PipelineCheckpoint
+    from synthscholar.cache.models import PipelineCheckpoint
 
     review_id = "test-010-completed-stages"
     await store.clear_checkpoints(review_id)
@@ -128,7 +128,7 @@ async def test_load_completed_stages(store):
 @pytest.mark.asyncio
 async def test_synthesis_batch_size_creates_multiple_checkpoints(store):
     """A review with synthesis_batch_size=10 and 25 articles creates 3 synthesis checkpoints."""
-    from prisma_review_agent.cache.models import PipelineCheckpoint
+    from synthscholar.cache.models import PipelineCheckpoint
 
     review_id = "test-010-synthesis-chunks"
     await store.clear_checkpoints(review_id)
@@ -157,7 +157,7 @@ async def test_synthesis_batch_size_creates_multiple_checkpoints(store):
 @pytest.mark.asyncio
 async def test_resume_skips_completed_stages(store):
     """load_completed_stages returns every stage that has all batches complete."""
-    from prisma_review_agent.cache.models import PipelineCheckpoint
+    from synthscholar.cache.models import PipelineCheckpoint
 
     review_id = "test-010-resume-all"
     await store.clear_checkpoints(review_id)

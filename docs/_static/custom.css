@@ -1,0 +1,259 @@
+/* ── Google Fonts ─────────────────────────────────────────────────────────── */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+/* ── Hero section ─────────────────────────────────────────────────────────── */
+.hero {
+  text-align: center;
+  padding: 4rem 2rem 3rem;
+  border-bottom: 1px solid var(--color-background-border);
+  margin-bottom: 3rem;
+}
+
+.hero-title {
+  font-size: 3rem;
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  margin-bottom: 1rem;
+  color: var(--color-foreground-primary);
+}
+
+.hero-tagline {
+  font-size: 1.25rem;
+  color: var(--color-foreground-secondary);
+  max-width: 560px;
+  margin: 0 auto 2rem;
+  line-height: 1.6;
+}
+
+.hero-badges {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-bottom: 2rem;
+}
+
+.hero-install {
+  display: inline-block;
+  background: var(--color-code-background);
+  border: 1px solid var(--color-background-border);
+  border-radius: 8px;
+  padding: 0.75rem 1.5rem;
+  font-family: var(--font-stack--monospace);
+  font-size: 1rem;
+  color: var(--color-brand-primary);
+  margin-bottom: 1.5rem;
+  cursor: text;
+  user-select: all;
+}
+
+.hero-cta {
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.btn-primary {
+  display: inline-block;
+  background: var(--color-brand-primary);
+  color: white !important;
+  text-decoration: none !important;
+  padding: 0.65rem 1.5rem;
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 0.95rem;
+  transition: opacity 0.15s;
+}
+
+.btn-primary:hover { opacity: 0.88; }
+
+.btn-secondary {
+  display: inline-block;
+  border: 1.5px solid var(--color-brand-primary);
+  color: var(--color-brand-primary) !important;
+  text-decoration: none !important;
+  padding: 0.65rem 1.5rem;
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 0.95rem;
+  transition: background 0.15s;
+}
+
+.btn-secondary:hover { background: var(--color-admonition-background); }
+
+/* ── Feature cards ─────────────────────────────────────────────────────────── */
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1.25rem;
+  margin: 2.5rem 0;
+}
+
+.feature-card {
+  border: 1px solid var(--color-background-border);
+  border-radius: 10px;
+  padding: 1.5rem;
+  background: var(--color-background-secondary);
+  transition: box-shadow 0.15s, transform 0.15s;
+  text-decoration: none !important;
+  color: inherit !important;
+  display: block;
+}
+
+.feature-card:hover {
+  box-shadow: 0 4px 20px rgba(37, 99, 235, 0.12);
+  transform: translateY(-2px);
+}
+
+.feature-card .card-icon {
+  font-size: 2rem;
+  margin-bottom: 0.75rem;
+  display: block;
+}
+
+.feature-card .card-title {
+  font-size: 1.05rem;
+  font-weight: 600;
+  margin-bottom: 0.4rem;
+  color: var(--color-brand-primary);
+}
+
+.feature-card .card-desc {
+  font-size: 0.9rem;
+  color: var(--color-foreground-secondary);
+  line-height: 1.5;
+}
+
+/* ── Download cards (ontology page) ────────────────────────────────────────── */
+.download-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 1rem;
+  margin: 1.5rem 0 2.5rem;
+}
+
+.download-card {
+  border: 1px solid var(--color-background-border);
+  border-radius: 10px;
+  padding: 1.25rem 1.25rem 1rem;
+  background: var(--color-background-secondary);
+  text-decoration: none !important;
+  color: inherit !important;
+  display: block;
+  transition: box-shadow 0.15s, transform 0.15s, border-color 0.15s;
+}
+
+.download-card:hover {
+  box-shadow: 0 4px 16px rgba(37, 99, 235, 0.14);
+  transform: translateY(-2px);
+  border-color: var(--color-brand-primary);
+}
+
+.download-card .download-icon {
+  font-size: 1.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.download-card .download-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--color-brand-primary);
+  margin-bottom: 0.3rem;
+}
+
+.download-card .download-desc {
+  font-size: 0.85rem;
+  color: var(--color-foreground-secondary);
+  line-height: 1.45;
+  margin-bottom: 0.6rem;
+}
+
+.download-card .download-ext {
+  font-family: var(--font-stack--monospace);
+  font-size: 0.75rem;
+  color: var(--color-foreground-muted, #64748b);
+  border-top: 1px solid var(--color-background-border);
+  padding-top: 0.5rem;
+}
+
+/* ── Pipeline steps ────────────────────────────────────────────────────────── */
+.pipeline-steps {
+  counter-reset: step;
+  list-style: none;
+  padding: 0;
+  margin: 1.5rem 0;
+}
+
+.pipeline-steps li {
+  counter-increment: step;
+  display: flex;
+  align-items: flex-start;
+  gap: 1rem;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--color-background-border);
+}
+
+.pipeline-steps li::before {
+  content: counter(step);
+  background: var(--color-brand-primary);
+  color: white;
+  font-size: 0.75rem;
+  font-weight: 700;
+  min-width: 1.6rem;
+  height: 1.6rem;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-top: 0.1rem;
+}
+
+/* ── API table enhancements ────────────────────────────────────────────────── */
+table.api-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+  margin: 1.5rem 0;
+}
+
+table.api-table th {
+  background: var(--color-background-secondary);
+  font-weight: 600;
+  text-align: left;
+  padding: 0.6rem 1rem;
+  border-bottom: 2px solid var(--color-brand-primary);
+}
+
+table.api-table td {
+  padding: 0.55rem 1rem;
+  border-bottom: 1px solid var(--color-background-border);
+  vertical-align: top;
+}
+
+table.api-table tr:hover td {
+  background: var(--color-background-secondary);
+}
+
+/* ── Sidebar tweaks ────────────────────────────────────────────────────────── */
+.sidebar-brand-text {
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+/* ── Inline code pill ──────────────────────────────────────────────────────── */
+code.literal {
+  background: var(--color-code-background);
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+  font-size: 0.875em;
+}
+
+/* ── Responsive ────────────────────────────────────────────────────────────── */
+@media (max-width: 600px) {
+  .hero-title { font-size: 2rem; }
+  .hero-tagline { font-size: 1rem; }
+  .feature-grid { grid-template-columns: 1fr; }
+}
